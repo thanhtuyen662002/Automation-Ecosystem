@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 venv/
 .env
+node_modules/
+dist/
+.vite/

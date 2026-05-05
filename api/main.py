@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from psycopg.errors import UniqueViolation
 from pythonjsonlogger import jsonlogger
 
 from api.dependencies import ApiSettings
-from api.routes import jobs, system, tasks
+from api.routes import jobs, system, tasks, tiktok
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import (
@@ -68,9 +69,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Automation Ecosystem API", version="0.1.0", lifespan=lifespan)
+
+# Allow Vite dev-server and Electron renderer to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_origin_regex=r"https?://localhost:\d+",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(jobs.router)
 app.include_router(tasks.router)
 app.include_router(system.router)
+app.include_router(tiktok.router)
 
 
 @app.middleware("http")

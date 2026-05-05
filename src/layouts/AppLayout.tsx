@@ -1,26 +1,33 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { Activity, BriefcaseBusiness, CheckCircle2, LayoutDashboard, Plus, Server, Settings, Workflow } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-const navItems = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Jobs", href: "/jobs", icon: BriefcaseBusiness },
-  { label: "Tasks", href: "/tasks", icon: Workflow },
-  { label: "Create", href: "/create", icon: Plus },
-  { label: "System", href: "/system", icon: Server },
-  { label: "Settings", href: "/settings", icon: Settings },
-];
-
 export function AppLayout() {
+  const { t, i18n } = useTranslation();
+
+  const navItems = [
+    { label: t("nav.dashboard"), href: "/", icon: LayoutDashboard },
+    { label: t("nav.jobs"), href: "/jobs", icon: BriefcaseBusiness },
+    { label: t("nav.tasks"), href: "/tasks", icon: Workflow },
+    { label: t("nav.create"), href: "/create", icon: Plus },
+    { label: t("nav.system"), href: "/system", icon: Server },
+    { label: t("nav.settings"), href: "/settings", icon: Settings },
+  ];
+
   const health = useQuery({
     queryKey: ["deep-health"],
     queryFn: api.getDeepHealth,
     refetchInterval: 5000,
   });
   const ok = health.data?.status === "ok";
+
+  function toggleLanguage() {
+    void i18n.changeLanguage(i18n.language === "vi" ? "en" : "vi");
+  }
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.10),transparent_32rem),linear-gradient(180deg,#f8fafc,#eef4ff)] transition-colors dark:bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.16),transparent_32rem),linear-gradient(180deg,#0f172a,#111827)]">
@@ -30,8 +37,8 @@ export function AppLayout() {
             <Activity className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-sm font-semibold">Automation</div>
-            <div className="text-xs text-muted-foreground">Ecosystem</div>
+            <div className="text-sm font-semibold">{t("layout.appName")}</div>
+            <div className="text-xs text-muted-foreground">{t("layout.appSubtitle")}</div>
           </div>
         </div>
         <nav className="mt-8 space-y-1">
@@ -59,11 +66,19 @@ export function AppLayout() {
             <div className="lg:hidden">
               <div className="text-sm font-semibold">Automation Ecosystem</div>
             </div>
-            <div className="hidden text-sm text-muted-foreground lg:block">Postgres-driven orchestration dashboard</div>
+            <div className="hidden text-sm text-muted-foreground lg:block">{t("layout.tagline")}</div>
             <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 text-sm">
               <CheckCircle2 className={cn("h-4 w-4", ok ? "text-emerald-600" : "text-orange-500")} />
-              {ok ? "Healthy" : "Needs attention"}
+              {ok ? t("layout.healthy") : t("layout.needsAttention")}
             </div>
+            {/* Language switcher */}
+            <button
+              onClick={toggleLanguage}
+              title={i18n.language === "vi" ? t("language.en") : t("language.vi")}
+              className="rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted"
+            >
+              {i18n.language === "vi" ? "🇬🇧 EN" : "🇻🇳 VI"}
+            </button>
             <ThemeToggle />
           </div>
           <nav className="mt-3 flex gap-2 overflow-x-auto lg:hidden">

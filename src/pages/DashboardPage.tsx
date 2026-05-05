@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowUpRight, CheckCircle2, Clock3, XCircle } from "lucide-react";
 import { api } from "@/services/api";
@@ -13,6 +14,7 @@ import { compactId } from "@/lib/utils";
 import { useToastError } from "@/hooks/useToastError";
 
 export function DashboardPage() {
+  const { t } = useTranslation();
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.getStats, refetchInterval: 5000 });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.getJobs });
   const tasks = useQuery({ queryKey: ["tasks", "dashboard"], queryFn: () => api.getTasks(), refetchInterval: 5000 });
@@ -23,31 +25,31 @@ export function DashboardPage() {
     : 0;
   const chartData = useMemo(
     () =>
-      (tasks.data ?? []).slice(0, 12).map((task, index) => ({
+      (Array.isArray(tasks.data) ? tasks.data : []).slice(0, 12).map((_task, index) => ({
         name: `T${index + 1}`,
         tasks: index + 1,
       })),
     [tasks.data],
   );
   const pieData = [
-    { name: "Success", value: stats.data?.success ?? 0, color: "#10b981" },
-    { name: "Failed", value: stats.data?.failed ?? 0, color: "#ef4444" },
+    { name: t("dashboard.successVsFail").split(" / ")[0], value: stats.data?.success ?? 0, color: "#10b981" },
+    { name: t("dashboard.successVsFail").split(" / ")[1], value: stats.data?.failed ?? 0, color: "#ef4444" },
   ];
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Dashboard" description="A calm overview of workflows, tasks, and system health." />
+      <PageHeader title={t("dashboard.title")} description={t("dashboard.description")} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="Total jobs" value={jobs.data?.length ?? 0} icon={<ArrowUpRight className="h-4 w-4" />} loading={jobs.isLoading} />
-        <MetricCard title="Running tasks" value={stats.data?.running ?? 0} icon={<Clock3 className="h-4 w-4" />} loading={stats.isLoading} />
-        <MetricCard title="Failed tasks" value={stats.data?.failed ?? 0} icon={<XCircle className="h-4 w-4" />} loading={stats.isLoading} />
-        <MetricCard title="Success rate" value={`${successRate}%`} icon={<CheckCircle2 className="h-4 w-4" />} loading={stats.isLoading} />
+        <MetricCard title={t("dashboard.totalJobs")} value={jobs.data?.length ?? 0} icon={<ArrowUpRight className="h-4 w-4" />} loading={jobs.isLoading} />
+        <MetricCard title={t("dashboard.runningTasks")} value={stats.data?.running ?? 0} icon={<Clock3 className="h-4 w-4" />} loading={stats.isLoading} />
+        <MetricCard title={t("dashboard.failedTasks")} value={stats.data?.failed ?? 0} icon={<XCircle className="h-4 w-4" />} loading={stats.isLoading} />
+        <MetricCard title={t("dashboard.successRate")} value={`${successRate}%`} icon={<CheckCircle2 className="h-4 w-4" />} loading={stats.isLoading} />
       </div>
       <div className="grid gap-4 xl:grid-cols-[1.4fr_0.8fr]">
         <Card>
           <CardHeader>
-            <CardTitle>Tasks over time</CardTitle>
-            <CardDescription>Recent task volume from the current API window.</CardDescription>
+            <CardTitle>{t("dashboard.tasksOverTime")}</CardTitle>
+            <CardDescription>{t("dashboard.tasksOverTimeDesc")}</CardDescription>
           </CardHeader>
           <CardContent>
             {tasks.isLoading ? (
@@ -71,14 +73,14 @@ export function DashboardPage() {
                 </ResponsiveContainer>
               </div>
             ) : (
-              <EmptyState title="No task activity yet" description="Create a job to see task movement here." />
+              <EmptyState title={t("dashboard.noTaskActivity")} description={t("dashboard.noTaskActivityDesc")} />
             )}
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Success vs Fail</CardTitle>
-            <CardDescription>Outcome mix across known tasks.</CardDescription>
+            <CardTitle>{t("dashboard.successVsFail")}</CardTitle>
+            <CardDescription>{t("dashboard.successVsFailDesc")}</CardDescription>
           </CardHeader>
           <CardContent>
             {stats.isLoading ? (
@@ -103,8 +105,8 @@ export function DashboardPage() {
       <div className="grid gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>Recent activity</CardTitle>
-            <CardDescription>Latest tasks reported by the API.</CardDescription>
+            <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
+            <CardDescription>{t("dashboard.recentActivityDesc")}</CardDescription>
           </CardHeader>
           <CardContent>
             {tasks.isLoading ? (
@@ -113,7 +115,7 @@ export function DashboardPage() {
                 <Skeleton className="h-12" />
                 <Skeleton className="h-12" />
               </div>
-            ) : tasks.data?.length ? (
+            ) : Array.isArray(tasks.data) && tasks.data.length ? (
               <div className="relative space-y-3 pl-4 before:absolute before:left-1 before:top-2 before:h-[calc(100%-1rem)] before:w-px before:bg-border">
                 {tasks.data.slice(0, 6).map((task) => (
                   <div key={task.id} className="relative flex items-center justify-between rounded-lg border bg-card p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-soft">
@@ -127,7 +129,7 @@ export function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <EmptyState title="No recent activity" description="Tasks will appear here as workers process them." />
+              <EmptyState title={t("dashboard.noRecentActivity")} description={t("dashboard.noRecentActivityDesc")} />
             )}
           </CardContent>
         </Card>

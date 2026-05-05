@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from database.database import JobDetailRecord, JobRecord, SystemStatsRecord, TaskRecord, TaskStatus
 
@@ -112,6 +113,80 @@ class SystemStatsResponse(BaseModel):
     failed: int
     success: int
 
+    model_config = ConfigDict(from_attributes=True)
+
     @classmethod
     def from_record(cls, stats: SystemStatsRecord) -> "SystemStatsResponse":
         return cls.model_validate(stats)
+
+
+# ── TikTok Pipeline Schemas ───────────────────────────────────────────────────
+
+class TikTokPipelineRequest(BaseModel):
+    """
+    Request body for POST /pipelines/tiktok.
+
+    At least one of product_url or product_image_path must be provided.
+    """
+
+    product_url: str | None = Field(
+        default=None,
+        description="Public URL of the product page to extract information from.",
+    )
+    product_image_path: str | None = Field(
+        default=None,
+        description="Local absolute path to a product image file.",
+    )
+
+    # Video filtering
+    min_views: int | None = Field(
+        default=None,
+        ge=0,
+        description="Minimum view count for a TikTok video to be considered. "
+                    "Defaults to env TIKTOK_MIN_VIEWS.",
+    )
+    min_likes: int | None = Field(
+        default=None,
+        ge=0,
+        description="Minimum like count. Defaults to env TIKTOK_MIN_LIKES.",
+    )
+    min_duration: float = Field(
+        default=15.0,
+        ge=1.0,
+        description="Minimum video duration in seconds.",
+    )
+    max_duration: float = Field(
+        default=180.0,
+        le=3600.0,
+        description="Maximum video duration in seconds.",
+    )
+    top_n: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description="Number of videos to download and remix. Defaults to env TIKTOK_TOP_N.",
+    )
+
+    # Video remake
+    add_grain: bool = Field(default=True, description="Add subtle film grain to the remixed video.")
+    bgm_path: str | None = Field(
+        default=None,
+        description="Optional local path to a background music file (.mp3 / .m4a).",
+    )
+
+    # Content generation
+    comment_count: int = Field(default=3, ge=2, le=5, description="Number of comments to generate.")
+
+    # Job metadata
+    job_key: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional idempotency key — submitting the same key twice returns the existing job.",
+    )
+    priority: int = Field(default=0, description="Job dispatch priority (higher = runs sooner).")
+
+    @model_validator(mode="after")
+    def _require_product_source(self) -> "TikTokPipelineRequest":
+        if not self.product_url and not self.product_image_path:
+            raise ValueError("At least one of 'product_url' or 'product_image_path' must be provided.")
+        return self

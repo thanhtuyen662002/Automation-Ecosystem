@@ -107,7 +107,7 @@ function startBackend({ port, envFile, logFile }) {
   const args = process.env.AE_BACKEND_COMMAND
     ? parseArgs(process.env.AE_BACKEND_ARGS || "")
     : isDev
-      ? ["-m", "scripts.start_backend"]
+      ? ["-3", "-m", "scripts.start_backend"]
       : [];
 
   appendLog(`starting_backend command=${command}`);
@@ -131,7 +131,7 @@ function startBackend({ port, envFile, logFile }) {
 }
 
 function resolveBackendExecutable() {
-  if (isDev) return "python";
+  if (isDev) return "py";
   const resourcePath = process.resourcesPath;
   return path.join(resourcePath, "backend", "backend.exe");
 }

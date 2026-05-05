@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
@@ -14,14 +15,15 @@ import { compactId, formatDate } from "@/lib/utils";
 import { useToastError } from "@/hooks/useToastError";
 
 export function JobsPage() {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [sort, setSort] = useState<"newest" | "oldest" | "name">("newest");
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.getJobs });
-  useToastError(jobs.error, "Could not load jobs");
+  useToastError(jobs.error, t("jobs.errorLoad"));
   const filteredJobs = useMemo(() => {
     const normalized = search.trim().toLowerCase();
-    return [...(jobs.data ?? [])]
+    return [...(Array.isArray(jobs.data) ? jobs.data : [])]
       .filter((job) => !normalized || job.workflow_name.toLowerCase().includes(normalized) || job.id.includes(normalized))
       .filter((job) => !status || job.status === status)
       .sort((a, b) => {
@@ -35,30 +37,30 @@ export function JobsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Jobs"
-        description="Workflow runs created by the orchestration API."
+        title={t("jobs.title")}
+        description={t("jobs.description")}
         action={
           <Link
             to="/create"
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
           >
-            Create job
+            {t("jobs.createJob")}
           </Link>
         }
       />
       <div className="flex flex-wrap gap-3">
-        <Input className="w-72" placeholder="Search jobs" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <Input className="w-72" placeholder={t("jobs.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} />
         <Select value={status} onChange={(event) => setStatus(event.target.value)}>
-          <option value="">All statuses</option>
-          <option value="pending">Pending</option>
-          <option value="running">Running</option>
-          <option value="completed">Completed</option>
-          <option value="failed">Failed</option>
+          <option value="">{t("jobs.allStatuses")}</option>
+          <option value="pending">{t("jobs.pending")}</option>
+          <option value="running">{t("jobs.running")}</option>
+          <option value="completed">{t("jobs.completed")}</option>
+          <option value="failed">{t("jobs.failed")}</option>
         </Select>
         <Select value={sort} onChange={(event) => setSort(event.target.value as "newest" | "oldest" | "name")}>
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="name">Name</option>
+          <option value="newest">{t("jobs.newestFirst")}</option>
+          <option value="oldest">{t("jobs.oldestFirst")}</option>
+          <option value="name">{t("jobs.sortByName")}</option>
         </Select>
       </div>
       <Card>
@@ -73,10 +75,10 @@ export function JobsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>job_id</TableHead>
-                  <TableHead>workflow</TableHead>
-                  <TableHead>status</TableHead>
-                  <TableHead>created_at</TableHead>
+                  <TableHead>{t("jobs.colJobId")}</TableHead>
+                  <TableHead>{t("jobs.colWorkflow")}</TableHead>
+                  <TableHead>{t("jobs.colStatus")}</TableHead>
+                  <TableHead>{t("jobs.colCreatedAt")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -95,7 +97,7 @@ export function JobsPage() {
               </TableBody>
             </Table>
           ) : (
-            <EmptyState title="No jobs found" description="Try a different search, filter, or create a new workflow." />
+            <EmptyState title={t("jobs.noJobsFound")} description={t("jobs.noJobsFoundDesc")} />
           )}
         </CardContent>
       </Card>

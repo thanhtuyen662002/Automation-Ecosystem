@@ -1,0 +1,14 @@
+{
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "extraPaths": ["."],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/build",
+    "**/dist",
+    "**/backend_dist",
+    "**/*.egg-info"
+  ]
+}

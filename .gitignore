@@ -1,12 +1,175 @@
+# =============================================================================
+# SECRETS & ENVIRONMENT VARIABLES  ← CRITICAL: Never commit these
+# =============================================================================
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+.env.*.local
+!.env.example
+!.env.frontend.example
+
+# =============================================================================
+# PYTHON
+# =============================================================================
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+*.egg
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.dist-info/
+MANIFEST
+
+# Virtual environments
 .venv/
 venv/
-.env
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+nosetests.xml
+pytest.xml
+
+# Type checkers & linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyright/
+
+# PyInstaller
+*.spec
+# Keep backend.spec if you need it — remove the line above to un-ignore it
+backend_dist/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# =============================================================================
+# NODE / FRONTEND (React + Vite)
+# =============================================================================
 node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Build output
 dist/
 .vite/
+.cache/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# =============================================================================
+# ELECTRON & PACKAGING
+# =============================================================================
+release/
+build/
+backend_dist/
+
+# Electron-builder cache
+.electron-builder/
+app-builds/
+
+# =============================================================================
+# MEDIA & PIPELINE OUTPUT  ← Potentially huge; never commit raw media
+# =============================================================================
+media_output/
+bgm/
+downloads/
+tmp_videos/
+*.mp4
+*.mp3
+*.wav
+*.avi
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+# Un-ignore specific assets if needed, e.g.:
+# !src/assets/*.png
+
+# =============================================================================
+# LOGS
+# =============================================================================
+logs/
+*.log
+*.log.*
+
+# =============================================================================
+# DATABASE & MIGRATIONS (local dev artifacts)
+# =============================================================================
+*.sqlite
+*.sqlite3
+*.db
+
+# =============================================================================
+# OS & EDITOR
+# =============================================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# VSCode
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# JetBrains
+.idea/
+*.iml
+
+# =============================================================================
+# MISC
+# =============================================================================
+*.bak
+*.swp
+*.swo
+*~
+.tmp/
+tmp/

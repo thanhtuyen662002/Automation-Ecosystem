@@ -1,6 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import { EmptyState } from "@/components/EmptyState";
 import { JsonViewer } from "@/components/JsonViewer";
@@ -13,42 +14,47 @@ import { useToastError } from "@/hooks/useToastError";
 import { compactId, formatDate } from "@/lib/utils";
 
 export function JobDetailPage() {
+  const { t } = useTranslation();
   const { jobId } = useParams<{ jobId: string }>();
   const job = useQuery({
     queryKey: ["job", jobId],
     queryFn: () => api.getJob(jobId ?? ""),
     enabled: Boolean(jobId),
   });
-  useToastError(job.error, "Could not load job");
+  useToastError(job.error, t("jobDetail.errorLoad"));
 
   if (job.isLoading) return <Skeleton className="h-96" />;
-  if (!job.data) return <PageHeader title="Job not found" description="The selected workflow could not be loaded." />;
+  if (!job.data)
+    return <PageHeader title={t("jobDetail.notFound")} description={t("jobDetail.notFoundDesc")} />;
 
   return (
     <div className="space-y-6">
-      <PageHeader title={job.data.workflow_name} description={`Job ${compactId(job.data.id)} created ${formatDate(job.data.created_at)}`} />
+      <PageHeader
+        title={job.data.workflow_name}
+        description={t("jobDetail.jobCreated", { id: compactId(job.data.id), date: formatDate(job.data.created_at) })}
+      />
       <div className="grid gap-4 md:grid-cols-3">
-        <InfoCard label="Status" value={<StatusBadge status={job.data.status.toUpperCase()} />} />
-        <InfoCard label="Priority" value={job.data.priority} />
-        <InfoCard label="Tasks" value={job.data.tasks.length} />
+        <InfoCard label={t("jobDetail.labelStatus")} value={<StatusBadge status={job.data.status.toUpperCase()} />} />
+        <InfoCard label={t("jobDetail.labelPriority")} value={job.data.priority} />
+        <InfoCard label={t("jobDetail.labelTasks")} value={job.data.tasks.length} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <JsonViewer title="Workflow input preview" value={job.data.input} />
-        <JsonViewer title="Workflow metadata" value={job.data.metadata} />
+        <JsonViewer title={t("jobDetail.inputPreview")} value={job.data.input} />
+        <JsonViewer title={t("jobDetail.metadata")} value={job.data.metadata} />
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>Tasks</CardTitle>
+          <CardTitle>{t("jobDetail.tasksTitle")}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {job.data.tasks.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>task_id</TableHead>
-                  <TableHead>task_type</TableHead>
-                  <TableHead>status</TableHead>
-                  <TableHead>retry_count</TableHead>
+                  <TableHead>{t("jobDetail.colTaskId")}</TableHead>
+                  <TableHead>{t("jobDetail.colTaskType")}</TableHead>
+                  <TableHead>{t("jobDetail.colStatus")}</TableHead>
+                  <TableHead>{t("jobDetail.colRetryCount")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -65,7 +71,7 @@ export function JobDetailPage() {
               </TableBody>
             </Table>
           ) : (
-            <EmptyState title="No tasks in this job" description="This workflow does not have task records yet." />
+            <EmptyState title={t("jobDetail.noTasksInJob")} description={t("jobDetail.noTasksInJobDesc")} />
           )}
         </CardContent>
       </Card>

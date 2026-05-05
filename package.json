@@ -7,21 +7,25 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run build:frontend",
-    "build:backend": "python -m PyInstaller backend.spec --clean --noconfirm --distpath backend_dist",
+    "build:backend": "py -3 -m PyInstaller backend.spec --clean --noconfirm --distpath backend_dist",
     "build:frontend": "tsc -b && vite build",
     "build:all": "npm run build:backend && npm run build:frontend",
     "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "electron:build": "npm run build:all && electron-builder --win nsis portable"
+    "electron:build": "npm run build:all && electron-builder --win nsis portable",
+    "dist": "npm run electron:build"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.16",
     "axios": "^1.7.7",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "i18next": "^26.0.8",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-i18next": "^17.0.6",
     "react-router-dom": "^6.28.0",
     "recharts": "^2.13.3",
     "tailwind-merge": "^3.4.0"
@@ -62,7 +66,10 @@
       }
     ],
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "portable": {
       "artifactName": "Automation-Ecosystem-Portable-${version}.exe"

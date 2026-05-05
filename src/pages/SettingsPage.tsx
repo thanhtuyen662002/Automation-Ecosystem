@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import type { PolicyPreset, PolicyRuleDraft } from "@/types/api";
 import { JsonViewer } from "@/components/JsonViewer";
@@ -15,7 +16,10 @@ const presets: Record<PolicyPreset, Pick<PolicyRuleDraft, "posts_per_day" | "del
   Aggressive: { posts_per_day: 18, delay_minutes: 10 },
 };
 
+const presetKeys: PolicyPreset[] = ["Safe", "Medium", "Aggressive"];
+
 export function SettingsPage() {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<PolicyRuleDraft>({
     preset: "Safe",
     action_type: "post",
@@ -24,18 +28,24 @@ export function SettingsPage() {
   });
   const payload = useMemo(() => api.buildPolicyRulePayload(draft), [draft]);
 
+  const presetLabels: Record<PolicyPreset, string> = {
+    Safe: t("settings.presetSafe"),
+    Medium: t("settings.presetMedium"),
+    Aggressive: t("settings.presetAggressive"),
+  };
+
   function applyPreset(preset: PolicyPreset) {
     setDraft((current) => ({ ...current, preset, ...presets[preset] }));
   }
 
   function savePolicy() {
     window.localStorage.setItem("automation-policy-rule-draft", JSON.stringify(payload));
-    toast({ title: "Policy draft saved", description: "The policy_rules payload is ready for backend persistence." });
+    toast({ title: t("settings.policySaved"), description: t("settings.policySavedDesc") });
   }
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Settings" description="Policy Rules for safer, more predictable account behavior." />
+      <PageHeader title={t("settings.title")} description={t("settings.description")} />
       <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
         <Card className="shadow-soft">
           <CardHeader>
@@ -44,14 +54,14 @@ export function SettingsPage() {
                 <ShieldCheck className="h-5 w-5" />
               </div>
               <div>
-                <CardTitle>Posting policy</CardTitle>
-                <CardDescription>Choose a preset, then fine-tune limits.</CardDescription>
+                <CardTitle>{t("settings.postingPolicy")}</CardTitle>
+                <CardDescription>{t("settings.postingPolicyDesc")}</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="grid gap-3 sm:grid-cols-3">
-              {(Object.keys(presets) as PolicyPreset[]).map((preset) => (
+              {presetKeys.map((preset) => (
                 <button
                   key={preset}
                   onClick={() => applyPreset(preset)}
@@ -59,25 +69,25 @@ export function SettingsPage() {
                     draft.preset === preset ? "border-primary bg-blue-50 text-blue-950 dark:bg-blue-950/30 dark:text-blue-100" : "bg-card"
                   }`}
                 >
-                  <div className="font-medium">{preset}</div>
+                  <div className="font-medium">{presetLabels[preset]}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {presets[preset].posts_per_day}/day • {presets[preset].delay_minutes}m delay
+                    {t("settings.perDay", { n: presets[preset].posts_per_day })} • {t("settings.minDelay", { n: presets[preset].delay_minutes })}
                   </div>
                 </button>
               ))}
             </div>
             <label className="block space-y-2">
-              <span className="text-sm font-medium">Action type</span>
+              <span className="text-sm font-medium">{t("settings.labelActionType")}</span>
               <Select value={draft.action_type} onChange={(event) => setDraft((current) => ({ ...current, action_type: event.target.value }))}>
-                <option value="post">Post</option>
-                <option value="comment">Comment</option>
-                <option value="follow">Follow</option>
-                <option value="message">Message</option>
+                <option value="post">{t("settings.actionPost")}</option>
+                <option value="comment">{t("settings.actionComment")}</option>
+                <option value="follow">{t("settings.actionFollow")}</option>
+                <option value="message">{t("settings.actionMessage")}</option>
               </Select>
             </label>
-            <Slider label="Posts per day" min={1} max={30} value={draft.posts_per_day} onChange={(value) => setDraft((current) => ({ ...current, posts_per_day: value }))} />
-            <Slider label="Delay between actions" suffix="min" min={5} max={180} value={draft.delay_minutes} onChange={(value) => setDraft((current) => ({ ...current, delay_minutes: value }))} />
-            <Button onClick={savePolicy}>Save policy draft</Button>
+            <Slider label={t("settings.labelPostsPerDay")} min={1} max={30} value={draft.posts_per_day} onChange={(value) => setDraft((current) => ({ ...current, posts_per_day: value }))} />
+            <Slider label={t("settings.labelDelay")} suffix={t("settings.suffixMin")} min={5} max={180} value={draft.delay_minutes} onChange={(value) => setDraft((current) => ({ ...current, delay_minutes: value }))} />
+            <Button onClick={savePolicy}>{t("settings.savePolicy")}</Button>
           </CardContent>
         </Card>
         <JsonViewer title="policy_rules payload" value={payload} />

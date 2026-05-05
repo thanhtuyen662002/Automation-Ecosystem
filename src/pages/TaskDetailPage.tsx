@@ -2,6 +2,7 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import { JsonViewer } from "@/components/JsonViewer";
 import { PageHeader } from "@/components/PageHeader";
@@ -13,6 +14,7 @@ import { useToastError } from "@/hooks/useToastError";
 import { compactId } from "@/lib/utils";
 
 export function TaskDetailPage() {
+  const { t } = useTranslation();
   const { taskId } = useParams<{ taskId: string }>();
   const [tab, setTab] = useState<"payload" | "result" | "error" | "executions">("payload");
   const task = useQuery({
@@ -21,42 +23,45 @@ export function TaskDetailPage() {
     enabled: Boolean(taskId),
     refetchInterval: 5000,
   });
-  useToastError(task.error, "Could not load task");
+  useToastError(task.error, t("taskDetail.errorLoad"));
 
   if (task.isLoading) {
     return <Skeleton className="h-96" />;
   }
   if (!task.data) {
-    return <PageHeader title="Task not found" description="The selected task could not be loaded." />;
+    return <PageHeader title={t("taskDetail.notFound")} description={t("taskDetail.notFoundDesc")} />;
   }
 
   return (
     <div className="space-y-6">
-      <PageHeader title={`Task ${compactId(task.data.id)}`} description="Payload, result, retry state, and execution notes." />
+      <PageHeader
+        title={t("taskDetail.title", { id: compactId(task.data.id) })}
+        description={t("taskDetail.description")}
+      />
       <div className="grid gap-4 md:grid-cols-4">
-        <InfoCard label="Status" value={<StatusBadge status={task.data.status} />} />
-        <InfoCard label="Task type" value={task.data.task_type} />
-        <InfoCard label="Retry count" value={`${task.data.retry_count} / ${task.data.max_retries}`} />
-        <InfoCard label="Job" value={compactId(task.data.job_id)} />
+        <InfoCard label={t("taskDetail.labelStatus")} value={<StatusBadge status={task.data.status} />} />
+        <InfoCard label={t("taskDetail.labelTaskType")} value={task.data.task_type} />
+        <InfoCard label={t("taskDetail.labelRetryCount")} value={`${task.data.retry_count} / ${task.data.max_retries}`} />
+        <InfoCard label={t("taskDetail.labelJob")} value={compactId(task.data.job_id)} />
       </div>
       <Tabs>
         <TabsList>
-          <TabsTrigger active={tab === "payload"} onClick={() => setTab("payload")}>Payload</TabsTrigger>
-          <TabsTrigger active={tab === "result"} onClick={() => setTab("result")}>Result</TabsTrigger>
-          <TabsTrigger active={tab === "error"} onClick={() => setTab("error")}>Error</TabsTrigger>
-          <TabsTrigger active={tab === "executions"} onClick={() => setTab("executions")}>Executions</TabsTrigger>
+          <TabsTrigger active={tab === "payload"} onClick={() => setTab("payload")}>{t("taskDetail.tabPayload")}</TabsTrigger>
+          <TabsTrigger active={tab === "result"} onClick={() => setTab("result")}>{t("taskDetail.tabResult")}</TabsTrigger>
+          <TabsTrigger active={tab === "error"} onClick={() => setTab("error")}>{t("taskDetail.tabError")}</TabsTrigger>
+          <TabsTrigger active={tab === "executions"} onClick={() => setTab("executions")}>{t("taskDetail.tabExecutions")}</TabsTrigger>
         </TabsList>
-        {tab === "payload" ? <JsonViewer title="Payload" value={task.data.payload} /> : null}
-        {tab === "result" ? <JsonViewer title="Result" value={task.data.result ?? {}} /> : null}
-        {tab === "error" ? <JsonViewer title="Error" value={{ error_type: task.data.error_type, error_message: task.data.error_message }} /> : null}
+        {tab === "payload" ? <JsonViewer title={t("taskDetail.tabPayload")} value={task.data.payload} /> : null}
+        {tab === "result" ? <JsonViewer title={t("taskDetail.tabResult")} value={task.data.result ?? {}} /> : null}
+        {tab === "error" ? <JsonViewer title={t("taskDetail.tabError")} value={{ error_type: task.data.error_type, error_message: task.data.error_message }} /> : null}
         {tab === "executions" ? (
           <Card>
             <CardHeader>
-              <CardTitle>Execution history</CardTitle>
+              <CardTitle>{t("taskDetail.executionHistory")}</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                Execution history is stored in Postgres under task_executions. The current API does not expose a read endpoint for it yet.
+                {t("taskDetail.executionHistoryNote")}
               </p>
             </CardContent>
           </Card>

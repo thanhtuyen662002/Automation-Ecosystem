@@ -13,6 +13,10 @@ from database.database import TaskStatus
 LOGGER = logging.getLogger("api.tasks")
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+@router.get("/schemas")
+async def get_task_schemas() -> dict:
+    from core.task_schemas import TASK_SCHEMAS
+    return TASK_SCHEMAS
 
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: UUID, database: DatabaseDependency) -> TaskResponse:

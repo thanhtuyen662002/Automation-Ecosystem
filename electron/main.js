@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV === "development" || process.env.ELECTRON_RENDERER_URL;
 
+// Enforce standard AppData path for the ecosystem
+app.setPath("userData", path.join(app.getPath("appData"), "Automation-Ecosystem"));
+
 let backendProcess = null;
 let mainWindow = null;
 let splashWindow = null;
@@ -107,7 +110,7 @@ function startBackend({ port, envFile, logFile }) {
   const args = process.env.AE_BACKEND_COMMAND
     ? parseArgs(process.env.AE_BACKEND_ARGS || "")
     : isDev
-      ? ["-3", "-m", "scripts.start_backend"]
+      ? ["-3", path.join(app.getAppPath(), "scripts", "start_backend.py")]
       : [];
 
   appendLog(`starting_backend command=${command}`);
@@ -148,7 +151,7 @@ function ensureProductionEnv(userData) {
     fs.writeFileSync(
       envPath,
       [
-        "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/automation",
+        `DATABASE_URL=sqlite+aiosqlite:///${path.join(userData, "data", "app.db").replace(/\\/g, "/")}`,
         "WORKER_ID=desktop-worker-1",
         "WORKER_MAX_CONCURRENCY=4",
         "WORKER_BATCH_SIZE=10",

@@ -78,6 +78,12 @@ class TaskRegistry:
 class UnknownTaskTypeError(RuntimeError):
     pass
 
+class RetryableDependencyError(Exception):
+    pass
+
+class FatalDependencyError(Exception):
+    pass
+
 
 class WorkerRuntime:
     def __init__(
@@ -180,7 +186,26 @@ class WorkerRuntime:
         try:
             handler = self.registry.get(acquired_task.task.task_type)
             async with asyncio.timeout(self.settings.task_timeout_seconds):
-                result = await _call_handler(handler, acquired_task.task.payload)
+                cache: dict[tuple[str, str], dict] = {}
+                resolved_payload = await self._resolve_payload(
+                    acquired_task.task.payload,
+                    str(acquired_task.task.job_id),
+                    cache=cache
+                )
+                if acquired_task.task.task_type.startswith("publish_"):
+                    account_id = resolved_payload.get("account_id")
+                    if account_id:
+                        async with self.database.connection() as conn:
+                            cursor = await conn.execute("SELECT platform, account_handle, proxy_url FROM accounts WHERE id = ?", (str(account_id),))
+                            row = await cursor.fetchone()
+                            if not row:
+                                raise FatalDependencyError(f"Account '{account_id}' not found at runtime")
+                            resolved_payload["_account"] = {
+                                "platform": row["platform"],
+                                "account_handle": row["account_handle"],
+                                "proxy": row["proxy_url"],
+                            }
+                result = await _call_handler(handler, resolved_payload)
             safe_result = _ensure_json_object(result)
             await self.database.mark_task_success(
                 acquired_task.task.id,
@@ -196,6 +221,25 @@ class WorkerRuntime:
                 status="success",
                 duration_ms=_duration_ms(started_at),
             )
+        except RetryableDependencyError as exc:
+            retry_count = acquired_task.task.retry_count
+            delay = min(
+                self.settings.retry_base_delay_seconds * (2 ** retry_count),
+                self.settings.retry_max_delay_seconds
+            )
+            await self.database.mark_task_for_retry(
+                task_id=str(acquired_task.task.id),
+                execution_id=str(acquired_task.execution.id),
+                error=exc,
+                delay_seconds=delay
+            )
+        except FatalDependencyError as exc:
+            await self.database.mark_task_failure(
+                acquired_task.task.id,
+                acquired_task.execution.id,
+                exc,
+                timed_out=False
+            )
         except asyncio.TimeoutError as exc:
             await self._mark_failed_safely(acquired_task, exc, timed_out=True, started_at=started_at)
         except Exception as exc:
@@ -203,6 +247,65 @@ class WorkerRuntime:
         finally:
             heartbeat_stop.set()
             await _await_safely(heartbeat_task)
+
+    async def _resolve_payload(self, payload: Any, job_id: str, cache: dict) -> dict:
+        needed_keys = set()
+        def _scan(obj: Any) -> None:
+            if isinstance(obj, dict):
+                if "from_task" in obj and "field" in obj:
+                    needed_keys.add(obj["from_task"])
+                for v in obj.values():
+                    _scan(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _scan(item)
+                    
+        _scan(payload)
+        
+        keys_to_fetch = [k for k in needed_keys if (job_id, k) not in cache]
+        if keys_to_fetch:
+            results = await self.database.get_task_results_bulk(job_id, keys_to_fetch)
+            missing_keys = set(keys_to_fetch) - set(results.keys())
+            if missing_keys:
+                raise FatalDependencyError(f"Missing dependency tasks: {missing_keys}")
+            for k, state in results.items():
+                cache[(job_id, k)] = state
+                
+        async def _resolve(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                if "from_task" in obj and "field" in obj:
+                    task_key = obj["from_task"]
+                    field = obj["field"]
+                    
+                    state = cache.get((job_id, task_key))
+                    if not state:
+                        raise ValueError(f"Task '{task_key}' missing from bulk fetch results")
+                        
+                    status, result = state["status"], state["result"]
+                    
+                    if status == "SUCCESS":
+                        if not result or field not in result:
+                            import json
+                            raise FatalDependencyError(json.dumps({
+                                "error_type": "INVALID_DEPENDENCY_FIELD",
+                                "task_key": task_key,
+                                "field": field
+                            }))
+                        return result[field]
+                    elif status == "FAILED":
+                        raise FatalDependencyError(f"Dependency task '{task_key}' failed permanently.")
+                    else:
+                        raise RetryableDependencyError(f"Dependency task '{task_key}' is not ready (status: {status}).")
+
+                return {k: await _resolve(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [await _resolve(item) for item in obj]
+            return obj
+            
+        resolved = await _resolve(payload)
+        if not isinstance(resolved, dict):
+            raise TypeError("Resolved payload must be a JSON object")
+        return resolved
 
     async def _mark_failed_safely(
         self,

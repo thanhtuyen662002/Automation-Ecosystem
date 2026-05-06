@@ -5,6 +5,7 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
+    "clean": "npx rimraf dist backend_dist build release tmp node_modules && Get-ChildItem -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue",
     "dev": "vite",
     "build": "npm run build:frontend",
     "build:backend": "py -3 -m PyInstaller backend.spec --clean --noconfirm --distpath backend_dist",

@@ -34,11 +34,21 @@ class BackendSettings:
 
     @classmethod
     def load(cls) -> "BackendSettings":
-        base_dir = _base_dir()
-        env_path = Path(os.getenv("AE_ENV_FILE", base_dir / ".env.production"))
+        env_path = Path(os.getenv("AE_ENV_FILE", _get_appdata_dir() / ".env.production"))
         _ensure_env_file(env_path)
         _load_env(env_path)
-        log_path = Path(os.getenv("AE_LOG_FILE", base_dir / "logs" / "app.log"))
+        
+        db_path = os.getenv("DATABASE_PATH")
+        if not db_path:
+            db_path = str(_get_appdata_dir() / "data" / "app.db")
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Override DATABASE_URL if it's the old postgres default or not set
+        current_db_url = os.environ.get("DATABASE_URL", "")
+        if not current_db_url or "postgresql" in current_db_url:
+            os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+
+        log_path = Path(os.getenv("AE_LOG_FILE", _get_appdata_dir() / "logs" / "app.log"))
         return cls(
             host=os.getenv("API_HOST", "127.0.0.1"),
             port=_int_env("APP_PORT", _int_env("API_PORT", 8000, 1), 1),
@@ -74,6 +84,17 @@ async def main() -> None:
         ),
     )
     await scheduler_database.open()
+    
+    schema_path = _base_dir() / "database" / "schema.sql"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        schema_path = Path(sys._MEIPASS) / "database" / "schema.sql"
+    if schema_path.exists():
+        async with scheduler_database.connection() as conn:
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
+            if not await cursor.fetchone():
+                await scheduler_database.init_schema(str(schema_path))
+    else:
+        LOGGER.warning("schema_not_found", extra={"path": str(schema_path)})
     scheduler = AutoDispatchScheduler(
         WorkflowManager(scheduler_database, worker_id=os.getenv("SCHEDULER_WORKER_ID", "desktop-scheduler")),
         scheduler_settings,
@@ -128,6 +149,14 @@ def _base_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _get_appdata_dir() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Automation-Ecosystem"
+    return Path.home() / ".automation-ecosystem"
+
+
 def _ensure_env_file(path: Path) -> None:
     if path.exists():
         return
@@ -135,7 +164,7 @@ def _ensure_env_file(path: Path) -> None:
     path.write_text(
         "\n".join(
             [
-                "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/automation",
+                f"DATABASE_URL=sqlite+aiosqlite:///{str(_get_appdata_dir() / 'data' / 'app.db')}",
                 "WORKER_ID=desktop-worker-1",
                 "WORKER_MAX_CONCURRENCY=4",
                 "WORKER_BATCH_SIZE=10",

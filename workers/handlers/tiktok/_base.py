@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,16 @@ def get_bgm_dir() -> Path | None:
     return Path(raw).expanduser().resolve()
 
 
+def get_flip_chance() -> float:
+    """Return the per-clip horizontal-flip probability (env TIKTOK_FLIP_CHANCE, default 0.30)."""
+    raw = os.environ.get("TIKTOK_FLIP_CHANCE", "0.30").strip()
+    try:
+        val = float(raw)
+    except ValueError:
+        val = 0.30
+    return max(0.0, min(1.0, val))
+
+
 # ── Anti-abuse jitter ─────────────────────────────────────────────────────────
 
 async def random_jitter(min_seconds: float = 1.0, max_seconds: float = 5.0) -> None:
@@ -55,6 +66,21 @@ async def random_jitter(min_seconds: float = 1.0, max_seconds: float = 5.0) -> N
     delay = random.uniform(min_seconds, max_seconds)
     LOGGER.debug("anti_abuse_jitter", extra={"event": "jitter_sleep", "delay_seconds": round(delay, 2)})
     await asyncio.sleep(delay)
+
+
+# ── Per-job random seed ───────────────────────────────────────────────────────
+
+def random_seed() -> int:
+    """
+    Generate a unique per-job seed that combines system randomness with the
+    current millisecond timestamp to guarantee varied outputs across rapid
+    successive runs.
+    """
+    ts_ms = int(time.monotonic() * 1000) & 0xFFFFFF  # 24-bit monotonic slice
+    rand_part = random.randint(0, 0xFFFFFF)
+    seed = ts_ms ^ rand_part
+    LOGGER.debug("random_seed_generated", extra={"event": "random_seed_generated", "seed": seed})
+    return seed
 
 
 # ── Subprocess helpers ────────────────────────────────────────────────────────

@@ -1,136 +1,136 @@
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 CREATE TABLE jobs (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_key text UNIQUE,
-    workflow_name text NOT NULL,
-    status text NOT NULL DEFAULT 'pending'
+    id TEXT PRIMARY KEY,
+    job_key TEXT UNIQUE,
+    workflow_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'running', 'completed', 'failed')),
-    priority integer NOT NULL DEFAULT 0,
-    input jsonb NOT NULL DEFAULT '{}'::jsonb,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-    error_type text,
-    error_message text,
-    started_at timestamptz,
-    completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    priority INTEGER NOT NULL DEFAULT 0,
+    input TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    error_type TEXT,
+    error_message TEXT,
+    started_at DATETIME,
+    completed_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE accounts (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    platform text NOT NULL,
-    account_handle text NOT NULL,
-    status text NOT NULL DEFAULT 'healthy'
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    account_handle TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'healthy'
         CHECK (status IN ('healthy', 'limited', 'banned', 'disabled')),
-    proxy_url text,
-    rate_limit_config jsonb NOT NULL DEFAULT '{}'::jsonb,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-    last_used_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    proxy_url TEXT,
+    rate_limit_config TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    last_used_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (platform, account_handle)
 );
 
 CREATE TABLE tasks (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    parent_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL,
-    account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
-    task_type text NOT NULL,
-    action_type text,
-    status text NOT NULL DEFAULT 'PENDING'
+    id TEXT PRIMARY KEY,
+    task_key TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    parent_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    task_type TEXT NOT NULL,
+    action_type TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING'
         CHECK (status IN ('PENDING', 'READY', 'RUNNING', 'RETRY', 'SUCCESS', 'FAILED', 'CANCELED')),
-    priority integer NOT NULL DEFAULT 0,
-    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    result jsonb,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-    retry_count integer NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
-    max_retries integer NOT NULL DEFAULT 3 CHECK (max_retries >= 1),
-    next_run_at timestamptz NOT NULL DEFAULT now(),
-    next_retry_at timestamptz,
-    idempotency_key text,
-    error_type text,
-    error_message text,
-    completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (parent_task_id IS NULL OR parent_task_id <> id)
+    priority INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL DEFAULT '{}',
+    result TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    max_retries INTEGER NOT NULL DEFAULT 3 CHECK (max_retries >= 1),
+    next_run_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    next_retry_at DATETIME,
+    idempotency_key TEXT,
+    error_type TEXT,
+    error_message TEXT,
+    completed_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (parent_task_id IS NULL OR parent_task_id <> id),
+    UNIQUE (job_id, task_key)
 );
 
 CREATE TABLE task_executions (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    worker_id text NOT NULL CHECK (length(worker_id) > 0),
-    attempt_number integer NOT NULL CHECK (attempt_number >= 1),
-    status text NOT NULL DEFAULT 'running'
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    worker_id TEXT NOT NULL CHECK (length(worker_id) > 0),
+    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+    status TEXT NOT NULL DEFAULT 'running'
         CHECK (status IN ('running', 'succeeded', 'failed', 'timed_out')),
-    heartbeat_at timestamptz NOT NULL DEFAULT now(),
-    lease_expires_at timestamptz NOT NULL,
-    started_at timestamptz NOT NULL DEFAULT now(),
-    completed_at timestamptz,
-    result jsonb,
-    error_type text,
-    error_message text,
-    created_at timestamptz NOT NULL DEFAULT now(),
+    heartbeat_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_expires_at DATETIME NOT NULL,
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    result TEXT,
+    error_type TEXT,
+    error_message TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (task_id, attempt_number)
 );
 
 CREATE TABLE task_dependencies (
-    task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    depends_on_task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (task_id, depends_on_task_id),
     CHECK (task_id <> depends_on_task_id)
 );
 
 CREATE TABLE policy_rules (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id uuid REFERENCES accounts(id) ON DELETE CASCADE,
-    platform text,
-    action_type text NOT NULL,
-    rule_name text NOT NULL,
-    enabled boolean NOT NULL DEFAULT true,
-    config jsonb NOT NULL DEFAULT '{}'::jsonb,
-    cooldown_seconds integer NOT NULL DEFAULT 0 CHECK (cooldown_seconds >= 0),
-    max_actions integer CHECK (max_actions IS NULL OR max_actions >= 0),
-    window_seconds integer CHECK (window_seconds IS NULL OR window_seconds > 0),
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    id TEXT PRIMARY KEY,
+    account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+    platform TEXT,
+    action_type TEXT NOT NULL,
+    rule_name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config TEXT NOT NULL DEFAULT '{}',
+    cooldown_seconds INTEGER NOT NULL DEFAULT 0 CHECK (cooldown_seconds >= 0),
+    max_actions INTEGER CHECK (max_actions IS NULL OR max_actions >= 0),
+    window_seconds INTEGER CHECK (window_seconds IS NULL OR window_seconds > 0),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (account_id, platform, action_type, rule_name)
 );
 
 CREATE TABLE action_logs (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id uuid REFERENCES jobs(id) ON DELETE SET NULL,
-    task_id uuid REFERENCES tasks(id) ON DELETE SET NULL,
-    execution_id uuid REFERENCES task_executions(id) ON DELETE SET NULL,
-    account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
-    platform text,
-    action_type text NOT NULL,
-    status text NOT NULL
+    id TEXT PRIMARY KEY,
+    job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    execution_id TEXT REFERENCES task_executions(id) ON DELETE SET NULL,
+    account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    platform TEXT,
+    action_type TEXT NOT NULL,
+    status TEXT NOT NULL
         CHECK (status IN ('attempted', 'succeeded', 'failed', 'blocked', 'skipped')),
-    request jsonb NOT NULL DEFAULT '{}'::jsonb,
-    response jsonb,
-    error_type text,
-    error_message text,
-    duration_ms integer CHECK (duration_ms IS NULL OR duration_ms >= 0),
-    created_at timestamptz NOT NULL DEFAULT now()
+    request TEXT NOT NULL DEFAULT '{}',
+    response TEXT,
+    error_type TEXT,
+    error_message TEXT,
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE artifacts (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id uuid REFERENCES jobs(id) ON DELETE CASCADE,
-    task_id uuid REFERENCES tasks(id) ON DELETE CASCADE,
-    execution_id uuid REFERENCES task_executions(id) ON DELETE SET NULL,
-    artifact_type text NOT NULL
+    id TEXT PRIMARY KEY,
+    job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+    execution_id TEXT REFERENCES task_executions(id) ON DELETE SET NULL,
+    artifact_type TEXT NOT NULL
         CHECK (artifact_type IN ('video', 'image', 'audio', 'metadata', 'file', 'log')),
-    storage_uri text NOT NULL,
-    mime_type text,
-    size_bytes bigint CHECK (size_bytes IS NULL OR size_bytes >= 0),
-    checksum text,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT now()
+    storage_uri TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
+    checksum TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX tasks_idempotency_key_uidx
@@ -208,3 +208,28 @@ CREATE INDEX artifacts_checksum_idx
     ON artifacts (checksum)
     WHERE checksum IS NOT NULL;
 
+CREATE TABLE video_metrics (
+    id TEXT PRIMARY KEY,
+    video_id TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0,
+    likes INTEGER NOT NULL DEFAULT 0,
+    comments INTEGER NOT NULL DEFAULT 0,
+    shares INTEGER NOT NULL DEFAULT 0,
+    watch_time REAL,
+    retention_rate REAL,
+    hook_text TEXT,
+    template_type TEXT,
+    video_length REAL,
+    effect_types TEXT,
+    keyword TEXT,
+    product_type TEXT,
+    posted_at DATETIME NOT NULL,
+    collected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    view_velocity REAL NOT NULL DEFAULT 0.0,
+    performance_score REAL NOT NULL DEFAULT 0.0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX video_metrics_video_id_idx ON video_metrics (video_id);
+CREATE INDEX video_metrics_collected_at_idx ON video_metrics (collected_at DESC);
+CREATE INDEX video_metrics_keyword_idx ON video_metrics (keyword);

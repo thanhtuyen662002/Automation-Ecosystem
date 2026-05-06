@@ -19,27 +19,31 @@ export function SystemHealthPage() {
       <PageHeader title={t("system.title")} description={t("system.description")} />
       {health.isLoading ? (
         <Skeleton className="h-48" />
+      ) : health.isError || !health.data ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-6 text-center text-sm text-destructive">
+          {t("system.errorLoad")}
+        </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-3">
           <HealthCard
             icon={<Database className="h-5 w-5" />}
             title={t("system.database")}
-            ok={Boolean(health.data?.database.ok)}
-            detail={health.data?.database.error ?? t("system.dbConnectionOk")}
+            ok={Boolean(health.data.database?.ok)}
+            detail={health.data.database?.error ?? t("system.dbConnectionOk")}
             heartbeat={t("system.heartbeatDb")}
           />
           <HealthCard
             icon={<Server className="h-5 w-5" />}
             title={t("system.worker")}
-            ok={Boolean(health.data?.worker.running)}
-            detail={health.data?.worker.running ? t("system.workerActive") : t("system.workerInactive")}
+            ok={Boolean(health.data.worker?.running)}
+            detail={health.data.worker?.running ? t("system.workerActive") : t("system.workerInactive")}
             heartbeat={t("system.heartbeatWorker")}
           />
           <HealthCard
             icon={<Workflow className="h-5 w-5" />}
             title={t("system.scheduler")}
-            ok={Boolean(health.data?.scheduler.running)}
-            detail={health.data?.scheduler.running ? t("system.schedulerActive") : t("system.schedulerInactive")}
+            ok={Boolean(health.data.scheduler?.running)}
+            detail={health.data.scheduler?.running ? t("system.schedulerActive") : t("system.schedulerInactive")}
             heartbeat={t("system.heartbeatScheduler")}
           />
         </div>

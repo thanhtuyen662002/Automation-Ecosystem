@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Eye, EyeOff, KeyRound, Save, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
 import type { PolicyPreset, PolicyRuleDraft } from "@/types/api";
@@ -18,8 +18,50 @@ const presets: Record<PolicyPreset, Pick<PolicyRuleDraft, "posts_per_day" | "del
 
 const presetKeys: PolicyPreset[] = ["Safe", "Medium", "Aggressive"];
 
+const LS_API_KEYS = "automation-api-keys";
+
+type ApiKeys = {
+  gemini: string;
+  huggingface: string;
+  openai: string;
+};
+
+function loadApiKeys(): ApiKeys {
+  try {
+    const raw = localStorage.getItem(LS_API_KEYS);
+    if (raw) return { gemini: "", huggingface: "", openai: "", ...JSON.parse(raw) };
+  } catch {
+    // ignore
+  }
+  return { gemini: "", huggingface: "", openai: "" };
+}
+
 export function SettingsPage() {
   const { t } = useTranslation();
+
+  // ── API Keys state ─────────────────────────────────────────────────────────
+  const [apiKeys, setApiKeys] = useState<ApiKeys>(loadApiKeys);
+  const [showKeys, setShowKeys] = useState<Record<keyof ApiKeys, boolean>>({
+    gemini: false,
+    huggingface: false,
+    openai: false,
+  });
+
+  useEffect(() => {
+    const saved = loadApiKeys();
+    setApiKeys(saved);
+  }, []);
+
+  function saveApiKeys() {
+    localStorage.setItem(LS_API_KEYS, JSON.stringify(apiKeys));
+    toast({ title: t("settings.apiKeysSaved"), description: t("settings.apiKeysSavedDesc") });
+  }
+
+  function toggleShow(key: keyof ApiKeys) {
+    setShowKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  // ── Policy state ───────────────────────────────────────────────────────────
   const [draft, setDraft] = useState<PolicyRuleDraft>({
     preset: "Safe",
     action_type: "post",
@@ -46,6 +88,63 @@ export function SettingsPage() {
   return (
     <div className="space-y-6">
       <PageHeader title={t("settings.title")} description={t("settings.description")} />
+
+      {/* ── API Keys ──────────────────────────────────────────────────────────── */}
+      <Card className="shadow-soft">
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 place-items-center rounded-lg bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">
+              <KeyRound className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle>{t("settings.apiKeysTitle")}</CardTitle>
+              <CardDescription>{t("settings.apiKeysDesc")}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {([
+            { key: "gemini" as const,      label: t("settings.keyGemini"),      placeholder: "AIza..." },
+            { key: "huggingface" as const, label: t("settings.keyHuggingFace"), placeholder: "hf_..." },
+            { key: "openai" as const,      label: t("settings.keyOpenAI"),      placeholder: "sk-..." },
+          ] satisfies { key: keyof ApiKeys; label: string; placeholder: string }[]).map(({ key, label, placeholder }) => (
+            <label key={key} className="block space-y-1.5">
+              <span className="text-sm font-medium">{label}</span>
+              <div className="relative flex items-center">
+                <input
+                  id={`api-key-${key}`}
+                  type={showKeys[key] ? "text" : "password"}
+                  value={apiKeys[key]}
+                  onChange={(e) => setApiKeys((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder={placeholder}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 font-mono text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleShow(key)}
+                  className="absolute right-2.5 text-muted-foreground hover:text-foreground transition"
+                  aria-label={showKeys[key] ? t("settings.hideKey") : t("settings.showKey")}
+                >
+                  {showKeys[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </label>
+          ))}
+          <div className="pt-1">
+            <Button id="save-api-keys-btn" onClick={saveApiKeys} className="flex items-center gap-2">
+              <Save className="h-4 w-4" />
+              {t("settings.saveApiKeys")}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.apiKeysNote")}
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* ── Posting policy ────────────────────────────────────────────────────── */}
       <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
         <Card className="shadow-soft">
           <CardHeader>

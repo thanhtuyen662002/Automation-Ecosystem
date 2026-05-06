@@ -9,11 +9,11 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from psycopg.errors import UniqueViolation
+import sqlite3
 from pythonjsonlogger import jsonlogger
 
 from api.dependencies import ApiSettings
-from api.routes import jobs, system, tasks, tiktok
+from api.routes import jobs, system, tasks, tiktok, analytics
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import (
@@ -88,6 +88,7 @@ app.include_router(jobs.router)
 app.include_router(tasks.router)
 app.include_router(system.router)
 app.include_router(tiktok.router)
+app.include_router(analytics.router)
 
 
 @app.middleware("http")
@@ -141,8 +142,8 @@ async def validation_error_handler(_request: Request, exc: ValidationError) -> J
     return _error_response(400, exc)
 
 
-@app.exception_handler(UniqueViolation)
-async def unique_violation_handler(_request: Request, exc: UniqueViolation) -> JSONResponse:
+@app.exception_handler(sqlite3.IntegrityError)
+async def unique_violation_handler(_request: Request, exc: sqlite3.IntegrityError) -> JSONResponse:
     return JSONResponse(
         status_code=409,
         content={

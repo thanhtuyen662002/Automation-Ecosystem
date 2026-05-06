@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
-from database.database import AcquiredTask, AutomationDatabase, TaskRecord, TaskStatus
+from database.database import AcquiredTask, AutomationDatabase, TaskRecord, TaskStatus, _from_json
 
 
 LOGGER = logging.getLogger("core.workflow_manager")
@@ -49,41 +49,53 @@ class WorkflowManager:
         if limit < 1:
             raise ValueError("limit must be >= 1")
         async with self._database.connection() as conn:
-            async with conn.transaction():
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
                 result = await conn.execute(
                     """
-                    WITH candidates AS (
-                        SELECT t.id
-                        FROM tasks t
-                        WHERE (
-                              (t.status = 'PENDING' AND t.next_run_at <= now())
-                              OR (t.status = 'RETRY' AND t.next_retry_at <= now())
-                          )
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM task_dependencies dep
-                              JOIN tasks parent ON parent.id = dep.depends_on_task_id
-                              WHERE dep.task_id = t.id
-                                AND parent.status <> 'SUCCESS'
-                          )
-                        ORDER BY t.priority DESC,
-                                 COALESCE(t.next_retry_at, t.next_run_at) ASC,
-                                 t.created_at ASC
-                        LIMIT %s
-                        FOR UPDATE OF t SKIP LOCKED
-                    )
-                    UPDATE tasks AS task
-                    SET status = 'READY',
-                        updated_at = now()
-                    FROM candidates
-                    WHERE task.id = candidates.id
-                      AND task.status IN ('PENDING', 'RETRY')
-                    RETURNING task.*
+                    SELECT t.id
+                    FROM tasks t
+                    WHERE (
+                          (t.status = 'PENDING' AND t.next_run_at <= CURRENT_TIMESTAMP)
+                          OR (t.status = 'RETRY' AND t.next_retry_at <= CURRENT_TIMESTAMP)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM task_dependencies dep
+                          JOIN tasks parent ON parent.id = dep.depends_on_task_id
+                          WHERE dep.task_id = t.id
+                            AND parent.status <> 'SUCCESS'
+                      )
+                    ORDER BY t.priority DESC,
+                             COALESCE(t.next_retry_at, t.next_run_at) ASC,
+                             t.created_at ASC
+                    LIMIT ?
                     """,
                     (limit,),
                 )
                 rows = await result.fetchall()
-        promoted = [_task_from_row(row) for row in rows]
+                task_ids = [row["id"] for row in rows]
+                promoted = []
+                if task_ids:
+                    placeholders = ",".join("?" for _ in task_ids)
+                    await conn.execute(
+                        f"""
+                        UPDATE tasks
+                        SET status = 'READY',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id IN ({placeholders})
+                        """,
+                        task_ids,
+                    )
+                    updated_result = await conn.execute(
+                        f"SELECT * FROM tasks WHERE id IN ({placeholders})",
+                        task_ids
+                    )
+                    promoted = [_task_from_row(row) for row in await updated_result.fetchall()]
+                await conn.execute("COMMIT")
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
         for task in promoted:
             LOGGER.info(
                 "promoted task to READY",
@@ -216,21 +228,21 @@ def _dispatch_throttle_reason(
 
 def _task_from_row(row: dict) -> TaskRecord:
     return TaskRecord(
-        id=row["id"],
-        job_id=row["job_id"],
+        id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
+        job_id=UUID(row["job_id"]) if isinstance(row["job_id"], str) else row["job_id"],
         task_type=row["task_type"],
         status=TaskStatus(row["status"]),
         priority=row["priority"],
-        payload=row["payload"] or {},
-        metadata=row["metadata"] or {},
+        payload=_from_json(row["payload"]),
+        metadata=_from_json(row["metadata"]),
         retry_count=row["retry_count"],
         max_retries=row["max_retries"],
         next_run_at=row["next_run_at"],
         next_retry_at=row["next_retry_at"],
-        account_id=row["account_id"],
+        account_id=UUID(row["account_id"]) if row["account_id"] and isinstance(row["account_id"], str) else row["account_id"],
         action_type=row["action_type"],
         idempotency_key=row["idempotency_key"],
-        result=row["result"],
+        result=_from_json(row["result"]),
         error_type=row["error_type"],
         error_message=row["error_message"],
     )

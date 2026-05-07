@@ -190,3 +190,161 @@ class TikTokPipelineRequest(BaseModel):
         if not self.product_url and not self.product_image_path:
             raise ValueError("At least one of 'product_url' or 'product_image_path' must be provided.")
         return self
+
+
+# ── Accounts Schemas ──────────────────────────────────────────────────────────
+
+class AccountCreateRequest(BaseModel):
+    platform: str = Field(min_length=1)
+    account_handle: str = Field(min_length=1)
+    proxy_url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountHealthRequest(BaseModel):
+    status: str = Field(description="One of: healthy, limited, banned")
+
+    @model_validator(mode="after")
+    def _validate_status(self) -> "AccountHealthRequest":
+        if self.status not in {"healthy", "limited", "banned"}:
+            raise ValueError("status must be one of: healthy, limited, banned")
+        return self
+
+
+class AccountResponse(BaseModel):
+    id: str
+    platform: str
+    account_handle: str
+    status: str
+    proxy_url: str | None
+    metadata: dict[str, Any]
+    # Session fields (None for accounts that have never connected)
+    session_valid: bool
+    last_login_at: str | None
+    user_agent: str | None
+    created_at: str | None
+    updated_at: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_row(cls, row: dict) -> "AccountResponse":
+        return cls(
+            id=row["id"],
+            platform=row["platform"],
+            account_handle=row["account_handle"],
+            status=row["status"],
+            proxy_url=row.get("proxy_url"),
+            metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+            session_valid=bool(row.get("session_valid", 0)),
+            last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
+            user_agent=row.get("user_agent"),
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+            updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
+        )
+
+
+class SessionStatusResponse(BaseModel):
+    account_id: str
+    session_valid: bool
+    has_cookies: bool
+    last_login_at: str | None
+    user_agent: str | None
+
+
+
+# ── Artifacts Schemas ─────────────────────────────────────────────────────────
+
+class ArtifactStatusUpdateRequest(BaseModel):
+    status: str = Field(description="One of: approved, rejected")
+
+    @model_validator(mode="after")
+    def _validate_status(self) -> "ArtifactStatusUpdateRequest":
+        if self.status not in {"approved", "rejected"}:
+            raise ValueError("status must be one of: approved, rejected")
+        return self
+
+
+class ArtifactResponse(BaseModel):
+    id: str
+    job_id: str | None
+    task_id: str | None
+    artifact_type: str
+    status: str
+    storage_uri: str
+    mime_type: str | None
+    size_bytes: int | None
+    checksum: str | None
+    metadata: dict[str, Any]
+    created_at: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ArtifactResponse":
+        return cls(
+            id=row["id"],
+            job_id=row.get("job_id"),
+            task_id=row.get("task_id"),
+            artifact_type=row["artifact_type"],
+            status=row["status"],
+            storage_uri=row["storage_uri"],
+            mime_type=row.get("mime_type"),
+            size_bytes=row.get("size_bytes"),
+            checksum=row.get("checksum"),
+            metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+        )
+
+
+# ── Policy Rules Schemas ──────────────────────────────────────────────────────
+
+_VALID_ACTION_TYPES = {
+    "publish_tiktok",
+    "publish_youtube",
+    "publish_facebook",
+    "publish",
+}
+
+
+class PolicyRuleCreateRequest(BaseModel):
+    action_type: str = Field(min_length=1)
+    rule_name: str = Field(min_length=1)
+    max_actions: int = Field(ge=1)
+    window_seconds: int = Field(ge=60)
+    account_id: str | None = None
+    platform: str | None = None
+    cooldown_seconds: int = Field(default=0, ge=0)
+
+
+class PolicyRuleResponse(BaseModel):
+    id: str
+    account_id: str | None
+    platform: str | None
+    action_type: str
+    rule_name: str
+    enabled: bool
+    cooldown_seconds: int
+    max_actions: int | None
+    window_seconds: int | None
+    created_at: str | None
+    updated_at: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_row(cls, row: dict) -> "PolicyRuleResponse":
+        return cls(
+            id=row["id"],
+            account_id=row.get("account_id"),
+            platform=row.get("platform"),
+            action_type=row["action_type"],
+            rule_name=row["rule_name"],
+            enabled=bool(row["enabled"]),
+            cooldown_seconds=row["cooldown_seconds"],
+            max_actions=row.get("max_actions"),
+            window_seconds=row.get("window_seconds"),
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+            updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
+        )
+

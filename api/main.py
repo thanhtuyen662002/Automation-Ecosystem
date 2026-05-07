@@ -13,7 +13,7 @@ import sqlite3
 from pythonjsonlogger import jsonlogger
 
 from api.dependencies import ApiSettings
-from api.routes import jobs, system, tasks, tiktok, analytics
+from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifacts, policy_rules
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import (
@@ -89,6 +89,9 @@ app.include_router(tasks.router)
 app.include_router(system.router)
 app.include_router(tiktok.router)
 app.include_router(analytics.router)
+app.include_router(accounts.router, prefix="/api/v1")
+app.include_router(artifacts.router, prefix="/api/v1")
+app.include_router(policy_rules.router, prefix="/api/v1")
 
 
 @app.middleware("http")

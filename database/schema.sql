@@ -25,6 +25,29 @@ CREATE TABLE accounts (
     rate_limit_config TEXT NOT NULL DEFAULT '{}',
     metadata TEXT NOT NULL DEFAULT '{}',
     last_used_at DATETIME,
+    -- Session storage (added in migration 001)
+    cookies TEXT,               -- Fernet-encrypted JSON list of cookie dicts
+    user_agent TEXT,            -- Browser user-agent string used during login
+    last_login_at DATETIME,     -- When the session was last captured
+    session_valid INTEGER NOT NULL DEFAULT 0,  -- 1 = valid, 0 = expired/not connected
+    -- Browser fingerprint (added in migration 002) — stable identity per account
+    viewport_width INTEGER NOT NULL DEFAULT 1280,
+    viewport_height INTEGER NOT NULL DEFAULT 720,
+    timezone TEXT NOT NULL DEFAULT 'America/New_York',
+    locale TEXT NOT NULL DEFAULT 'en-US',
+    -- Risk tracking (added in migration 003)
+    browser_data_dir TEXT,                        -- Path to persistent Chromium profile dir
+    risk_score REAL NOT NULL DEFAULT 0.0,         -- 0.0–1.0; >= 0.7 = auto-pause
+    failed_publish_count INTEGER NOT NULL DEFAULT 0,
+    captcha_hit_count INTEGER NOT NULL DEFAULT 0,
+    login_redirect_count INTEGER NOT NULL DEFAULT 0,
+    -- Proxy health + warmup + soft-ban (added in migration 004)
+    proxy_country TEXT,                           -- ISO-3166-1 alpha-2, e.g. "VN"
+    proxy_latency_ms INTEGER,                     -- Last TCP latency check in ms
+    proxy_validated_at DATETIME,                  -- When proxy was last validated
+    warmup_sessions_completed INTEGER NOT NULL DEFAULT 0,  -- View sessions before first publish
+    soft_ban_detected INTEGER NOT NULL DEFAULT 0,          -- 1 = shadow-ban signals detected
+
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (platform, account_handle)
@@ -118,6 +141,7 @@ CREATE TABLE action_logs (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Migration (existing databases): ALTER TABLE artifacts ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
 CREATE TABLE artifacts (
     id TEXT PRIMARY KEY,
     job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
@@ -125,6 +149,8 @@ CREATE TABLE artifacts (
     execution_id TEXT REFERENCES task_executions(id) ON DELETE SET NULL,
     artifact_type TEXT NOT NULL
         CHECK (artifact_type IN ('video', 'image', 'audio', 'metadata', 'file', 'log')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected')),
     storage_uri TEXT NOT NULL,
     mime_type TEXT,
     size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
@@ -207,6 +233,9 @@ CREATE INDEX artifacts_execution_idx
 CREATE INDEX artifacts_checksum_idx
     ON artifacts (checksum)
     WHERE checksum IS NOT NULL;
+
+CREATE INDEX artifacts_status_idx
+    ON artifacts (status, artifact_type);
 
 CREATE TABLE video_metrics (
     id TEXT PRIMARY KEY,

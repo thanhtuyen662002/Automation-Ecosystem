@@ -1,5 +1,16 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Activity, BriefcaseBusiness, CheckCircle2, LayoutDashboard, Plus, Server, Settings, Workflow } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Film,
+  LayoutDashboard,
+  Server,
+  Settings,
+  Shield,
+  UsersRound,
+  Zap,
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { api } from "@/services/api";
@@ -9,13 +20,20 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 export function AppLayout() {
   const { t, i18n } = useTranslation();
 
-  const navItems = [
+  // ── Primary navigation ───────────────────────────────────────────────────
+  const primaryNav = [
     { label: t("nav.dashboard"), href: "/", icon: LayoutDashboard },
-    { label: t("nav.jobs"), href: "/jobs", icon: BriefcaseBusiness },
-    { label: t("nav.tasks"), href: "/tasks", icon: Workflow },
-    { label: t("nav.create"), href: "/create", icon: Plus },
+    { label: t("nav.automations"), href: "/automations", icon: Zap },
+    { label: t("nav.accounts"), href: "/accounts", icon: UsersRound },
+    { label: t("nav.content"), href: "/content", icon: Film },
+    { label: t("nav.postingLimits"), href: "/posting-limits", icon: Shield },
     { label: t("nav.system"), href: "/system", icon: Server },
     { label: t("nav.settings"), href: "/settings", icon: Settings },
+  ];
+
+  // ── Secondary (developer) navigation ─────────────────────────────────────
+  const devNav = [
+    { label: t("nav.advancedBuilder"), href: "/advanced/workflow-builder", icon: AlertTriangle },
   ];
 
   const health = useQuery({
@@ -31,7 +49,8 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.10),transparent_32rem),linear-gradient(180deg,#f8fafc,#eef4ff)] transition-colors dark:bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.16),transparent_32rem),linear-gradient(180deg,#0f172a,#111827)]">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r bg-white/80 p-4 backdrop-blur-xl transition-colors dark:bg-slate-950/70 lg:block">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r bg-white/80 p-4 backdrop-blur-xl transition-colors dark:bg-slate-950/70 lg:flex lg:flex-col">
+        {/* Logo */}
         <div className="flex items-center gap-3 px-2">
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary text-primary-foreground">
             <Activity className="h-5 w-5" />
@@ -41,8 +60,10 @@ export function AppLayout() {
             <div className="text-xs text-muted-foreground">{t("layout.appSubtitle")}</div>
           </div>
         </div>
-        <nav className="mt-8 space-y-1">
-          {navItems.map((item) => (
+
+        {/* Primary nav */}
+        <nav className="mt-8 flex-1 space-y-1">
+          {primaryNav.map((item) => (
             <NavLink
               key={item.href}
               to={item.href}
@@ -58,8 +79,30 @@ export function AppLayout() {
               {item.label}
             </NavLink>
           ))}
+
+          {/* Divider */}
+          <div className="my-3 border-t" />
+          <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            Developer
+          </p>
+          {devNav.map((item) => (
+            <NavLink
+              key={item.href}
+              to={item.href}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400",
+                  isActive && "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300",
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 text-amber-500" />
+              {item.label}
+            </NavLink>
+          ))}
         </nav>
       </aside>
+
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 border-b bg-white/75 px-5 py-3 backdrop-blur-xl transition-colors dark:bg-slate-950/70">
           <div className="flex items-center justify-between gap-4">
@@ -71,7 +114,6 @@ export function AppLayout() {
               <CheckCircle2 className={cn("h-4 w-4", ok ? "text-emerald-600" : "text-orange-500")} />
               {ok ? t("layout.healthy") : t("layout.needsAttention")}
             </div>
-            {/* Language switcher */}
             <button
               onClick={toggleLanguage}
               title={i18n.language === "vi" ? t("language.en") : t("language.vi")}
@@ -81,8 +123,10 @@ export function AppLayout() {
             </button>
             <ThemeToggle />
           </div>
+
+          {/* Mobile nav */}
           <nav className="mt-3 flex gap-2 overflow-x-auto lg:hidden">
-            {navItems.map((item) => (
+            {primaryNav.map((item) => (
               <NavLink
                 key={item.href}
                 to={item.href}

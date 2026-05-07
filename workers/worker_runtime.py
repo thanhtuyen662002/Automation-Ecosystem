@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import signal
@@ -9,6 +10,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -78,11 +80,27 @@ class TaskRegistry:
 class UnknownTaskTypeError(RuntimeError):
     pass
 
+
+class ErrorCode(StrEnum):
+    ACCOUNT_BANNED        = "ACCOUNT_BANNED"
+    ACCOUNT_LIMITED       = "ACCOUNT_LIMITED"
+    POLICY_VIOLATION      = "POLICY_VIOLATION"
+    ARTIFACT_NOT_APPROVED = "ARTIFACT_NOT_APPROVED"
+    MISSING_VIDEO_PATH    = "MISSING_VIDEO_PATH"
+
+
 class RetryableDependencyError(Exception):
+    """Transient failure — task will be retried with exponential backoff."""
     pass
 
+
 class FatalDependencyError(Exception):
+    """Permanent failure — task will not be retried."""
     pass
+
+
+# Hard ceiling on automatic retries regardless of max_retries setting.
+MAX_PUBLISH_RETRY_LIMIT: int = 5
 
 
 class WorkerRuntime:
@@ -196,15 +214,96 @@ class WorkerRuntime:
                     account_id = resolved_payload.get("account_id")
                     if account_id:
                         async with self.database.connection() as conn:
-                            cursor = await conn.execute("SELECT platform, account_handle, proxy_url FROM accounts WHERE id = ?", (str(account_id),))
+                            cursor = await conn.execute(
+                                "SELECT platform, account_handle, proxy_url, status FROM accounts WHERE id = ?",
+                                (str(account_id),)
+                            )
                             row = await cursor.fetchone()
                             if not row:
                                 raise FatalDependencyError(f"Account '{account_id}' not found at runtime")
+
+                            # ── Guard 1: banned account → permanent failure ──
+                            if row["status"] == "banned":
+                                raise FatalDependencyError(
+                                    json.dumps({
+                                        "error_code": ErrorCode.ACCOUNT_BANNED,
+                                        "account_id": str(account_id),
+                                        "message": f"Account '{account_id}' is banned and cannot publish.",
+                                    })
+                                )
+
+                            # ── Guard 2: limited account → retryable ──
+                            if row["status"] == "limited":
+                                raise RetryableDependencyError(
+                                    json.dumps({
+                                        "error_code": ErrorCode.ACCOUNT_LIMITED,
+                                        "account_id": str(account_id),
+                                        "message": f"Account '{account_id}' is limited; will retry.",
+                                    })
+                                )
+
                             resolved_payload["_account"] = {
                                 "platform": row["platform"],
                                 "account_handle": row["account_handle"],
                                 "proxy": row["proxy_url"],
                             }
+
+                        # ── Guard 3: policy rate limit (platform-specific action_type) ──
+                        from uuid import UUID as _UUID
+                        policy_rules = await self.database.get_policy_rules(
+                            _UUID(str(account_id)), acquired_task.task.task_type
+                        )
+                        for rule in policy_rules:
+                            if rule.max_actions is not None and rule.window_seconds:
+                                window_hours = max(1, rule.window_seconds // 3600)
+                                publish_count = await self.database.get_account_publish_count(
+                                    str(account_id), last_hours=window_hours
+                                )
+                                if publish_count >= rule.max_actions:
+                                    raise RetryableDependencyError(
+                                        json.dumps({
+                                            "error_code": ErrorCode.POLICY_VIOLATION,
+                                            "account_id": str(account_id),
+                                            "task_type": acquired_task.task.task_type,
+                                            "rule": rule.rule_name,
+                                            "publish_count": publish_count,
+                                            "max_actions": rule.max_actions,
+                                            "window_hours": window_hours,
+                                            "message": f"Policy '{rule.rule_name}': {publish_count}/{rule.max_actions} publishes in last {window_hours}h ({acquired_task.task.task_type}).",
+                                        })
+                                    )
+
+                        # ── Guard 4: artifact approval ──
+                        # video_path is mandatory for all publish_* tasks.
+                        # A missing field or missing/unapproved artifact is always fatal.
+                        video_path = resolved_payload.get("video_path")
+                        if not video_path:
+                            raise FatalDependencyError(
+                                json.dumps({
+                                    "error_code": ErrorCode.MISSING_VIDEO_PATH,
+                                    "task_type": acquired_task.task.task_type,
+                                    "message": "'video_path' is required in the resolved payload for publish tasks but was not found.",
+                                })
+                            )
+                        artifact = await self.database.get_artifact_by_storage_uri(str(video_path))
+                        if artifact is None:
+                            raise FatalDependencyError(
+                                json.dumps({
+                                    "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
+                                    "video_path": str(video_path),
+                                    "artifact_status": "not_found",
+                                    "message": f"Artifact '{video_path}' not found in database; cannot publish.",
+                                })
+                            )
+                        if artifact["status"] != "approved":
+                            raise FatalDependencyError(
+                                json.dumps({
+                                    "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
+                                    "video_path": str(video_path),
+                                    "artifact_status": artifact["status"],
+                                    "message": f"Artifact '{video_path}' is not approved (status: {artifact['status']}).",
+                                })
+                            )
                 result = await _call_handler(handler, resolved_payload)
             safe_result = _ensure_json_object(result)
             await self.database.mark_task_success(
@@ -223,16 +322,35 @@ class WorkerRuntime:
             )
         except RetryableDependencyError as exc:
             retry_count = acquired_task.task.retry_count
-            delay = min(
-                self.settings.retry_base_delay_seconds * (2 ** retry_count),
-                self.settings.retry_max_delay_seconds
-            )
-            await self.database.mark_task_for_retry(
-                task_id=str(acquired_task.task.id),
-                execution_id=str(acquired_task.execution.id),
-                error=exc,
-                delay_seconds=delay
-            )
+            # ── Max retry guard: stop infinite retry loops ──
+            if retry_count > MAX_PUBLISH_RETRY_LIMIT:
+                log_event(
+                    "task_retry_limit_exceeded",
+                    self.settings.worker_id,
+                    task_id=acquired_task.task.id,
+                    execution_id=acquired_task.execution.id,
+                    task_type=acquired_task.task.task_type,
+                    status="failed",
+                    retry_count=retry_count,
+                    error=str(exc),
+                )
+                await self.database.mark_task_failure(
+                    acquired_task.task.id,
+                    acquired_task.execution.id,
+                    exc,
+                    timed_out=False,
+                )
+            else:
+                delay = min(
+                    self.settings.retry_base_delay_seconds * (2 ** retry_count),
+                    self.settings.retry_max_delay_seconds
+                )
+                await self.database.mark_task_for_retry(
+                    task_id=str(acquired_task.task.id),
+                    execution_id=str(acquired_task.execution.id),
+                    error=exc,
+                    delay_seconds=delay
+                )
         except FatalDependencyError as exc:
             await self.database.mark_task_failure(
                 acquired_task.task.id,

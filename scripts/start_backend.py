@@ -95,6 +95,10 @@ async def main() -> None:
                 await scheduler_database.init_schema(str(schema_path))
     else:
         LOGGER.warning("schema_not_found", extra={"path": str(schema_path)})
+
+    # ── Auto-apply pending migrations ────────────────────────────────────────
+    await _run_migrations(scheduler_database)
+
     scheduler = AutoDispatchScheduler(
         WorkflowManager(scheduler_database, worker_id=os.getenv("SCHEDULER_WORKER_ID", "desktop-scheduler")),
         scheduler_settings,
@@ -128,6 +132,49 @@ async def main() -> None:
         await _await_safely(server_task)
         await scheduler_database.close()
         LOGGER.info("backend_stopped", extra={"event": "backend_stopped"})
+
+
+async def _run_migrations(database: AutomationDatabase) -> None:
+    """
+    Apply any pending SQL migrations from database/migrations/*.sql.
+    
+    Uses a per-statement try/except so that already-applied ALTER TABLE
+    statements are skipped silently (SQLite raises OperationalError for
+    duplicate columns, not an error we want to crash on).
+    """
+    migrations_dir = _base_dir() / "database" / "migrations"
+    if not migrations_dir.exists():
+        return
+
+    migration_files = sorted(migrations_dir.glob("*.sql"))
+    for migration_file in migration_files:
+        LOGGER.info(
+            "migration_apply",
+            extra={"event": "migration_apply", "file": migration_file.name},
+        )
+        sql = migration_file.read_text(encoding="utf-8")
+        statements = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+        async with database.connection() as conn:
+            for stmt in statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception as exc:
+                    # "duplicate column name" is expected for already-applied migrations
+                    if "duplicate column" in str(exc).lower():
+                        LOGGER.debug(
+                            "migration_skip_existing_column",
+                            extra={"event": "migration_skip_existing_column", "stmt": stmt[:80]},
+                        )
+                    else:
+                        LOGGER.warning(
+                            "migration_stmt_error",
+                            extra={
+                                "event": "migration_stmt_error",
+                                "file": migration_file.name,
+                                "stmt": stmt[:80],
+                                "error": str(exc),
+                            },
+                        )
 
 
 def configure_logging(log_path: Path) -> None:

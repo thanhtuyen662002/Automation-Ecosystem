@@ -3,6 +3,10 @@
   "pythonPlatform": "Windows",
   "typeCheckingMode": "basic",
   "extraPaths": ["."],
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
   "exclude": [
     "**/node_modules",
     "**/__pycache__",

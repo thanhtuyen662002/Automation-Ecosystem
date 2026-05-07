@@ -1,10 +1,17 @@
 import axios from "axios";
 import type {
   Account,
+  AccountBrainState,
+  AccountLifecycleSummary,
   Artifact,
   ArtifactStatus,
+  BrainIntent,
+  BrainOperatingMode,
+  ConsistencyIssue,
   CreateJobPayload,
   DeepHealth,
+  FleetHealthResponse,
+  IdentityProfile,
   Job,
   JobDetail,
   PaginatedResponse,
@@ -13,6 +20,7 @@ import type {
   SystemStats,
   Task,
   TaskStatus,
+  UpdateStrategyPayload,
 } from "@/types/api";
 
 const desktopApiBaseUrl = window.automationDesktop?.apiBaseUrl;
@@ -155,5 +163,109 @@ export const api = {
         delay_minutes: draft.delay_minutes,
       },
     };
+  },
+
+  // ── Account Brain ──────────────────────────────────────────────────────────
+  async getAccountBrainAll() {
+    const { data } = await apiClient.get<AccountBrainState[]>("/api/v1/account-brain");
+    return data;
+  },
+  async getAccountBrain(id: string) {
+    const { data } = await apiClient.get<AccountBrainState>(`/api/v1/account-brain/${id}`);
+    return data;
+  },
+  async forceIntent(id: string, intent: BrainIntent) {
+    const { data } = await apiClient.post<AccountBrainState>(`/api/v1/account-brain/${id}/force-intent`, { intent });
+    return data;
+  },
+  async resetFatigue(id: string) {
+    const { data } = await apiClient.post<AccountBrainState>(`/api/v1/account-brain/${id}/reset-fatigue`);
+    return data;
+  },
+  async setContentReady(id: string, ready: boolean) {
+    const { data } = await apiClient.post<AccountBrainState>(`/api/v1/account-brain/${id}/content-ready`, { ready });
+    return data;
+  },
+  async setMode(id: string, mode: BrainOperatingMode | null) {
+    const { data } = await apiClient.post<AccountBrainState>(`/api/v1/account-brain/${id}/set-mode`, { mode });
+    return data;
+  },
+  async updateStrategy(id: string, payload: UpdateStrategyPayload) {
+    const { data } = await apiClient.post<AccountBrainState>(`/api/v1/account-brain/${id}/update-strategy`, payload);
+    return data;
+  },
+  async emergencySafeMode() {
+    const { data } = await apiClient.post<{ affected_accounts: string[]; count: number }>("/api/v1/account-brain/emergency-safe-mode");
+    return data;
+  },
+  async clearSafeMode() {
+    const { data } = await apiClient.post<{ cleared_accounts: string[]; count: number }>("/api/v1/account-brain/clear-safe-mode");
+    return data;
+  },
+  async getBrainDecisionLog(limit = 50) {
+    const { data } = await apiClient.get<Record<string, unknown>[]>("/api/v1/account-brain/log", { params: { limit } });
+    return data;
+  },
+
+  // ── Identity Manager ────────────────────────────────────────────────────────
+
+  async getIdentities() {
+    const { data } = await apiClient.get<IdentityProfile[]>("/api/v1/identity");
+    return data;
+  },
+  async getIdentity(id: string) {
+    const { data } = await apiClient.get<IdentityProfile>(`/api/v1/identity/${id}`);
+    return data;
+  },
+  async generateIdentity(id: string, proxyUrl?: string, proxyCountry?: string) {
+    const params: Record<string, string> = {};
+    if (proxyUrl) params.proxy_url = proxyUrl;
+    if (proxyCountry) params.proxy_country = proxyCountry;
+    const { data } = await apiClient.post<IdentityProfile>(`/api/v1/identity/${id}/generate`, null, { params });
+    return data;
+  },
+  async regenerateIdentity(id: string) {
+    const { data } = await apiClient.post<IdentityProfile>(`/api/v1/identity/${id}/regenerate`);
+    return data;
+  },
+  async lockIdentity(id: string) {
+    const { data } = await apiClient.post<IdentityProfile>(`/api/v1/identity/${id}/lock`);
+    return data;
+  },
+  async unlockIdentity(id: string) {
+    const { data } = await apiClient.post<IdentityProfile>(`/api/v1/identity/${id}/unlock`);
+    return data;
+  },
+  async updateIdentityProxy(id: string, proxyUrl: string, proxyCountry: string) {
+    const { data } = await apiClient.post<IdentityProfile>(`/api/v1/identity/${id}/proxy`, { proxy_url: proxyUrl, proxy_country: proxyCountry });
+    return data;
+  },
+  async validateIdentity(id: string, opts?: { ip_changed?: boolean; current_fingerprint?: string; geo_mismatch?: boolean }) {
+    const { data } = await apiClient.post<IdentityProfile & { validation_issues: ConsistencyIssue[]; force_safe_mode: boolean }>(`/api/v1/identity/${id}/validate`, opts ?? {});
+    return data;
+  },
+
+  // ── Fleet Health ────────────────────────────────────────────────────────────
+  async getFleetHealth() {
+    const { data } = await apiClient.get<FleetHealthResponse>("/api/v1/fleet-health");
+    return data;
+  },
+  async triggerCooldown(accountId: string, severe = false) {
+    const { data } = await apiClient.post<{ account_id: string; phase: string; cooldown_remaining_hours: number; severe: boolean }>(
+      `/api/v1/fleet-health/${accountId}/trigger-cooldown`,
+      null,
+      { params: { severe } }
+    );
+    return data;
+  },
+  async clearCooldown(accountId: string) {
+    const { data } = await apiClient.post<{ account_id: string; phase: string; anomaly_count: number }>(
+      `/api/v1/fleet-health/${accountId}/clear-cooldown`
+    );
+    return data;
+  },
+  async getAccountLifecycle(accountId: string) {
+    const { data } = await apiClient.get<AccountLifecycleSummary>(`/api/v1/fleet-health/${accountId}/lifecycle`);
+    return data;
   },
 };

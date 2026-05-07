@@ -14,6 +14,7 @@ import { AutomationWizardPage } from "@/pages/AutomationWizardPage";
 import { AdvancedWorkflowBuilderPage } from "@/pages/AdvancedWorkflowBuilderPage";
 import { ContentLibraryPage } from "@/pages/ContentLibraryPage";
 import { PostingLimitsPage } from "@/pages/PostingLimitsPage";
+import { AccountBrainPage } from "@/pages/AccountBrainPage";
 import { Toaster } from "@/components/ui/toast";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/content" element={<ContentLibraryPage />} />
           <Route path="/posting-limits" element={<PostingLimitsPage />} />
+          <Route path="/account-brain" element={<AccountBrainPage />} />
 
           {/* ── Developer / legacy ──────────────────────────────────────── */}
           <Route path="/advanced/workflow-builder" element={<AdvancedWorkflowBuilderPage />} />

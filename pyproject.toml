@@ -39,3 +39,13 @@ exclude = ["tests*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+
+[tool.pyright]
+pythonVersion = "3.11"
+pythonPlatform = "Windows"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+typeCheckingMode = "basic"
+reportMissingImports = false
+reportMissingModuleSource = false

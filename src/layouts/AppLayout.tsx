@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
+  Brain,
   CheckCircle2,
   Film,
   LayoutDashboard,
@@ -27,6 +28,7 @@ export function AppLayout() {
     { label: t("nav.accounts"), href: "/accounts", icon: UsersRound },
     { label: t("nav.content"), href: "/content", icon: Film },
     { label: t("nav.postingLimits"), href: "/posting-limits", icon: Shield },
+    { label: "Account Brain", href: "/account-brain", icon: Brain },
     { label: t("nav.system"), href: "/system", icon: Server },
     { label: t("nav.settings"), href: "/settings", icon: Settings },
   ];

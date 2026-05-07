@@ -10,11 +10,11 @@ Safety stack (in execution order):
   6.  Video file existence check
   7.  Persistent browser context (per-account Chromium profile)
   8.  10-script stealth layer (applied automatically by browser_context)
-  9.  Session warm-up: homepage → gaussian wait 10–30 s → scroll → mouse move
+  9.  BehaviorEngine warm-up: lognormal delays, bezier mouse, risk-constrained scroll
  10.  Login / captcha detection on every page transition
- 11.  Upload with human-behavior simulation
+ 11.  Upload with behavior-engine simulation (skip logic, typing delay)
  12.  Risk score update on success / failure / captcha
- 13.  Gaussian delays throughout (replaces fixed delays)
+ 13.  BehaviorEngine replaces all raw gaussian/uniform calls throughout
 
 Phase 2 (NOT YET): playwright-stealth package, canvas/WebGL full spoofing.
 """
@@ -50,47 +50,18 @@ CAPTCHA_INDICATORS = [
 ]
 
 
-# ── Mouse and scroll helpers ──────────────────────────────────────────────────
+# ── Mouse / scroll helpers (thin wrappers — real logic lives in BehaviorEngine) ──
+# These are kept as module-level functions so _detect_session_issues can be called
+# before the engine is initialised. All warmup/upload paths use engine methods.
 
-async def _simulate_mouse_move(page: Any, steps: int = 5) -> None:
-    """Move mouse through several random points (Bezier-ish path, not straight)."""
+async def _hover_random_point(page: Any) -> None:
+    """Hover a random safe point in the lower-centre of the viewport (no click)."""
     try:
         vp = page.viewport_size or {"width": 1280, "height": 720}
-        points = [
-            (random.randint(80, vp["width"] - 80), random.randint(80, vp["height"] - 80))
-            for _ in range(steps)
-        ]
-        for x, y in points:
-            await page.mouse.move(x, y)
-            await asyncio.sleep(random.gauss(0.12, 0.04))
-    except Exception:
-        pass
-
-
-async def _simulate_scroll(page: Any, scrolls: int = 4) -> None:
-    """Scroll with gaussian-distributed magnitude and direction."""
-    try:
-        for _ in range(scrolls):
-            delta = int(random.gauss(350, 120))
-            delta = max(100, min(700, abs(delta)))
-            direction = random.choice([1, -1])
-            await page.evaluate(f"window.scrollBy(0, {direction * delta})")
-            await asyncio.sleep(random.gauss(0.9, 0.3))
-    except Exception:
-        pass
-
-
-async def _random_click_safe(page: Any) -> None:
-    """Click a random safe element (text link, not a button that submits forms)."""
-    try:
-        vp = page.viewport_size or {"width": 1280, "height": 720}
-        # Click a random point in the lower-centre of the viewport (likely feed area)
         x = random.randint(vp["width"] // 3, 2 * vp["width"] // 3)
         y = random.randint(vp["height"] // 2, vp["height"] - 80)
         await page.mouse.move(x, y)
-        await asyncio.sleep(random.gauss(0.3, 0.1))
-        # Don't actually click — just hover. A real click may trigger navigation.
-        # Hovering is safer and still looks human.
+        await asyncio.sleep(max(0.15, random.gauss(0.35, 0.12)))
     except Exception:
         pass
 
@@ -173,10 +144,9 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     from core.session_crypto import decrypt_cookies
     from core.platform_config import get_platform_config
     from core.stealth import fingerprint_hash
-    from core.browser_context import (
-        create_publisher_context,
-        action_delay, short_delay, warmup_delay,
-    )
+    from core.browser_context import create_publisher_context
+    from core.behavior_engine import create_behavior_engine
+    from core.cross_account_coordinator import get_coordinator
     from workers.worker_runtime import FatalDependencyError, RetryableDependencyError
 
     account_id: str = payload.get("account_id", "")
@@ -284,6 +254,32 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
         )
         _proxy_country = guess_country_from_proxy_url(proxy_url)
         await database.update_proxy_health(account_id, _proxy_latency_ms, country=_proxy_country)
+
+        # ── 3a-bis. Build BehaviorEngine + apply personality distribution balance ──
+        # Built here so constraints reflect actual measured proxy latency.
+        _coordinator = get_coordinator()
+        _engine = create_behavior_engine(
+            account_id=account_id,
+            account_data=account,
+            proxy_latency_ms=_proxy_latency_ms,
+        )
+        # Coordinator may downgrade activity_level to keep global distribution healthy
+        _engine.personality = _coordinator.adjust_personality(_engine.personality)
+
+        # If proxy is catastrophically slow → abort immediately
+        if _engine.constraints.minimal_mode:
+            raise RetryableDependencyError(
+                f"Proxy {proxy_url!r} latency={_proxy_latency_ms}ms exceeds danger threshold. "
+                "Aborting session to protect account. Replace proxy and retry."
+            )
+
+        # ── 3b-jitter. Coordinator-driven job-start delay (replaces engine.job_start_jitter) ─
+        # Coordinator adds burst-penalty and proxy-stagger on top of the base jitter.
+        _coord_delay = await _coordinator.get_start_delay(account_id, proxy_url)
+        await asyncio.sleep(_coord_delay)
+
+        # Register job start so subsequent accounts see this slot as occupied
+        _coordinator.register_job_start(account_id, proxy_url or "")
 
         # ── 3b. Proxy over-sharing check (1 account = 1 proxy rule) ─────────
         _proxy_share_count = await database.get_proxy_account_count(proxy_url)
@@ -430,18 +426,22 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
                 nav_path: list[str] = []
 
-                # ── Step A: Pre-navigation gaussian delay ─────────────────────
-                await action_delay()
+                # ── Step A: Pre-navigation delay (lognormal via engine) ────────
+                await _engine.action_delay()
 
                 # ── Step B: Session warm-up — homepage first ──────────────────
-                # New accounts (< 7 days old) get double warm-up passes
-                _warmup_passes = 2 if _is_new_account else 1
+                # New accounts (< 7 days old) get double warm-up passes.
+                # Also forced if warmup_required by BehaviorEngine constraints.
+                _warmup_passes = 2 if (_is_new_account or _engine.constraints.warmup_required) else 1
                 LOGGER.info(
                     "tiktok_warmup_start",
                     extra={
                         "event": "tiktok_warmup_start",
                         "passes": _warmup_passes,
                         "new_account": _is_new_account,
+                        "warmup_required_by_engine": _engine.constraints.warmup_required,
+                        "activity_level": _engine.personality.activity_level,
+                        "hesitation_factor": round(_engine.personality.hesitation_factor, 3),
                     },
                 )
 
@@ -454,13 +454,12 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     nav_path.append(page.url)
                     await _detect_session_issues(page, "tiktok", account_id, database)
 
-                    # Vary scroll count per pass for action diversity
-                    _scroll_count = random.randint(3 + _warmup_pass, 7 + _warmup_pass)
-                    await _simulate_mouse_move(page, steps=random.randint(4, 7))
-                    await warmup_delay()   # Gaussian 10–30 s
-                    await _simulate_scroll(page, scrolls=_scroll_count)
-                    await _random_click_safe(page)
-                    await action_delay()
+                    # Behaviour-engine driven warmup: mouse → warmup delay → scroll → hover
+                    await _engine.simulate_mouse_move(page)
+                    await _engine.warmup_delay()
+                    await _engine.simulate_scroll(page)
+                    await _hover_random_point(page)
+                    await _engine.action_delay()
 
                 # Track warm-up session completion for account conditioning
                 _warmup_total = await database.increment_warmup_session(account_id)
@@ -474,31 +473,93 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     },
                 )
 
-                # ── Step C: Navigate to upload page ───────────────────────────
+                # ── Step C: Upload + skip decision (dual-layer arbitration) ─────────
+                #
+                # Layer 1 (per-account):  BehaviorEngine.should_skip_upload()
+                #   → checks risk_score, soft_ban, warmup_sessions, posts_today
+                # Layer 2 (coordinator):  can_upload_now() + should_allow_skip()
+                #   → enforces global upload rate cap and global skip ceiling
+
+                # Layer 1: per-account decision
+                _local_skip, _local_skip_reason = _engine.should_skip_upload(account)
+
+                # Layer 2a: if local says proceed, check upload rate cap
+                if _local_skip == "proceed":
+                    _upload_ok, _upload_reason = _coordinator.can_upload_now(account_id)
+                    if not _upload_ok:
+                        # Downgrade to skip — too many uploads in rolling window
+                        _local_skip        = "skip"
+                        _local_skip_reason = f"coordinator_upload_throttle: {_upload_reason}"
+
+                # Layer 2b: run through skip coordinator ceiling
+                _skip_decision, _skip_reason = _coordinator.should_allow_skip(
+                    account_id, _local_skip
+                )
+                # If coordinator overrode a skip → combine reasons for audit log
+                if _local_skip == "skip" and _skip_decision == "proceed":
+                    _skip_reason = (
+                        f"coordinator_override_of_local_skip | "
+                        f"local_reason={_local_skip_reason} | "
+                        f"coord_reason={_skip_reason}"
+                    )
+
+                _engine.log_skip_decision(_skip_decision, _skip_reason, account_id)
+
+                # Persist skip reason to account for audit trail
+                try:
+                    await database.update_account_field(
+                        account_id,
+                        "last_skip_reason",
+                        _skip_reason if _skip_decision == "skip" else None,
+                    )
+                except Exception:
+                    pass  # Non-fatal — skip reason persistence is best-effort
+
+                if _skip_decision == "skip":
+                    LOGGER.warning(
+                        "tiktok_upload_skipped",
+                        extra={
+                            "event": "tiktok_upload_skipped",
+                            "account_id": account_id,
+                            "reason": _skip_reason,
+                        },
+                    )
+                    # Return early — warmup was still completed (good for conditioning)
+                    return {
+                        "published": False,
+                        "skipped": True,
+                        "skip_reason": _skip_reason,
+                        "platform": "tiktok",
+                        "account_id": account_id,
+                        "warmup_sessions_total": _warmup_total,
+                        "elapsed_seconds": round(time.monotonic() - t_publish_start, 1),
+                    }
+
+                # ── Step D: Navigate to upload page ───────────────────────────
                 LOGGER.info("tiktok_navigate_upload", extra={"event": "tiktok_navigate_upload"})
                 await page.goto(cfg.upload_url, wait_until="domcontentloaded", timeout=30000)
                 nav_path.append(page.url)
                 await _detect_session_issues(page, "tiktok", account_id, database)
-                await action_delay()
+                await _engine.action_delay()
 
                 LOGGER.info(
                     "tiktok_upload_page_ready",
                     extra={"event": "tiktok_upload_page_ready", "url": page.url},
                 )
 
-                # ── Step D: Interact before upload (avoid instant file attach) ─
-                await _simulate_mouse_move(page, steps=3)
-                await short_delay()
+                # ── Step E-pre: Interact before upload (avoid instant file attach) ─
+                await _engine.simulate_mouse_move(page, steps=3)
+                await _engine.short_delay()
 
-                # ── Step E: Upload video file ──────────────────────────────────
+                # ── Step F: Upload video file ──────────────────────────────────
                 LOGGER.info("tiktok_file_upload_start", extra={"event": "tiktok_file_upload_start"})
                 file_input = page.locator("input[type='file'][accept*='video']").first
                 await file_input.wait_for(state="attached", timeout=20000)
                 await file_input.set_input_files(str(video_file.resolve()))
                 LOGGER.info("tiktok_file_selected", extra={"event": "tiktok_file_selected"})
 
-                # ── Step F: Wait for upload processing ────────────────────────
-                await action_delay()
+                # ── Step G: Wait for upload processing ────────────────────────
+                await _engine.action_delay()
                 try:
                     await page.wait_for_function(
                         "() => !document.querySelector('[class*=\"upload-progress\"]') || "
@@ -508,9 +569,9 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 except Exception:
                     LOGGER.warning("tiktok_upload_progress_timeout", extra={"event": "tiktok_upload_progress_timeout"})
 
-                await action_delay()
+                await _engine.action_delay()
 
-                # ── Step G: Fill caption ───────────────────────────────────────
+                # ── Step H: Fill caption (engine-driven typing delay) ─────────
                 LOGGER.info("tiktok_fill_caption", extra={"event": "tiktok_fill_caption"})
                 caption_area = page.locator(
                     "[data-e2e='caption-input'], "
@@ -519,12 +580,18 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 ).first
                 try:
                     await caption_area.wait_for(state="visible", timeout=15000)
-                    await _simulate_mouse_move(page, steps=2)
+                    await _engine.simulate_mouse_move(page, steps=2)
                     await caption_area.click()
-                    await short_delay()
-                    # Type with gaussian per-character delay (12–60ms) — human typing pattern
+                    await _engine.short_delay()
+                    # Type each char with per-char lognormal delay from engine.
+                    # We pre-compute total typing duration and sleep once to avoid
+                    # per-char async overhead, then batch-type.
+                    await _engine.typing_delay(len(caption))
                     for char in caption:
-                        await caption_area.type(char, delay=max(8, int(random.gauss(30, 15))))
+                        await caption_area.type(
+                            char,
+                            delay=max(8, int(_engine.personality.typing_speed_base * random.uniform(0.7, 1.3))),
+                        )
                 except Exception as exc:
                     LOGGER.warning(
                         "tiktok_caption_fallback",
@@ -535,11 +602,11 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     except Exception:
                         pass  # Non-fatal
 
-                await action_delay()
+                await _engine.action_delay()
 
-                # ── Step H: Click publish ──────────────────────────────────────
+                # ── Step I: Click publish ──────────────────────────────────────
                 LOGGER.info("tiktok_click_publish", extra={"event": "tiktok_click_publish"})
-                await _simulate_mouse_move(page, steps=3)
+                await _engine.simulate_mouse_move(page, steps=3)
                 publish_btn = page.locator(
                     "button[data-e2e='publish-btn'], "
                     "button[class*='publish-btn'], "
@@ -547,11 +614,11 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     "button:has-text('Publish')"
                 ).first
                 await publish_btn.wait_for(state="visible", timeout=15000)
-                await short_delay()   # Never click immediately — gaussian pause first
+                await _engine.short_delay()   # Never click immediately — lognormal pause first
                 await publish_btn.click()
 
-                # ── Step I: Wait for confirmation ──────────────────────────────
-                await action_delay()
+                # ── Step J: Wait for confirmation ─────────────────────────────
+                await _engine.action_delay()
                 try:
                     await page.wait_for_url(
                         lambda url: "tiktok.com/upload" not in url and "tiktok.com/creator" not in url,
@@ -579,8 +646,14 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     },
                 )
 
-        # ── 12. Record success (update last_used_at + reduce risk score) ─────
+        # ── 12. Record success + coordinator upload registration ──────────────
         await database.record_publish_success(account_id)
+        _coordinator.register_job_end(
+            account_id,
+            proxy_url or "",
+            uploaded=True,
+            activity_level=_engine.personality.activity_level,
+        )
 
         return {
             "published": True,
@@ -620,3 +693,15 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     finally:
         await database.close()
+        # Always release coordinator slot — even on error paths.
+        # Guard against the case where engine/coordinator were never assigned
+        # (e.g., exception thrown before step 3a-bis).
+        try:
+            _coordinator.register_job_end(
+                account_id,
+                proxy_url or "",
+                uploaded=False,   # failure path: not uploaded
+                activity_level=_engine.personality.activity_level,
+            )
+        except Exception:
+            pass  # Best-effort — coordinator state is ephemeral

@@ -121,7 +121,8 @@ class IdentityProfile:
     """Stable digital persona for one account.
 
     Generated ONCE per account from a deterministic seed.
-    Must not change between sessions unless explicitly regenerated.
+    The base identity (device, OS, locale, timezone) is IMMUTABLE.
+    Only noise seeds and active_fingerprint evolve through controlled mutations.
     """
 
     account_id: str
@@ -140,10 +141,10 @@ class IdentityProfile:
     proxy_url: str | None
     proxy_country: str | None   # ISO-2 code, e.g. "VN"
 
-    # Fingerprint
-    fingerprint_hash: str       # SHA-256 prefix, stable
-    canvas_noise_seed: int      # inject into Playwright for canvas spoofing
-    webgl_noise_seed: int
+    # Fingerprint (mutable surface — noise seeds only)
+    fingerprint_hash: str       # mirrors active_fingerprint; kept for backward compat
+    canvas_noise_seed: int      # mutated by MutationController for canvas noise drift
+    webgl_noise_seed: int       # mutated by MutationController for GPU rotation
 
     # State
     created_at: float
@@ -151,26 +152,41 @@ class IdentityProfile:
     is_locked: bool = False     # if True, regenerate() is blocked
     identity_risk_score: float = 0.0   # 0=clean 1=high risk; updated by brain
 
+    # ── Stateful anti-detect fields ──────────────────────────────────────────
+    identity_id: str = ""              # Immutable SHA-256 prefix derived from account_id
+    base_fingerprint: str = ""         # Locked at creation; NEVER mutated
+    active_fingerprint: str = ""       # Runtime fingerprint; drifts on mutation
+    mutation_state: int = 0            # Increments on every HIGH-risk mutation
+    mutation_history: list = field(default_factory=list)   # Last 20 mutation records
+    risk_history: list = field(default_factory=list)       # Last 10 risk score records
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "account_id": self.account_id,
-            "device_type": self.device_type,
-            "os": self.os,
-            "browser": self.browser,
-            "browser_version": self.browser_version,
-            "screen_resolution": self.screen_resolution,
-            "user_agent": self.user_agent,
-            "timezone": self.timezone,
-            "locale": self.locale,
-            "proxy_url": self.proxy_url,
-            "proxy_country": self.proxy_country,
-            "fingerprint_hash": self.fingerprint_hash,
-            "canvas_noise_seed": self.canvas_noise_seed,
-            "webgl_noise_seed": self.webgl_noise_seed,
-            "created_at": self.created_at,
-            "last_seen_at": self.last_seen_at,
-            "is_locked": self.is_locked,
+            "account_id":          self.account_id,
+            "device_type":         self.device_type,
+            "os":                  self.os,
+            "browser":             self.browser,
+            "browser_version":     self.browser_version,
+            "screen_resolution":   self.screen_resolution,
+            "user_agent":          self.user_agent,
+            "timezone":            self.timezone,
+            "locale":              self.locale,
+            "proxy_url":           self.proxy_url,
+            "proxy_country":       self.proxy_country,
+            "fingerprint_hash":    self.fingerprint_hash,
+            "canvas_noise_seed":   self.canvas_noise_seed,
+            "webgl_noise_seed":    self.webgl_noise_seed,
+            "created_at":          self.created_at,
+            "last_seen_at":        self.last_seen_at,
+            "is_locked":           self.is_locked,
             "identity_risk_score": round(self.identity_risk_score, 4),
+            # Stateful fields
+            "identity_id":         self.identity_id,
+            "base_fingerprint":    self.base_fingerprint,
+            "active_fingerprint":  self.active_fingerprint,
+            "mutation_state":      self.mutation_state,
+            "mutation_history":    self.mutation_history,
+            "risk_history":        self.risk_history,
         }
 
     @classmethod
@@ -194,6 +210,13 @@ class IdentityProfile:
             last_seen_at=d.get("last_seen_at"),
             is_locked=bool(d.get("is_locked", False)),
             identity_risk_score=float(d.get("identity_risk_score", 0.0)),
+            # Stateful fields — graceful defaults for pre-refactor serialized profiles
+            identity_id=d.get("identity_id", ""),
+            base_fingerprint=d.get("base_fingerprint", d["fingerprint_hash"]),
+            active_fingerprint=d.get("active_fingerprint", d["fingerprint_hash"]),
+            mutation_state=int(d.get("mutation_state", 0)),
+            mutation_history=list(d.get("mutation_history", [])),
+            risk_history=list(d.get("risk_history", [])),
         )
 
 
@@ -270,7 +293,12 @@ def generate_identity_profile(
         webgl_noise_seed=webgl_seed,
         created_at=time.time(),
     )
-    profile.fingerprint_hash = generate_fingerprint(profile)
+    fp = generate_fingerprint(profile)
+    profile.fingerprint_hash   = fp
+    # Stateful fields — set once, never overwritten by normal flow
+    profile.identity_id        = hashlib.sha256(f"{account_id}:identity".encode()).hexdigest()[:16]
+    profile.base_fingerprint   = fp   # locked forever
+    profile.active_fingerprint = fp   # starts equal to base
     return profile
 
 

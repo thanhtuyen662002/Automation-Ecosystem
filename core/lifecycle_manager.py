@@ -35,7 +35,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 LOGGER = logging.getLogger("core.lifecycle_manager")
@@ -107,7 +107,8 @@ class AccountLifecycleState:
     anomaly_count:     int          = 0
 
     def _today_iso(self) -> str:
-        return date.today().isoformat()
+        """Return today's date as ISO string, always in UTC to avoid timezone drift."""
+        return datetime.now(timezone.utc).date().isoformat()
 
     def _refresh_daily_counters(self) -> None:
         """Reset counters if the calendar date has changed."""
@@ -357,9 +358,26 @@ def trigger_cooldown(
     lc: AccountLifecycleState,
     reason: str,
     severe: bool = False,
+    _increment_anomaly: bool = False,
 ) -> None:
-    """Put an account into COOLDOWN. Mutates lc in-place."""
-    lc.anomaly_count += 1
+    """Put an account into COOLDOWN. Mutates lc in-place.
+
+    Args:
+        lc:                 The lifecycle state to mutate.
+        reason:             Reason string for the cooldown log.
+        severe:             True → 72h cooldown (soft_ban); False → 48h.
+        _increment_anomaly: Internal flag. ONLY set to True when called from
+                            record_session_end(), which has NOT yet incremented
+                            anomaly_count for the current event.  Operator calls
+                            via LifecycleManager.trigger_cooldown() must leave
+                            this False — anomaly_count is NOT an operator counter.
+    """
+    # NOTE: do NOT increment anomaly_count here by default. record_session_end()
+    # already increments it before calling this function.  The _increment_anomaly
+    # flag exists only to support the legacy direct-call path — it must remain False
+    # in all production paths to avoid the double-increment bug.
+    if _increment_anomaly:
+        lc.anomaly_count += 1
     duration_hours = _COOLDOWN_SEVERE_HOURS if severe else _COOLDOWN_DURATION_HOURS
     lc.cooldown_until = time.time() + duration_hours * 3600
     LOGGER.warning(
@@ -372,6 +390,7 @@ def trigger_cooldown(
             "severe":         severe,
             "anomaly_count":  lc.anomaly_count,
             "phase":          lc.phase,
+            "decision":       "COOLDOWN",
         },
     )
 
@@ -396,19 +415,43 @@ def record_session_end(
         uploaded:       True if an upload completed successfully.
         had_anomaly:    True if any anomaly signal was detected.
         severe_anomaly: True for soft_ban or repeated failures → 72h cooldown.
+
+    Safety invariants enforced here (HARD GATE — lifecycle always wins):
+        - uploads_today is incremented ONCE per uploaded=True call.
+        - anomaly_count is incremented ONCE per had_anomaly=True call.
+          trigger_cooldown() must NOT re-increment it.
     """
     lc._refresh_daily_counters()
-    if uploaded:
-        lc.uploads_today += 1
-        lc.last_upload_at = time.time()
 
+    # ── Invariant guard: hard cap uploads at 1/day ────────────────────────────
+    max_uploads = _PHASE_MAX_UPLOADS_PER_DAY.get(lc.phase, 1)
+    if uploaded:
+        if lc.uploads_today < max_uploads:
+            lc.uploads_today += 1
+            lc.last_upload_at = time.time()
+        else:
+            # Should not happen if evaluate() was called correctly; log CRITICAL.
+            LOGGER.critical(
+                "lifecycle_upload_invariant_violated",
+                extra={
+                    "event":        "lifecycle_upload_invariant_violated",
+                    "account_id":   lc.account_id,
+                    "uploads_today": lc.uploads_today,
+                    "max_uploads":  max_uploads,
+                    "phase":        lc.phase,
+                    "decision":     "upload_count_clamped",
+                },
+            )
+
+    # ── Anomaly handling: increment ONCE, then check threshold ───────────────
     if had_anomaly:
-        lc.anomaly_count += 1
+        lc.anomaly_count += 1   # ← Single increment point; trigger_cooldown does NOT re-increment
         if lc.anomaly_count >= _COOLDOWN_ANOMALY_THRESHOLD or severe_anomaly:
             trigger_cooldown(
                 lc,
                 reason=f"anomaly_threshold (count={lc.anomaly_count}, severe={severe_anomaly})",
                 severe=severe_anomaly,
+                _increment_anomaly=False,   # already incremented above
             )
     else:
         # Healthy session — gradually reset anomaly count
@@ -425,6 +468,7 @@ def record_session_end(
             "sessions_today": lc.sessions_today,
             "uploads_today":  lc.uploads_today,
             "anomaly_count":  lc.anomaly_count,
+            "decision":       "session_end_recorded",
         },
     )
 
@@ -527,8 +571,12 @@ class LifecycleManager:
         reason: str,
         severe: bool = False,
     ) -> None:
-        """Manually trigger cooldown (e.g. operator action or external signal)."""
-        trigger_cooldown(self._get(account_id), reason=reason, severe=severe)
+        """Manually trigger cooldown (e.g. operator action or external signal).
+
+        NOTE: This does NOT increment anomaly_count — it is an operator action,
+        not an anomaly signal.  Use record_end() for session-driven anomalies.
+        """
+        trigger_cooldown(self._get(account_id), reason=reason, severe=severe, _increment_anomaly=False)
 
     def clear_cooldown(self, account_id: str) -> None:
         """Operator: clear cooldown and reset anomaly count."""

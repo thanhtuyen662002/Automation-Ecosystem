@@ -31,7 +31,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 LOGGER = logging.getLogger("core.behavior_engine")
@@ -74,7 +74,8 @@ def _stable_seed(account_id: str, day_of_week: int | None = None) -> int:
     day_of_week: 0=Monday … 6=Sunday. Defaults to today (UTC).
     """
     if day_of_week is None:
-        day_of_week = date.today().weekday()
+        # Use UTC weekday so personality is consistent regardless of server timezone.
+        day_of_week = datetime.now(timezone.utc).weekday()
     raw = f"{account_id}:dow={day_of_week}"
     digest = hashlib.sha256(raw.encode()).hexdigest()
     return int(digest[:16], 16)  # 64-bit int

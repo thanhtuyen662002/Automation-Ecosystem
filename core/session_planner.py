@@ -135,9 +135,62 @@ class SessionPlanner:
 
         This is the SINGLE call workers make before starting any session.
         Returns a SessionResult — the worker must not deviate from it.
+
+        Fail-safe: any unexpected exception in the planning pipeline is caught
+        and returns a SKIP result with intent="IDLE".  This prevents a planning
+        bug from accidentally allowing a session to proceed in an unknown state.
         """
+        try:
+            return await self._plan_session_inner(account_id, proxy_url, now)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.critical(
+                "session_planner_unexpected_error",
+                extra={
+                    "event":      "session_planner_unexpected_error",
+                    "account_id": account_id,
+                    "error":      str(exc),
+                    "decision":   "FAIL_SAFE_SKIP",
+                },
+                exc_info=True,
+            )
+            lifecycle = get_lifecycle_manager()
+            from core.account_brain import _MODE_DELAY_MULTIPLIER
+            registry  = get_brain_registry()
+            state     = registry.get_state(account_id)
+            idle_plan = SessionPlan(
+                intent="IDLE",
+                intent_reason=f"fail_safe: unexpected_error={type(exc).__name__}",
+                session_duration_min=0.0,
+                interaction_level="low",
+                operating_mode=state.operating_mode,
+                allowed_actions=["view"],
+                delay_multiplier=_MODE_DELAY_MULTIPLIER.get(state.operating_mode, 1.0),
+                risk_level=state.risk_level,
+            )
+            lc_snap = lifecycle.snapshot(account_id)
+            return SessionResult(
+                account_id=account_id,
+                outcome=SessionOutcome.SKIP,
+                plan=idle_plan,
+                gates=[GateResult(
+                    gate="fail_safe",
+                    passed=False,
+                    cap_hit="UNEXPECTED_ERROR",
+                    reason=f"fail_safe_skip: {type(exc).__name__}: {exc}",
+                )],
+                reason=f"fail_safe_skip: unexpected_error in planning pipeline",
+                lifecycle_phase=lc_snap["phase"] if lc_snap else "UNKNOWN",
+            )
+
+    async def _plan_session_inner(
+        self,
+        account_id: str,
+        proxy_url: str | None = None,
+        now: datetime | None = None,
+    ) -> SessionResult:
+        """Internal implementation of plan_session (wrapped by fail-safe above)."""
         if now is None:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)   # UTC — matches preferred_hour_start/end storage
 
         registry   = get_brain_registry()
         lifecycle  = get_lifecycle_manager()
@@ -200,7 +253,10 @@ class SessionPlanner:
         lc_snap = lifecycle.snapshot(account_id)
         phase  = lc_snap["phase"] if lc_snap else "NORMAL"
 
-        # Get brain's preliminary intent (before lifecycle constrains it)
+        # Apply fatigue decay ONCE here (Layer 3).
+        # We pass skip_fatigue_decay=True to registry.decide_session_plan() at
+        # Layer 4 so it does NOT apply decay a second time in the same cycle.
+        # Without this, decay would halve fatigue twice (double-decay bug).
         from core.account_brain import apply_fatigue_decay, decide_intent
         apply_fatigue_decay(state)
         raw_intent, _ = decide_intent(state, now)
@@ -226,7 +282,8 @@ class SessionPlanner:
             state.intent_override = lc_gate.allowed_intent  # type: ignore[assignment]
 
         # ── Layer 4: AccountBrain full session plan ───────────────────────────
-        plan = registry.decide_session_plan(account_id, now=now)
+        # skip_fatigue_decay=True: decay was already applied above at Layer 3.
+        plan = registry.decide_session_plan(account_id, now=now, skip_fatigue_decay=True)
 
         gates.append(GateResult(
             gate="brain",
@@ -252,7 +309,8 @@ class SessionPlanner:
                     "reason":     upload_reason,
                 })
                 state.intent_override = "BROWSE"
-                plan = registry.decide_session_plan(account_id, now=now)
+                # skip_fatigue_decay=True: decay already applied at Layer 3
+                plan = registry.decide_session_plan(account_id, now=now, skip_fatigue_decay=True)
         else:
             gates.append(GateResult(
                 gate="coordinator_upload_cap",
@@ -261,7 +319,58 @@ class SessionPlanner:
                 reason=f"upload_cap_skipped (intent={plan.intent})",
             ))
 
-        # ── All layers passed — register job start ────────────────────────────
+        # ── All layers passed — global invariant assertions (HARD GATE) ──────
+        # These verify that no combination of gates accidentally violated caps.
+        # If an invariant fires → SKIP and log CRITICAL (lifecycle always wins).
+        lc_snap_check = lifecycle.snapshot(account_id)
+        if lc_snap_check:
+            invariant_violated = False
+            sessions_today = lc_snap_check.get("sessions_today", 0)
+            uploads_today  = lc_snap_check.get("uploads_today", 0)
+            phase_check    = lc_snap_check.get("phase", "NORMAL")
+            from core.lifecycle_manager import (
+                _PHASE_MAX_SESSIONS_PER_DAY,
+                _PHASE_MAX_UPLOADS_PER_DAY,
+            )
+            max_sessions = _PHASE_MAX_SESSIONS_PER_DAY.get(phase_check, 3)
+            max_uploads  = _PHASE_MAX_UPLOADS_PER_DAY.get(phase_check, 1)
+            if sessions_today >= max_sessions:
+                invariant_violated = True
+                LOGGER.critical(
+                    "session_planner_invariant_sessions_exceeded",
+                    extra={
+                        "event":          "session_planner_invariant_sessions_exceeded",
+                        "account_id":     account_id,
+                        "sessions_today": sessions_today,
+                        "max_sessions":   max_sessions,
+                        "phase":          phase_check,
+                        "decision":       "INVARIANT_FAIL_SKIP",
+                    },
+                )
+            if plan.intent == "UPLOAD" and uploads_today >= max_uploads:
+                invariant_violated = True
+                LOGGER.critical(
+                    "session_planner_invariant_uploads_exceeded",
+                    extra={
+                        "event":         "session_planner_invariant_uploads_exceeded",
+                        "account_id":    account_id,
+                        "uploads_today": uploads_today,
+                        "max_uploads":   max_uploads,
+                        "phase":         phase_check,
+                        "decision":      "INVARIANT_FAIL_SKIP",
+                    },
+                )
+            if invariant_violated:
+                return self._skip(
+                    account_id,
+                    "INVARIANT_VIOLATION",
+                    f"invariant_violated: sessions={sessions_today}/{max_sessions} "
+                    f"uploads={uploads_today}/{max_uploads} phase={phase_check}",
+                    gates,
+                    lifecycle,
+                )
+
+        # ── Register job start ────────────────────────────────────────────────
         coord.register_job_start(account_id, proxy_url or "")
         lifecycle.record_start(account_id)
 

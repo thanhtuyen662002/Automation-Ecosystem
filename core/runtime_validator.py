@@ -30,23 +30,36 @@ from core.fingerprint_engine import RuntimeValidationIssue, validate_runtime
 LOGGER = logging.getLogger("core.runtime_validator")
 
 
-# ── Risk weights per issue code ───────────────────────────────────────────────
+# ── Per-signal risk weights ───────────────────────────────────────────────────
+# Score formula: P(detected) = 1 − Π(1 − w_i)  [probabilistic union]
+# Each weight is P(this signal alone would cause detection).
+# Range: 0.0 (harmless) → 1.0 (certain detection).
 
-_CRITICAL_WEIGHT = 0.30
-_WARNING_WEIGHT  = 0.10
+_SIGNAL_WEIGHTS: dict[str, float] = {
+    "WEBDRIVER_EXPOSED":            0.90,
+    "TIMEZONE_MISMATCH":            0.70,
+    "WEBGLVENDOR_MISMATCH":         0.60,
+    "PLATFORM_MISMATCH":            0.55,
+    "LANGUAGE_MISMATCH":            0.50,
+    "WEBGLRENDERER_MISMATCH":       0.30,
+    "SCREEN_MISMATCH":              0.25,
+    "EVAL_FAILED":                  0.20,
+    "HARDWARECONCURRENCY_MISMATCH": 0.15,
+    "DEVICEMEMORY_MISMATCH":        0.10,
+}
 
 # Category routing for breakdown report
 _CODE_CATEGORY: dict[str, str] = {
-    "WEBDRIVER_EXPOSED":       "behavioral",
-    "PLATFORM_MISMATCH":       "navigator",
+    "WEBDRIVER_EXPOSED":            "behavioral",
+    "EVAL_FAILED":                  "behavioral",
+    "PLATFORM_MISMATCH":            "navigator",
     "HARDWARECONCURRENCY_MISMATCH": "navigator",
-    "DEVICEMEMORY_MISMATCH":   "navigator",
-    "LANGUAGE_MISMATCH":       "navigator",
-    "TIMEZONE_MISMATCH":       "timing",
-    "WEBGLVENDOR_MISMATCH":    "webgl",
-    "WEBGLRENDERER_MISMATCH":  "webgl",
-    "SCREEN_MISMATCH":         "navigator",
-    "EVAL_FAILED":             "behavioral",
+    "DEVICEMEMORY_MISMATCH":        "navigator",
+    "LANGUAGE_MISMATCH":            "navigator",
+    "SCREEN_MISMATCH":              "navigator",
+    "TIMEZONE_MISMATCH":            "geo",
+    "WEBGLVENDOR_MISMATCH":         "rendering",
+    "WEBGLRENDERER_MISMATCH":       "rendering",
 }
 
 
@@ -64,13 +77,12 @@ class FingerprintRiskResult:
 
     def to_session_signals(self) -> dict[str, Any]:
         """Return dict compatible with UpdateStrategyRequest / SessionSignals."""
-        codes = {i.code for i in self.issues}
         return {
             "fingerprint_changed":  self.fingerprint_changed,
             "geo_mismatch":         self.geo_mismatch,
             "device_mismatch":      self.device_mismatch,
             "identity_risk_score":  self.score,
-            "ip_changed":           False,   # caller must set from network layer
+            "ip_changed":           False,
         }
 
     def summary(self) -> dict[str, Any]:
@@ -89,34 +101,35 @@ class FingerprintRiskResult:
 def compute_risk_score(issues: list[RuntimeValidationIssue]) -> FingerprintRiskResult:
     """Compute structured risk assessment from validation issues.
 
-    Score formula:
-        Each CRITICAL issue adds 0.30 to score (capped at 1.0).
-        Each WARNING  issue adds 0.10 to score (capped at 1.0).
-
-    Breakdown splits score by category (navigator / webgl / timing / behavioral).
+    Score formula: P(detected) = 1 − Π(1 − w_i)  [probabilistic union]
+    Naturally non-linear and capped at 1.0.
+    Per-signal weights in _SIGNAL_WEIGHTS.
+    Breakdown is computed per category using the same formula.
     """
-    breakdown: dict[str, float] = {
-        "navigator": 0.0, "webgl": 0.0,
-        "timing": 0.0,    "behavioral": 0.0,
-    }
-    total = 0.0
+    breakdown: dict[str, float] = {"navigator": 0.0, "rendering": 0.0,
+                                   "geo": 0.0,       "behavioral": 0.0}
     codes = {i.code for i in issues}
 
+    global_remaining: float = 1.0
+    cat_remaining: dict[str, float] = {k: 1.0 for k in breakdown}
+
     for issue in issues:
-        weight = _CRITICAL_WEIGHT if issue.severity == "CRITICAL" else _WARNING_WEIGHT
-        total += weight
+        w   = _SIGNAL_WEIGHTS.get(issue.code, 0.10)
+        global_remaining *= (1.0 - w)
         cat = _CODE_CATEGORY.get(issue.code, "behavioral")
-        breakdown[cat] = min(1.0, breakdown.get(cat, 0.0) + weight)
+        cat_remaining[cat] *= (1.0 - w)
 
-    score = min(1.0, total)
+    score = round(1.0 - global_remaining, 4)
+    for cat in breakdown:
+        breakdown[cat] = round(1.0 - cat_remaining[cat], 4)
 
-    fingerprint_changed = (
-        "WEBDRIVER_EXPOSED" in codes
-        or "WEBGLVENDOR_MISMATCH" in codes
-        or "PLATFORM_MISMATCH" in codes
-    )
-    geo_mismatch   = "TIMEZONE_MISMATCH" in codes or "LANGUAGE_MISMATCH" in codes
-    device_mismatch = "SCREEN_MISMATCH" in codes or "HARDWARECONCURRENCY_MISMATCH" in codes
+    fingerprint_changed = bool(codes & {
+        "WEBDRIVER_EXPOSED", "WEBGLVENDOR_MISMATCH", "WEBGLRENDERER_MISMATCH",
+        "PLATFORM_MISMATCH", "LANGUAGE_MISMATCH",
+    })
+    geo_mismatch    = bool(codes & {"TIMEZONE_MISMATCH", "LANGUAGE_MISMATCH"})
+    device_mismatch = bool(codes & {"SCREEN_MISMATCH", "HARDWARECONCURRENCY_MISMATCH",
+                                    "DEVICEMEMORY_MISMATCH"})
 
     return FingerprintRiskResult(
         score=score,
@@ -126,6 +139,69 @@ def compute_risk_score(issues: list[RuntimeValidationIssue]) -> FingerprintRiskR
         geo_mismatch=geo_mismatch,
         device_mismatch=device_mismatch,
         identity_risk_score=score,
+    )
+
+
+@dataclass
+class RuntimeSignals:
+    """Normalized boolean/float view of a FingerprintRiskResult.
+
+    Consumed by StealthBrain.evaluate() — no string parsing or code-set
+    operations needed on the brain side. Every signal is a plain bool or float.
+
+    All fields default to True / 0.0 (clean) so that older callers that
+    build this manually don't need to specify every field.
+    """
+    # Navigator surface
+    platform_match:          bool  = True
+    hardware_match:          bool  = True
+    language_match:          bool  = True
+    screen_match:            bool  = True
+
+    # Geo
+    timezone_match:          bool  = True
+
+    # Rendering
+    webgl_vendor_match:      bool  = True
+    webgl_renderer_match:    bool  = True
+
+    # Behavioral
+    webdriver_hidden:        bool  = True
+    eval_ok:                 bool  = True
+
+    # Aggregate
+    risk_score:              float = 0.0
+    breakdown:               dict  = field(default_factory=dict)
+
+    # Derived flags (mirrors FingerprintRiskResult)
+    fingerprint_changed:     bool  = False
+    geo_mismatch:            bool  = False
+    device_mismatch:         bool  = False
+
+
+def to_runtime_signals(risk: FingerprintRiskResult) -> RuntimeSignals:
+    """Convert a FingerprintRiskResult into a normalized RuntimeSignals object.
+
+    This is the primary feed from RuntimeValidator into StealthBrain.
+    All fields are booleans or floats — no code-string matching needed.
+    """
+    codes = {i.code for i in risk.issues}
+    return RuntimeSignals(
+        platform_match       = "PLATFORM_MISMATCH"              not in codes,
+        hardware_match       = not bool(codes & {
+                                    "HARDWARECONCURRENCY_MISMATCH", "DEVICEMEMORY_MISMATCH"}),
+        language_match       = "LANGUAGE_MISMATCH"              not in codes,
+        screen_match         = "SCREEN_MISMATCH"                not in codes,
+        timezone_match       = "TIMEZONE_MISMATCH"              not in codes,
+        webgl_vendor_match   = "WEBGLVENDOR_MISMATCH"           not in codes,
+        webgl_renderer_match = "WEBGLRENDERER_MISMATCH"         not in codes,
+        webdriver_hidden     = "WEBDRIVER_EXPOSED"              not in codes,
+        eval_ok              = "EVAL_FAILED"                    not in codes,
+        risk_score           = risk.score,
+        breakdown            = dict(risk.breakdown),
+        fingerprint_changed  = risk.fingerprint_changed,
+        geo_mismatch         = risk.geo_mismatch,
+        device_mismatch      = risk.device_mismatch,
     )
 
 
@@ -198,6 +274,14 @@ async def quick_bot_check(page: "Page") -> dict[str, Any]:
         "hw_concurrency_low": 0.10,
         "webgl_missing":      0.15,
     }
+
+    # plugins_empty is authentic on mobile Chrome/Safari — skip that penalty
+    ua = str(checks.get("_ua", ""))  # not in payload; use fallback
+    is_mobile_ua = any(kw in checks.get("__ua__", "") for kw in ("Mobile", "Android", "iPhone"))
+    # Detect via hw_concurrency_low as mobile proxy (4 cores or fewer + no plugins)
+    if checks.get("plugins_empty") and checks.get("hw_concurrency_low"):
+        # Possibly mobile: don't penalise plugins_empty
+        penalties["plugins_empty"] = 0.0
 
     score = 0.0
     triggered = []

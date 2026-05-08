@@ -291,6 +291,7 @@ class CrossAccountCoordinator:
             # a. Base jitter
             base = random.uniform(_BASE_JITTER_LO, _BASE_JITTER_HI)
             reason_parts: list[str] = [f"base={base:.1f}s"]
+            soft_deny = False
 
             # b. Burst detection
             recent_count = sum(
@@ -305,16 +306,41 @@ class CrossAccountCoordinator:
                     f"burst_penalty={burst_extra:.1f}s (recent={recent_count})"
                 )
 
-            # c. Proxy stagger
+            # c. Proxy stagger / overload soft-deny
+            # When a proxy is overloaded (>= _MAX_ACCOUNTS_PER_PROXY active accounts),
+            # return a large soft-deny delay (300s) rather than a small stagger.
+            # This is a SOFT signal — the worker may retry with the same proxy
+            # or switch proxies. It is not a hard block.
             proxy_extra = 0.0
             if proxy_url and self._proxy_accounts.get(proxy_url):
                 active_on_proxy = len(self._proxy_accounts[proxy_url])
-                proxy_extra = random.uniform(_PROXY_STAGGER_LO, _PROXY_STAGGER_HI)
-                reason_parts.append(
-                    f"proxy_stagger={proxy_extra:.1f}s (active_on_proxy={active_on_proxy})"
-                )
+                if active_on_proxy >= _MAX_ACCOUNTS_PER_PROXY:
+                    # Proxy overloaded: emit a 300s soft-deny delay
+                    proxy_extra = 300.0
+                    soft_deny = True
+                    reason_parts.append(
+                        f"proxy_overload_soft_deny=300s "
+                        f"(active_on_proxy={active_on_proxy} >= max={_MAX_ACCOUNTS_PER_PROXY})"
+                    )
+                    LOGGER.warning(
+                        "coordinator_proxy_overload_soft_deny",
+                        extra={
+                            "event":           "coordinator_proxy_overload_soft_deny",
+                            "account_id":      account_id,
+                            "proxy":           proxy_url,
+                            "active_accounts": active_on_proxy,
+                            "max":             _MAX_ACCOUNTS_PER_PROXY,
+                            "soft_deny_secs":  300,
+                            "decision":        "soft_deny",
+                        },
+                    )
+                else:
+                    proxy_extra = random.uniform(_PROXY_STAGGER_LO, _PROXY_STAGGER_HI)
+                    reason_parts.append(
+                        f"proxy_stagger={proxy_extra:.1f}s (active_on_proxy={active_on_proxy})"
+                    )
 
-            total = base + burst_extra + proxy_extra
+            total = base + proxy_extra if soft_deny else base + burst_extra + proxy_extra
 
         LOGGER.info(
             "coordinator_start_delay",
@@ -334,9 +360,13 @@ class CrossAccountCoordinator:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _today_utc(self) -> str:
-        """Return today's UTC date as an ISO string for daily counter resets."""
-        from datetime import date, timezone
-        return date.today().isoformat()
+        """Return today's UTC date as an ISO string for daily counter resets.
+
+        Uses UTC explicitly — not local time — so date-rollover is consistent
+        with lifecycle_manager._today_iso() regardless of server timezone.
+        """
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).date().isoformat()
 
     def _account_sessions_today(self, account_id: str) -> int:
         today = self._today_utc()
@@ -382,10 +412,18 @@ class CrossAccountCoordinator:
     def can_upload_now(self, account_id: str) -> tuple[bool, str]:
         """Check whether this session may perform an upload.
 
-        Enforces two independent caps:
+        This is a SECONDARY (soft-distribution) layer that runs AFTER
+        LifecycleManager.evaluate() has already approved the upload.
+        LifecycleManager is the HARD GATE (phase caps, trust/fatigue gates).
+        This coordinator enforces fleet-level burst throttling and is a
+        per-account safety net only — it cannot override a lifecycle BLOCK,
+        but it CAN restrict a lifecycle-approved upload for fleet health.
+
+        Enforces three independent caps:
           1. 10-min burst window: max 5 fleet uploads in 10 minutes
           2. 1-hour sustained window: max 10 fleet uploads per hour
           3. Per-account daily cap: max 1 upload per account per day
+             (mirrors lifecycle hard cap — belt-and-suspenders safety net)
 
         Returns:
             (allowed: bool, reason: str)
@@ -552,6 +590,44 @@ class CrossAccountCoordinator:
     # 5. Behavior distribution balancer
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _recompute_activity_counts(self) -> None:
+        """Self-heal _activity_counts from the ground-truth _active_jobs dict.
+
+        Called at the start of adjust_personality() to correct any drift caused
+        by jobs that crashed before register_job_end() was called, or any other
+        bookkeeping inconsistency.  Cost: O(N) over active jobs — acceptable
+        since N is bounded by the number of concurrent accounts.
+
+        The only valid activity levels are "low", "medium", "high".  Any unknown
+        levels in active jobs are mapped to "medium" as a safe fallback.
+        """
+        recomputed: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+        # _active_jobs does not store activity_level (it is set at adjust_personality time).
+        # We can only derive the total count from active jobs; per-level breakdown
+        # must come from the running counter.  What we CAN do is clamp the total
+        # to the number of active jobs so it never exceeds reality.
+        total_active_jobs = len(self._active_jobs)
+        total_counted = sum(self._activity_counts.values())
+        if total_counted > 0 and total_active_jobs < total_counted:
+            # Counts are inflated — scale each level down proportionally.
+            scale = total_active_jobs / total_counted
+            for level in ("low", "medium", "high"):
+                recomputed[level] = max(0, round(self._activity_counts[level] * scale))
+            # Ensure total doesn't exceed active jobs after rounding
+            total_after = sum(recomputed.values())
+            if total_after > total_active_jobs:
+                recomputed["medium"] = max(0, recomputed["medium"] - (total_after - total_active_jobs))
+            self._activity_counts = recomputed
+            LOGGER.debug(
+                "coordinator_activity_counts_healed",
+                extra={
+                    "event":          "coordinator_activity_counts_healed",
+                    "active_jobs":    total_active_jobs,
+                    "was_total":      total_counted,
+                    "new_counts":     dict(self._activity_counts),
+                },
+            )
+
     def adjust_personality(self, personality: "SessionPersonality") -> "SessionPersonality":
         """Nudge personality to maintain a healthy distribution across active sessions.
 
@@ -567,10 +643,16 @@ class CrossAccountCoordinator:
             fraction is already at ceiling:
               cap session_duration_target to 10 min
 
+        Self-heals _activity_counts drift on every call to prevent personality
+        skew accumulation from crashed jobs.
+
         Returns a potentially modified copy of the personality.
         Logs any adjustment made.
         """
         from core.behavior_engine import SessionPersonality as _SP
+
+        # Self-heal before reading distribution — fixes any crash-induced drift
+        self._recompute_activity_counts()
 
         total_active = sum(self._activity_counts.values())
         if total_active == 0:

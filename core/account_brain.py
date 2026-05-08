@@ -52,7 +52,9 @@ LOGGER = logging.getLogger("core.account_brain")
 
 # ── Typing ────────────────────────────────────────────────────────────────────
 
-Intent = Literal["BROWSE", "UPLOAD", "IDLE"]
+# SKIP is a valid lifecycle-downgrade signal emitted by LifecycleManager.
+# At the SessionPlanner layer it maps to SessionOutcome.SKIP and plan.intent="IDLE".
+Intent = Literal["BROWSE", "UPLOAD", "IDLE", "SKIP"]
 InteractionLevel = Literal["low", "medium", "high"]
 OperatingMode = Literal["SAFE", "NORMAL", "AGGRESSIVE"]
 RiskLevel = Literal["low", "medium", "high"]
@@ -645,10 +647,24 @@ class AccountBrainRegistry:
         self,
         account_id: str,
         now: datetime | None = None,
+        skip_fatigue_decay: bool = False,
     ) -> SessionPlan:
-        """Apply fatigue decay then decide the session plan."""
+        """Apply fatigue decay then decide the session plan.
+
+        Args:
+            account_id:         Account UUID.
+            now:                Override for current time (tests / scheduling).
+            skip_fatigue_decay: If True, skip apply_fatigue_decay() because the
+                                caller has ALREADY applied it in this planning
+                                cycle.  Used by SessionPlanner to prevent the
+                                double-decay bug: SessionPlanner decays once at
+                                Layer 3, then calls this method at Layer 4.
+                                Without this flag the method would decay again,
+                                halving fatigue twice in a single session plan.
+        """
         state = self.get_state(account_id)
-        apply_fatigue_decay(state)
+        if not skip_fatigue_decay:
+            apply_fatigue_decay(state)
         plan = decide_session_plan(state, now=now)
         # Clear one-shot override after use
         if state.intent_override is not None:
@@ -667,6 +683,7 @@ class AccountBrainRegistry:
         LOGGER.info("account_brain_decision", extra=log_entry)
         self._decision_log.append(log_entry)
         return plan
+
 
     def update_strategy(
         self,

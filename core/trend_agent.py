@@ -1,46 +1,37 @@
 """
-Trend Agent — Layer 7.5: Market signal simulation + ContentEngine integration.
+Trend Agent — Layer 7.5: Simulated trend discovery + ContentEngine integration.
 
 Simulates a Kalodata-style trending product discovery system.
 
 Input:
-    keyword: str | None          — optional filter keyword
-    account_id: str              — drives deterministic variation
-    top_n: int                   — max results to return (default 10)
+    keyword:   str | None  — optional niche filter
+    account_id: str        — drives per-account deterministic variation
+    top_n:     int         — max results (default 10)
+    day_seed:  int | None  — override daily seed (default: today UTC YYYYMMDD int)
 
 Output:
-    list[TrendResult]:
-        product: str             — product name
-        score:   float           — trending score 0.0–1.0
-        reason:  str             — human-readable explanation
-
-Internal pipeline:
-    1. Keyword expansion        — expand keyword into search variants
-    2. Product catalog scan     — score products from simulated catalog
-    3. Signal computation       — velocity + engagement + saturation scores
-    4. Rank + filter            — top_n by score, deduped
-    5. ContentEngine push       — convert top results → ContentPlan inputs
+    list[TrendResult] sorted by score desc:
+        product:  str   — product name
+        score:    float — 0.000–1.000
+        reason:   str   — human-readable explanation
+        niche:    str
+        category: str
+        day_seed: int   — seed used (for reproducibility audit)
 
 Design contracts:
-    - 100% deterministic per (keyword, account_id) pair
-    - No HTTP calls — pure simulation with realistic distributions
-    - ContentEngine receives TrendResult as a build_plan() source
-    - Score always in [0.0, 1.0] with 3 decimal precision
-    - reason always a non-empty string
-    - product always a non-empty string
-
-Usage:
-    agent = get_trend_agent()
-    results = agent.scan(keyword="skincare", account_id="acct-01")
-    plans   = agent.push_to_content_engine(results, account_id="acct-01")
+    - 100% deterministic: same (keyword, account_id, day_seed) → same output.
+    - No HTTP calls — pure simulation.
+    - Seed = hash(account_id + keyword + day_str).
+    - Small daily variation only (single day_seed, no week/slot stacking).
+    - Per-account variation via account_id in seed key (not a separate slot hash).
+    - Score always in [0.0, 1.0] with 3 decimal precision.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
-import math
-import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -49,30 +40,55 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("core.trend_agent")
 
 
-# ── PRNG helpers ──────────────────────────────────────────────────────────────
+# ── Stable deterministic hash helpers ────────────────────────────────────────
 
-def _tseed(key: str, slot: int) -> float:
-    """Deterministic float [0,1) from composite key + slot."""
-    h = hashlib.sha256(f"ta:{key}:{slot}".encode()).hexdigest()
-    return int(h[:8], 16) / 0xFFFFFFFF
+def stable_hash_int(*parts: str, mod: int = 10 ** 9) -> int:
+    """Stable, process-invariant integer hash (SHA-256 based).
 
-
-def _tpick(key: str, slot: int, pool: list) -> Any:
-    return pool[int(_tseed(key, slot) * len(pool))]
-
-
-def _tfloat(key: str, slot: int, lo: float, hi: float) -> float:
-    return round(lo + _tseed(key, slot) * (hi - lo), 4)
+    Identical to mutation_controller.stable_hash_int. Duplicated here to keep
+    this module self-contained without a circular import.
+    Output is identical across Python processes, machines, and runs.
+    """
+    h = hashlib.sha256("|".join(parts).encode()).hexdigest()
+    return int(h[:16], 16) % mod
 
 
-def _tint(key: str, slot: int, lo: int, hi: int) -> int:
-    return lo + int(_tseed(key, slot) * (hi - lo + 1))
+def build_time_seed(account_id: str, day_seed: int) -> int:
+    """Account-decorrelated daily seed.
+
+    FIX 2: raw day_seed is shared by ALL accounts (same date = same pattern).
+    This function mixes account_id in so each account gets a unique base seed
+    per day, preventing cross-account synchronisation.
+
+    Still deterministic: same (account_id, day_seed) always gives same result.
+    """
+    return stable_hash_int(account_id, str(day_seed))
+
+
+def _seed_float(key: str) -> float:
+    """Deterministic float [0, 1) from a composite string key. Process-stable."""
+    return stable_hash_int(key) / (10 ** 9 - 1)
+
+
+def _seed_pick(key: str, pool: list) -> Any:
+    """Pick deterministically from a list."""
+    return pool[int(_seed_float(key) * len(pool))]
+
+
+def _seed_float_range(key: str, lo: float, hi: float) -> float:
+    return round(lo + _seed_float(key) * (hi - lo), 4)
+
+
+def _seed_int_range(key: str, lo: int, hi: int) -> int:
+    return lo + int(_seed_float(key) * (hi - lo + 1))
+
+
+def _today_int() -> int:
+    """Today's UTC date as YYYYMMDD integer. Changes once per day."""
+    return int(datetime.now(timezone.utc).strftime("%Y%m%d"))
 
 
 # ── Product catalog ────────────────────────────────────────────────────────────
-# Simulates a Kalodata-style product database.
-# Structured as niche → list of (product_name, base_score, category).
-# base_score represents inherent popularity of the niche (before signal modifiers).
 
 _CATALOG: dict[str, list[tuple[str, float, str]]] = {
     "skincare": [
@@ -157,91 +173,69 @@ _CATALOG: dict[str, list[tuple[str, float, str]]] = {
     ],
 }
 
-# Keyword → niche mapping (also covers partial matches)
 _KEYWORD_NICHE_MAP: dict[str, str] = {
-    "skincare":   "skincare",
-    "beauty":     "skincare",
-    "serum":      "skincare",
-    "moisturizer":"skincare",
-    "fitness":    "fitness",
-    "workout":    "fitness",
-    "gym":        "fitness",
-    "protein":    "fitness",
-    "kitchen":    "kitchen",
-    "cooking":    "kitchen",
-    "air fryer":  "kitchen",
-    "food":       "kitchen",
-    "tech":       "tech",
-    "gadget":     "tech",
-    "camera":     "tech",
-    "phone":      "tech",
-    "fashion":    "fashion",
-    "clothing":   "fashion",
-    "style":      "fashion",
-    "outfit":     "fashion",
-    "pet":        "pet",
-    "dog":        "pet",
-    "cat":        "pet",
-    "animal":     "pet",
-    "home":       "home",
-    "decor":      "home",
-    "smart":      "home",
-    "light":      "home",
-    "baby":       "baby",
-    "infant":     "baby",
-    "toddler":    "baby",
-    "parenting":  "baby",
+    "skincare": "skincare", "beauty": "skincare", "serum": "skincare", "moisturizer": "skincare",
+    "fitness":  "fitness",  "workout": "fitness",  "gym": "fitness",    "protein": "fitness",
+    "kitchen":  "kitchen",  "cooking": "kitchen",  "air fryer": "kitchen", "food": "kitchen",
+    "tech":     "tech",     "gadget": "tech",      "camera": "tech",    "phone": "tech",
+    "fashion":  "fashion",  "clothing": "fashion", "style": "fashion",  "outfit": "fashion",
+    "pet":      "pet",      "dog": "pet",          "cat": "pet",        "animal": "pet",
+    "home":     "home",     "decor": "home",       "smart": "home",     "light": "home",
+    "baby":     "baby",     "infant": "baby",      "toddler": "baby",   "parenting": "baby",
 }
 
-# Trending reason templates (seeded per product)
 _REASON_TEMPLATES: list[str] = [
-    "{product} is trending with {velocity}% weekly sales growth in the {category} niche",
+    "{product} trending with {velocity}% weekly sales growth in the {category} niche",
     "High engagement rate ({engagement}%) on short-form content featuring {product}",
     "{product} has {saturation}% lower market saturation than comparable alternatives",
-    "Search volume spike detected for {product} — up {velocity}% this week",
-    "{product} trending in {category} with strong repeat-purchase signal ({repeat}%)",
-    "Low competition + high demand: {product} has a {score} opportunity score",
-    "{product} dominating the {category} TikTok Shop — {velocity}% GMV increase",
-    "Viral potential: {product} featured in {engagement} creator videos this week",
+    "Search volume spike for {product} — up {velocity}% this week",
+    "{product} in {category} with strong repeat-purchase signal ({repeat}%)",
+    "Low competition + high demand: {product} opportunity score {score}",
+    "{product} dominating {category} TikTok Shop — {velocity}% GMV increase",
+    "Viral: {product} featured in {engagement} creator videos this week",
 ]
+
+# Signal weights for composite score
+_SIGNAL_WEIGHTS: dict[str, float] = {
+    "velocity":    0.35,
+    "engagement":  0.25,
+    "saturation":  0.20,
+    "repeat_rate": 0.10,
+    "recency":     0.10,
+}
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
 class TrendSignals:
-    """Internal scoring breakdown for a single product."""
-    velocity:    float    # sales growth rate 0–1
-    engagement:  float    # content engagement rate 0–1
-    saturation:  float    # inverse saturation (higher = less crowded) 0–1
-    repeat_rate: float    # repeat purchase probability 0–1
-    recency:     float    # how recently it started trending 0–1
+    """Internal scoring signals for a single product."""
+    velocity:    float
+    engagement:  float
+    saturation:  float   # inverse saturation — higher = less crowded
+    repeat_rate: float
+    recency:     float
 
 
 @dataclass
 class TrendResult:
-    """Single trending product result (matches required output schema exactly)."""
+    """Single trending product result."""
     product:  str
-    score:    float    # 0.000–1.000
+    score:    float       # 0.000–1.000
     reason:   str
-    # Internal fields (not in required schema but useful for integration)
-    niche:    str      = ""
-    category: str      = ""
+    niche:    str         = ""
+    category: str         = ""
     signals:  TrendSignals | None = None
+    day_seed: int         = 0    # temporal seed used — for audit/reproducibility
 
     def to_dict(self) -> dict[str, Any]:
-        """Returns the required output schema {product, score, reason}."""
-        return {
-            "product": self.product,
-            "score":   self.score,
-            "reason":  self.reason,
-        }
+        return {"product": self.product, "score": self.score, "reason": self.reason}
 
     def to_full_dict(self) -> dict[str, Any]:
-        """Extended dict including niche, category and signal breakdown."""
         d = self.to_dict()
         d["niche"]    = self.niche
         d["category"] = self.category
+        d["day_seed"] = self.day_seed
         if self.signals:
             d["signals"] = {
                 "velocity":    self.signals.velocity,
@@ -257,31 +251,15 @@ class TrendResult:
 
 class TrendAgent:
     """
-    Layer 7.5: Simulated trend discovery engine.
+    Simulated trend discovery engine.
 
-    Produces deterministic, varied trending product signals per
-    (keyword, account_id) pair. Integrates with ContentEngine to
-    convert top trends into ready-to-use ContentPlan inputs.
-
-    Public API:
-        scan()                 → list[TrendResult]
-        push_to_content_engine() → list[ContentPlan]
-        scan_and_plan()        → tuple[list[TrendResult], list[ContentPlan]]
+    Fully deterministic: seed = hash(account_id + keyword_or_niche + product_index + day).
+    Daily variation: day_seed changes once per UTC day.
+    Per-account variation: account_id is part of the seed key.
+    No week seeds, no slot hashing — one clear seed per (account, product, day).
     """
 
-    # Weights for final composite score
-    _SIGNAL_WEIGHTS: dict[str, float] = {
-        "velocity":    0.35,
-        "engagement":  0.25,
-        "saturation":  0.20,
-        "repeat_rate": 0.10,
-        "recency":     0.10,
-    }
-
-    def __init__(
-        self,
-        content_engine: Any | None = None,   # ContentEngine (optional injection)
-    ) -> None:
+    def __init__(self, content_engine: Any | None = None) -> None:
         from core.content_engine import get_content_engine
         self._engine = content_engine or get_content_engine()
 
@@ -292,43 +270,48 @@ class TrendAgent:
         account_id: str,
         keyword:    str | None = None,
         top_n:      int        = 10,
-        mode_hint:  str        = "create",   # content mode to tag results with
+        mode_hint:  str        = "create",
+        day_seed:   int | None = None,
     ) -> list[TrendResult]:
-        """
-        Scan trending products, optionally filtered by keyword.
+        """Scan trending products, optionally filtered by keyword.
 
         Args:
-            account_id: Drives deterministic variation across accounts.
-            keyword:    Optional filter; matches niche or partial product name.
-            top_n:      Max results to return.
-            mode_hint:  Hint for downstream ContentEngine (not used in scoring).
+            account_id: Drives per-account seed variation.
+            keyword:    Optional niche/keyword filter.
+            top_n:      Max results returned.
+            mode_hint:  Passed to ContentEngine (not used in scoring).
+            day_seed:   Override for daily seed. Default: today's YYYYMMDD int.
+                        Pass a fixed int in tests to pin the date.
 
         Returns:
-            list[TrendResult] sorted by score descending, length <= top_n.
+            list[TrendResult] sorted by score desc, length <= top_n.
+            Same inputs always produce the same output.
         """
-        niches = self._resolve_niches(keyword, account_id)
+        ds = day_seed if day_seed is not None else _today_int()
+        # FIX 2: decorrelate accounts — each (account, day) gets a unique base seed.
+        base_seed = build_time_seed(account_id, ds)
+        niches = self._resolve_niches(keyword, account_id, base_seed)
         candidates: list[TrendResult] = []
 
         for niche in niches:
-            products = _CATALOG.get(niche, [])
-            for i, (product, base, category) in enumerate(products):
-                # Composite seed: account + niche + product position
-                seed_key = f"{account_id}:{niche}:{i}"
-                signals  = self._compute_signals(seed_key, base)
-                score    = self._composite_score(signals, base)
-                reason   = self._generate_reason(
-                    product, category, signals, score, seed_key
-                )
+            for i, (product, base, category) in enumerate(_CATALOG.get(niche, [])):
+                # FIX 1 + FIX 2: seed is now account-decorrelated and process-stable.
+                # key = stable_hash of (account-decorated base_seed, niche, product index).
+                key = f"{base_seed}:{niche}:{i}"
+                sig   = self._compute_signals(key, base)
+                score = self._composite_score(sig, base)
+                reason = self._generate_reason(product, category, sig, score, key)
                 candidates.append(TrendResult(
                     product  = product,
                     score    = round(score, 3),
                     reason   = reason,
                     niche    = niche,
                     category = category,
-                    signals  = signals,
+                    signals  = sig,
+                    day_seed = ds,
                 ))
 
-        # Sort by score desc, deduplicate by product name
+        # Deduplicate by product name, sort by score desc, take top_n
         seen: set[str] = set()
         ranked: list[TrendResult] = []
         for r in sorted(candidates, key=lambda x: x.score, reverse=True):
@@ -338,63 +321,36 @@ class TrendAgent:
             if len(ranked) >= top_n:
                 break
 
-        LOGGER.info("trend_scan_complete", extra={
-            "account_id": account_id,
-            "keyword":    keyword,
-            "niches":     niches,
-            "candidates": len(candidates),
-            "returned":   len(ranked),
-        })
-
+        LOGGER.info(
+            "trend_scan account=%s keyword=%s niches=%s returned=%d day_seed=%d",
+            account_id, keyword, niches, len(ranked), ds,
+        )
         return ranked
 
     def push_to_content_engine(
         self,
         results:    list[TrendResult],
         account_id: str,
-        mode:       str = "create",
-        profile:    Any | None = None,   # IdentityProfile (optional)
+        mode:       str        = "create",
+        profile:    Any | None = None,
     ) -> list["ContentPlan"]:
-        """
-        Convert TrendResults into ContentPlans via ContentEngine.
-
-        Each TrendResult becomes one ContentPlan with:
-            source = "trend://{niche}/{product}" (deterministic URI)
-            type   = "product"
-            mode   = mode param
-
-        Args:
-            results:    Output of scan().
-            account_id: Account to build plans for.
-            mode:       ContentEngine mode (create/remake/reup).
-            profile:    Optional IdentityProfile for style hints.
-
-        Returns:
-            list[ContentPlan], same length as results.
-        """
+        """Convert TrendResults → ContentPlans via ContentEngine."""
         plans = []
         for result in results:
             source = f"trend://{result.niche}/{result.product.lower().replace(' ', '-')}"
-            input_data = {
-                "account_id": account_id,
-                "type":       "product",
-                "source":     source,
-                "mode":       mode,
-            }
             try:
-                plan = self._engine.build_plan(input_data, profile=profile)
+                plan = self._engine.build_plan(
+                    {"account_id": account_id, "type": "product", "source": source, "mode": mode},
+                    profile=profile,
+                )
                 plans.append(plan)
-                LOGGER.debug("trend_plan_built", extra={
-                    "account_id":  account_id,
-                    "product":     result.product,
-                    "template_id": plan.template_id,
-                })
+                LOGGER.debug(
+                    "trend_plan_built account=%s product=%s template=%s",
+                    account_id, result.product, plan.template_id,
+                )
             except Exception as exc:
-                LOGGER.error("trend_plan_error", extra={
-                    "account_id": account_id,
-                    "product":    result.product,
-                    "error":      str(exc),
-                })
+                LOGGER.error("trend_plan_error account=%s product=%s error=%s",
+                             account_id, result.product, exc)
         return plans
 
     def scan_and_plan(
@@ -404,128 +360,72 @@ class TrendAgent:
         top_n:      int        = 5,
         mode:       str        = "create",
         profile:    Any | None = None,
+        day_seed:   int | None = None,
     ) -> tuple[list[TrendResult], list["ContentPlan"]]:
-        """
-        Convenience: scan() + push_to_content_engine() in one call.
-
-        Returns:
-            (trend_results, content_plans) — parallel lists.
-        """
-        results = self.scan(account_id=account_id, keyword=keyword, top_n=top_n, mode_hint=mode)
-        plans   = self.push_to_content_engine(results, account_id=account_id, mode=mode, profile=profile)
+        """Convenience wrapper: scan() then push_to_content_engine()."""
+        results = self.scan(account_id=account_id, keyword=keyword,
+                            top_n=top_n, mode_hint=mode, day_seed=day_seed)
+        plans   = self.push_to_content_engine(results, account_id=account_id,
+                                               mode=mode, profile=profile)
         return results, plans
 
-    # ── Internal pipeline ─────────────────────────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _resolve_niches(self, keyword: str | None, account_id: str) -> list[str]:
-        """
-        Map keyword to one or more catalog niches.
-        If keyword is None, return all niches in a seeded order (account-specific).
+    @staticmethod
+    def _resolve_niches(keyword: str | None, account_id: str, base_seed: int) -> list[str]:
+        """Map keyword to niche list. If no keyword, return all niches in seeded order.
+
+        base_seed is already account-decorrelated via build_time_seed().
         """
         if keyword is None:
-            # Return all niches; seeded shuffle so each account gets different order
             niches = list(_CATALOG.keys())
-            # Seeded rotation: pick a start offset
-            offset = _tint(account_id, 0, 0, len(niches) - 1)
+            offset = _seed_int_range(str(base_seed), 0, len(niches) - 1)
             return niches[offset:] + niches[:offset]
 
-        kw_lower = keyword.lower().strip()
+        kw = keyword.lower().strip()
+        if kw in _KEYWORD_NICHE_MAP:
+            return [_KEYWORD_NICHE_MAP[kw]]
 
-        # Exact match
-        if kw_lower in _KEYWORD_NICHE_MAP:
-            return [_KEYWORD_NICHE_MAP[kw_lower]]
-
-        # Partial match
-        matches = [
-            niche for kw, niche in _KEYWORD_NICHE_MAP.items()
-            if kw in kw_lower or kw_lower in kw
-        ]
+        matches = [n for k, n in _KEYWORD_NICHE_MAP.items() if k in kw or kw in k]
         if matches:
-            # Deduplicate preserving order
             seen: set[str] = set()
-            return [m for m in matches if not (m in seen or seen.add(m))]  # type: ignore[func-returns-value]
+            return [m for m in matches if not (m in seen or seen.add(m))]  # type: ignore
 
-        # No match → fall back to a seeded niche selection (avoid ignoring keyword)
-        LOGGER.debug("keyword_no_match", extra={"keyword": keyword, "account_id": account_id})
-        all_niches = list(_CATALOG.keys())
-        picked = _tpick(account_id, 5, all_niches)
-        return [picked]
+        # Fallback: seeded pick from full catalog using account-decorrelated seed.
+        return [_seed_pick(str(base_seed), list(_CATALOG.keys()))]
 
-    def _compute_signals(self, seed_key: str, base_score: float) -> TrendSignals:
-        """
-        Compute per-product trend signals.
-        base_score biases the central tendency so popular niches score higher.
-        Each signal is independently seeded for variety.
-        """
-        # Velocity: sales growth — biased upward for high base products
-        velocity = _tfloat(seed_key, 10, base_score * 0.6, min(1.0, base_score * 1.25))
-
-        # Engagement: content interaction rate
-        engagement = _tfloat(seed_key, 20, base_score * 0.5, min(1.0, base_score * 1.3))
-
-        # Saturation: inverse of market crowding (higher = less saturated = better)
-        raw_sat = _tfloat(seed_key, 30, 0.1, 0.9)
-        # Lower base_score → potentially more room (less crowded niches)
-        saturation = round(raw_sat * (1.2 - base_score * 0.3), 4)
-        saturation = max(0.0, min(1.0, saturation))
-
-        # Repeat purchase rate
-        repeat_rate = _tfloat(seed_key, 40, 0.2, 0.85)
-
-        # Recency: how fresh the trend is (0 = old, 1 = just started)
-        recency = _tfloat(seed_key, 50, 0.3, 1.0)
-
+    @staticmethod
+    def _compute_signals(key: str, base: float) -> TrendSignals:
+        """Compute per-product signals. base biases the distribution."""
         return TrendSignals(
-            velocity    = velocity,
-            engagement  = engagement,
-            saturation  = saturation,
-            repeat_rate = repeat_rate,
-            recency     = recency,
+            velocity    = _seed_float_range(f"{key}:v",  base * 0.6, min(1.0, base * 1.25)),
+            engagement  = _seed_float_range(f"{key}:e",  base * 0.5, min(1.0, base * 1.3)),
+            saturation  = max(0.0, min(1.0, _seed_float_range(f"{key}:s", 0.1, 0.9) * (1.2 - base * 0.3))),
+            repeat_rate = _seed_float_range(f"{key}:r",  0.2, 0.85),
+            recency     = _seed_float_range(f"{key}:rc", 0.3, 1.0),
         )
 
-    def _composite_score(self, s: TrendSignals, base: float) -> float:
-        """
-        Weighted composite of all signals plus base_score anchor.
-        Score is in [0.0, 1.0].
-        """
-        w = self._SIGNAL_WEIGHTS
-        raw = (
-            s.velocity    * w["velocity"]
-            + s.engagement  * w["engagement"]
-            + s.saturation  * w["saturation"]
-            + s.repeat_rate * w["repeat_rate"]
-            + s.recency     * w["recency"]
-        )
-        # Blend with base_score (30% anchor so catalog quality matters)
-        blended = raw * 0.70 + base * 0.30
-        return max(0.0, min(1.0, round(blended, 4)))
+    @staticmethod
+    def _composite_score(s: TrendSignals, base: float) -> float:
+        """Weighted composite of signals + base anchor → [0.0, 1.0]."""
+        w = _SIGNAL_WEIGHTS
+        raw = (s.velocity * w["velocity"] + s.engagement * w["engagement"]
+               + s.saturation * w["saturation"] + s.repeat_rate * w["repeat_rate"]
+               + s.recency * w["recency"])
+        return max(0.0, min(1.0, round(raw * 0.70 + base * 0.30, 4)))
 
-    def _generate_reason(
-        self,
-        product:  str,
-        category: str,
-        signals:  TrendSignals,
-        score:    float,
-        seed_key: str,
-    ) -> str:
-        """Generate a seeded, human-readable reason string."""
-        template = _tpick(seed_key, 60, _REASON_TEMPLATES)
-
-        velocity_pct    = int(signals.velocity    * 120)   # up to 120%
-        engagement_pct  = int(signals.engagement  * 100)
-        saturation_pct  = int((1 - signals.saturation) * 80) + 10  # lower is better
-        repeat_pct      = int(signals.repeat_rate * 100)
-        creator_count   = _tint(seed_key, 70, 120, 4800)
-
+    @staticmethod
+    def _generate_reason(product: str, category: str, s: TrendSignals, score: float, key: str) -> str:
+        template = _seed_pick(f"{key}:tmpl", _REASON_TEMPLATES)
         return template.format(
-            product     = product,
-            category    = category,
-            velocity    = velocity_pct,
-            engagement  = engagement_pct,
-            saturation  = saturation_pct,
-            repeat      = repeat_pct,
-            score       = score,
-        ).replace("{engagement}", str(creator_count))   # if template uses raw count
+            product    = product,
+            category   = category,
+            velocity   = int(s.velocity   * 120),
+            engagement = int(s.engagement * 100),
+            saturation = int((1 - s.saturation) * 80) + 10,
+            repeat     = int(s.repeat_rate * 100),
+            score      = score,
+        )
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

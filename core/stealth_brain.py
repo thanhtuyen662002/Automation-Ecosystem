@@ -1,34 +1,24 @@
 """
-Stealth Brain — Adaptive anti-detect decision engine.
+Stealth Brain — Anti-detect decision engine.
 
 Architecture:
-    RuntimeValidator  →  RuntimeSignals  →  StealthBrain.evaluate()
-                                                     │
-                                                     ▼
-                                               Strategy (risk_level + actions[])
-                                                     │
-                                                     ▼
-                                         MutationController.apply(profile, strategy)
+    RuntimeSignals → StealthBrain.evaluate() → Strategy → MutationController.apply()
 
-Design contract:
+Design contracts:
   - StealthBrain NEVER modifies IdentityProfile directly.
-  - It reads RuntimeSignals, inspects StealthMemory, and returns a Strategy.
-  - MutationController executes the strategy against the profile.
-  - This separation makes the mutation logic testable and auditable.
+  - Each account is fully isolated: no shared in-process state between accounts.
+  - Risk classification uses fixed thresholds: LOW < 0.3, MEDIUM 0.3–0.7, HIGH > 0.7.
+  - StealthMemory is per-account only.
+  - Escalation rules are explicit, ordered, and logged with a single reason string.
+  - GlobalMemory is ADVISORY ONLY: it contributes at most +0.10 to risk_score
+    and can trigger a hard-filter HIGH if a fingerprint is globally banned.
+    Local decisions always take precedence.
 
-Usage:
-    from core.stealth_brain import get_stealth_brain
-    from core.runtime_validator import to_runtime_signals, validate_fingerprint
-    from core.mutation_controller import get_mutation_controller
-
-    # After page.goto():
-    risk    = await validate_fingerprint(page, profile)
-    signals = to_runtime_signals(risk)
-    strategy = get_stealth_brain().evaluate(account_id, signals, profile)
-    result  = get_mutation_controller().apply(profile, strategy)
-
-    # After session completes:
-    get_stealth_brain().process_session_outcome(account_id, "success", profile)
+StealthMemory keeps:
+  - banned_fingerprints: list[{hash, expires_at}] with 7-day TTL, auto-purged.
+  - outcome_history: last 10 session records (no weighting, plain list).
+  - consecutive_bad: int counter reset on each clean signal.
+  - session counters: total_sessions, total_bans, total_checkpoints.
 """
 from __future__ import annotations
 
@@ -38,50 +28,129 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from core.runtime_validator import RuntimeSignals
-from core.mutation_controller import (
-    RiskLevel, Action, Strategy,
-    MutationResult,
-)
+from core.mutation_controller import RiskLevel, Action, Strategy
 from core.identity_manager import IdentityProfile
 
 LOGGER = logging.getLogger("core.stealth_brain")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+# Fixed risk thresholds — do NOT make these dynamic.
+RISK_LOW_MAX:  float = 0.30   # score < 0.30  → LOW
+RISK_HIGH_MIN: float = 0.70   # score >= 0.70 → HIGH
+# 0.30 <= score < 0.70 → MEDIUM
+
+# Banned fingerprint TTL.
+BAN_TTL_DAYS: float = 7.0
+
+# Consecutive bad signals needed to escalate one tier.
+CONSECUTIVE_BAD_THRESHOLD: int = 3
+
+# Recent outcome window for captcha/block checks.
+RECENT_OUTCOME_WINDOW: int = 5
+
+
+# ── Global Memory integration ────────────────────────────────────────────────
+# GlobalMemory is ADVISORY ONLY — it never overrides local decisions.
+# Imported lazily so the system works even if the DB file is missing.
+
+from core.global_memory import get_global_memory  # noqa: E402  (after stdlib imports)
+from core.mutation_controller import (             # noqa: E402  (after stdlib imports)
+    _account_noise, apply_behavior_noise, _behavior_noise, stable_hash_int,
+    _normalized_noise,
+)
+from core.persona_engine import get_persona_engine   # noqa: E402  (after stdlib imports)
+
+# P5: per-account inertia for global adj (process-scoped, zero cross-account state).
+_PREV_ADJ: dict[str, float] = {}
 
 
 # ── StealthMemory ─────────────────────────────────────────────────────────────
 
 @dataclass
 class StealthMemory:
-    """Persistent per-account brain state (separate from IdentityProfile)."""
-    account_id: str
-    banned_fingerprints: list[str] = field(default_factory=list)
-    total_sessions:    int = 0
-    total_bans:        int = 0
-    total_checkpoints: int = 0
-    consecutive_bad:   int = 0   # Consecutive sessions with risk >= 0.30
-    # Rolling outcome records (last 10) — drives adaptive escalation
-    outcome_history:   list = field(default_factory=list)
+    """Per-account brain state. Never shared between accounts."""
+
+    account_id:          str
+    # Banned fingerprints with 7-day TTL: [{hash, expires_at}]
+    banned_fingerprints: list[dict]  = field(default_factory=list)
+    # Plain session outcome records, last 10 (no weighting).
+    outcome_history:     list[dict]  = field(default_factory=list)
+    consecutive_bad:     int         = 0
+    total_sessions:      int         = 0
+    total_bans:          int         = 0
+    total_checkpoints:   int         = 0
+
+    # ── Ban TTL management ────────────────────────────────────────────────────
+
+    def add_banned(self, fingerprint: str) -> None:
+        """Add fingerprint to local ban list with 7-day TTL."""
+        self.banned_fingerprints.append({
+            "hash":       fingerprint,
+            "expires_at": time.time() + BAN_TTL_DAYS * 86400,
+        })
+
+    def purge_expired_bans(self) -> None:
+        """Remove expired ban entries. Called on every evaluate()."""
+        now = time.time()
+        self.banned_fingerprints = [
+            b for b in self.banned_fingerprints if b["expires_at"] > now
+        ]
+
+    def is_banned(self, fingerprint: str) -> bool:
+        """Return True if fingerprint is in the active (non-expired) ban list."""
+        self.purge_expired_bans()
+        return any(b["hash"] == fingerprint for b in self.banned_fingerprints)
+
+    # ── Outcome history ───────────────────────────────────────────────────────
+
+    def add_outcome(self, record: dict) -> None:
+        """Append outcome record. Keeps last 10 only."""
+        self.outcome_history.append(record)
+        if len(self.outcome_history) > 10:
+            self.outcome_history.pop(0)
+
+    def recent_count(self, key: str, window: int = RECENT_OUTCOME_WINDOW) -> int:
+        """Count how many of the last `window` outcomes have key=True."""
+        return sum(
+            1 for o in self.outcome_history[-window:] if o.get(key)
+        )
+
+    def any_recent(self, key: str, window: int = 3) -> bool:
+        """Return True if any of the last `window` outcomes have key=True."""
+        return any(o.get(key) for o in self.outcome_history[-window:])
+
+    # ── Serialization ─────────────────────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "account_id":          self.account_id,
             "banned_fingerprints": self.banned_fingerprints,
+            "outcome_history":     self.outcome_history,
+            "consecutive_bad":     self.consecutive_bad,
             "total_sessions":      self.total_sessions,
             "total_bans":          self.total_bans,
             "total_checkpoints":   self.total_checkpoints,
-            "consecutive_bad":     self.consecutive_bad,
-            "outcome_history":     self.outcome_history,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "StealthMemory":
+        now = time.time()
+        bans: list[dict] = []
+        for entry in d.get("banned_fingerprints", []):
+            if isinstance(entry, str):
+                # Backward compat: v1 stored plain strings
+                bans.append({"hash": entry, "expires_at": now + BAN_TTL_DAYS * 86400})
+            elif isinstance(entry, dict) and "hash" in entry:
+                bans.append(entry)
         return cls(
-            account_id         = d["account_id"],
-            banned_fingerprints= d.get("banned_fingerprints", []),
-            total_sessions     = d.get("total_sessions", 0),
-            total_bans         = d.get("total_bans", 0),
-            total_checkpoints  = d.get("total_checkpoints", 0),
-            consecutive_bad    = d.get("consecutive_bad", 0),
-            outcome_history    = d.get("outcome_history", []),
+            account_id          = d["account_id"],
+            banned_fingerprints = bans,
+            outcome_history     = d.get("outcome_history", []),
+            consecutive_bad     = int(d.get("consecutive_bad", 0)),
+            total_sessions      = int(d.get("total_sessions", 0)),
+            total_bans          = int(d.get("total_bans", 0)),
+            total_checkpoints   = int(d.get("total_checkpoints", 0)),
         )
 
 
@@ -89,14 +158,17 @@ class StealthMemory:
 
 class StealthBrain:
     """
-    Decision engine: normalised signals in → typed Strategy out.
-    Never modifies IdentityProfile. Never calls MutationController directly.
+    Decision engine: RuntimeSignals in → Strategy out.
+
+    Never modifies IdentityProfile. Fully account-isolated (no shared state).
+    Risk is classified by fixed thresholds. Escalation rules are explicit and ordered.
     """
 
     def __init__(self) -> None:
         self._memories: dict[str, StealthMemory] = {}
 
     def get_memory(self, account_id: str) -> StealthMemory:
+        """Return per-account memory, creating it lazily on first access."""
         if account_id not in self._memories:
             self._memories[account_id] = StealthMemory(account_id=account_id)
         return self._memories[account_id]
@@ -109,131 +181,140 @@ class StealthBrain:
         signals: RuntimeSignals,
         profile: IdentityProfile,
     ) -> Strategy:
-        """Evaluate RuntimeSignals and return a typed Strategy.
+        """Classify risk and return a Strategy.
 
-        Risk level classification:
-          LOW    (score < 0.30)  : no mutation
-          MEDIUM (0.30 - 0.60)   : partial — rotate rendering seeds only
-          HIGH   (score >= 0.60) : full — regen from base + increment mutation_state
+        Fixed thresholds:
+            LOW    score < 0.30  → no mutation
+            MEDIUM 0.30–0.70     → canvas/geo rotation
+            HIGH   score > 0.70  → full regen
 
-        Escalation rules (in priority order):
-          1. webdriver exposed          → always HIGH
-          2. fingerprint in ban list    → always HIGH
-          3. 3+ recent captchas         → escalate to HIGH immediately
-          4. blocked outcome            → escalate to HIGH
-          5. 3+ consecutive bad signals → bump one tier
-          6. 3+ recent successes        → bias toward LOW (de-escalate)
+        Escalation rules (evaluated in priority order, highest wins):
+            1. webdriver_hidden=False         → force HIGH (critical leak)
+            2. locally banned fingerprint     → force HIGH
+            3. externally banned fingerprint  → force HIGH
+            4. any recent blocked outcome     → force HIGH
+            5. 3+ recent captchas             → force HIGH
+            6. 3+ consecutive bad signals     → escalate one tier
         """
         mem = self.get_memory(account_id)
+        mem.purge_expired_bans()
 
-        # Record risk score into profile history (max 10)
-        risk_entry: dict[str, Any] = {
-            "ts":         time.time(),
-            "score":      signals.risk_score,
-            "breakdown":  dict(signals.breakdown),
-        }
-        profile.risk_history.append(risk_entry)
-        if len(profile.risk_history) > 10:
-            profile.risk_history.pop(0)
+        # Soft signal: bounded global ban-rate adjustment (+0.0 to +0.06 max).
+        # P5: cap narrowed 0.08→0.06, multiplier 0.15→0.12 to reduce herd sync.
+        # P8: key namespaced as 'global:gm_weight'.
+        _gm = get_global_memory()
+        _raw_rate  = _gm.get_recent_ban_rate()
+        _weight    = 0.7 + (stable_hash_int(account_id, "global:gm_weight") % 300) / 1000.0  # 0.70-1.00
+        _ban_rate  = _raw_rate * _weight
+        _adj       = min(0.06, _ban_rate * 0.12)   # P5: cap 0.06, multiplier 0.12
+        # P5: single _normalized_noise perturbation (±20%) — one noise source only.
+        _adj      *= _normalized_noise(account_id, "global:gm_noise", spread=0.20)
+        _adj       = max(0.0, min(0.06, _adj))     # re-clamp after noise
 
-        # ── Outcome-driven pre-evaluation ────────────────────────────────
-        recent = mem.outcome_history[-10:]   # last 10 outcomes
-        recent_captchas  = sum(1 for o in recent if o.get("captcha"))
-        recent_blocked   = any(o.get("blocked") for o in recent[-3:])
-        recent_successes = sum(1 for o in recent[-5:] if o.get("upload_success"))
+        # P5 (memory decay): apply decay to ban_rate signal for this account.
+        _day_bucket = int(time.time()) // 86400
+        _rate_decay = (stable_hash_int(account_id, "global:memory_decay", str(_day_bucket)) % 5) * 0.01
+        _adj        = _adj * (1.0 - _rate_decay)
 
-        # Behavioral risk signals from Layer 4 (completion_ratio, session_duration)
-        recent_suspicious = sum(
-            1 for o in recent[-5:]
-            if o.get("suspicious_short") or o.get("suspicious_abandon")
-            or o.get("completion_ratio", 1.0) < 0.30
-        )
-        # Independently check session_duration vs expected (stored in record)
-        recent_short_dur = sum(
-            1 for o in recent[-5:]
-            if o.get("session_duration", 999) > 0
-            and o.get("estimated_duration", 0) > 0
-            and o.get("session_duration", 999) < o.get("estimated_duration", 1) * 0.30
-        )
+        # P7 (inertia): 0.8/0.2 EMA — slower reaction, further dampens herd spikes.
+        _prev_adj   = _PREV_ADJ.get(account_id, _adj)
+        _adj        = _prev_adj * 0.8 + _adj * 0.2
+        _adj        = max(0.0, min(0.06, _adj))    # final safety clamp
+        _PREV_ADJ[account_id] = _adj
 
-        # Update consecutive bad counter
-        if signals.risk_score >= 0.30:
+        # Part 8 / 6: reaction lag - per-account STABLE hash (not stateful counter).
+        # lag=0: react immediately; lag=1: ignore first evaluate; lag=2: ignore first 2.
+        # Consistent across all evaluations for same account.
+        _lag = stable_hash_int(account_id, "reaction_lag") % 3   # 0, 1, or 2
+        # Use total_sessions as the cycle counter (incremented in record_outcome)
+        if mem.total_sessions <= _lag:
+            _adj = 0.0
+            LOGGER.debug("stealth_reaction_lag account=%s lag=%d sessions=%d",
+                         account_id, _lag, mem.total_sessions)
+
+        _effective_score = min(1.0, signals.risk_score + _adj)
+        if _adj > 0.0:
+            LOGGER.debug(
+                "stealth_global_adj account=%s raw_rate=%.3f weight=%.2f adj=+%.3f effective=%.3f",
+                account_id, _raw_rate, _weight, _adj, _effective_score,
+            )
+
+        # Base classification from fixed thresholds (on adjusted score)
+        effective_risk, reason = _classify_risk(_effective_score)
+
+        # Persona modifier: nudge effective score based on account's risk tolerance.
+        # High risk_tolerance → slightly less sensitive (score nudged down).
+        # Low  risk_tolerance → slightly more sensitive (score nudged up).
+        # Influence capped at ±20% of the raw (pre-global) score only.
+        try:
+            _pe    = get_persona_engine()
+            _mods  = _pe.get_behavior_modifiers(account_id)
+            # Part 4: behavior noise — perturb modifiers ~10% of evaluations.
+            _now_i = int(time.time())
+            _mods  = apply_behavior_noise(account_id, _now_i, _mods)
+            _agg   = _mods["mutation_aggressiveness"]   # 0.8-1.2 (post-noise)
+            # Apply: score adjustment = raw_score * (agg - 1.0) * 0.2
+            _persona_adj  = signals.risk_score * (_agg - 1.0) * 0.2
+            _effective_score = min(1.0, max(0.0, _effective_score + _persona_adj))
+            if abs(_persona_adj) > 0.001:
+                LOGGER.debug(
+                    "stealth_persona_adj account=%s agg=%.3f adj=%+.3f effective=%.3f",
+                    account_id, _agg, _persona_adj, _effective_score,
+                )
+            # Re-classify with persona-adjusted score
+            effective_risk, reason = _classify_risk(_effective_score)
+        except Exception as exc:
+            LOGGER.warning("stealth_persona_error account=%s error=%s", account_id, exc)
+
+        # Rule 6: consecutive bad signals → escalate one tier
+        if signals.risk_score >= RISK_LOW_MAX:
             mem.consecutive_bad += 1
         else:
             mem.consecutive_bad = 0
 
-
-        # Determine base risk level
-        base_risk = self._classify_risk(signals.risk_score)
-        effective_risk = base_risk
-
-        # Rule 6: 3+ recent successes → de-escalate one tier
-        if recent_successes >= 3 and effective_risk == RiskLevel.MEDIUM:
-            effective_risk = RiskLevel.LOW
-            LOGGER.info("stealth_deescalation", extra={
-                "account_id": account_id, "reason": "repeated_success",
-                "recent_successes": recent_successes,
-            })
-
-        # Rule 5: 3+ consecutive bad signals → bump one tier
-        if mem.consecutive_bad >= 3 and effective_risk == RiskLevel.LOW:
-            effective_risk = RiskLevel.MEDIUM
-        elif mem.consecutive_bad >= 3 and effective_risk == RiskLevel.MEDIUM:
-            effective_risk = RiskLevel.HIGH
-
-        # Rule 4.5: Behavioral risk — short/abandoned sessions signal bot-like behavior
-        if recent_suspicious >= 2 or recent_short_dur >= 2:
+        if mem.consecutive_bad >= CONSECUTIVE_BAD_THRESHOLD:
             if effective_risk == RiskLevel.LOW:
                 effective_risk = RiskLevel.MEDIUM
+                reason = f"consecutive_bad={mem.consecutive_bad}"
             elif effective_risk == RiskLevel.MEDIUM:
                 effective_risk = RiskLevel.HIGH
-            LOGGER.warning("stealth_behavioral_escalation", extra={
-                "account_id":       account_id,
-                "recent_suspicious":recent_suspicious,
-                "recent_short_dur": recent_short_dur,
-                "effective_risk":   effective_risk.value,
-            })
+                reason = f"consecutive_bad={mem.consecutive_bad}"
 
-        # Rule 4: recent blocked outcome → HIGH
-        if recent_blocked:
+        # Rule 5: 3+ captchas in recent window → HIGH
+        captcha_count = mem.recent_count("captcha")
+        if captcha_count >= 3:
             effective_risk = RiskLevel.HIGH
-            LOGGER.warning("stealth_escalation_blocked", extra={
-                "account_id": account_id, "reason": "recent_blocked_outcome",
-            })
+            reason = f"captcha_count={captcha_count}"
 
-        # Rule 3: 3+ captchas in recent history → HIGH immediately
-        if recent_captchas >= 3:
+        # Rule 4: any blocked outcome in last 3 sessions → HIGH
+        if mem.any_recent("blocked", window=3):
             effective_risk = RiskLevel.HIGH
-            LOGGER.warning("stealth_escalation_captcha", extra={
-                "account_id": account_id,
-                "reason": "repeated_captcha",
-                "recent_captchas": recent_captchas,
-            })
+            reason = "recent_blocked"
 
-        # Rule 2: banned fingerprint → force HIGH regardless
-        if profile.fingerprint_hash in mem.banned_fingerprints:
+        # Rule 3: globally banned fingerprint → HIGH (real GlobalMemory check).
+        # Exception-safe: is_fingerprint_banned() returns False if DB is down.
+        if _gm.is_fingerprint_banned(profile.fingerprint_hash):
             effective_risk = RiskLevel.HIGH
-            LOGGER.warning("stealth_banned_fingerprint_detected", extra={
-                "account_id": account_id, "hash": profile.fingerprint_hash[:12],
-            })
+            reason = f"globally_banned_fingerprint hash={profile.fingerprint_hash[:8]}"
 
-        # Rule 1: webdriver exposed → always HIGH (critical leak)
+        # Rule 2: locally banned fingerprint → HIGH
+        if mem.is_banned(profile.fingerprint_hash):
+            effective_risk = RiskLevel.HIGH
+            reason = f"locally_banned hash={profile.fingerprint_hash[:8]}"
+
+        # Rule 1: webdriver exposed → always HIGH (highest priority)
         if not signals.webdriver_hidden:
             effective_risk = RiskLevel.HIGH
+            reason = "webdriver_exposed"
 
+        actions  = _build_actions(signals, effective_risk)
+        strategy = _build_strategy(effective_risk, actions, reason)
 
-        actions   = self._build_actions(signals, profile)
-        strategy  = self._build_strategy(effective_risk, actions, signals)
-
-        LOGGER.info("stealth_strategy_produced", extra={
-            "account_id":      account_id,
-            "risk_score":      round(signals.risk_score, 3),
-            "base_risk":       base_risk.value,
-            "effective_risk":  effective_risk.value,
-            "consecutive_bad": mem.consecutive_bad,
-            "actions":         [a.type for a in actions],
-            "interaction_mode": strategy.interaction_mode,
-        })
+        LOGGER.info(
+            "stealth_evaluate account=%s score=%.3f risk=%s reason=%s actions=%s",
+            account_id, signals.risk_score, effective_risk.value, reason,
+            [a.type for a in actions],
+        )
         return strategy
 
     def record_outcome(
@@ -242,88 +323,63 @@ class StealthBrain:
         outcome: dict[str, Any],
         profile: IdentityProfile,
     ) -> None:
-        """Record a structured session outcome and update memory + profile risk_history.
+        """Record a session outcome into per-account memory.
 
-        Outcome schema (all fields optional):
-            {
-              # Layer 3 stealth signals
-              "upload_success":    bool,
-              "captcha":           bool,
-              "blocked":           bool,
-              "shadow_ban_signal": bool,
-              # Layer 4 behavior signals (from BehavioralBrain.analyze_session())
-              "session_duration":  float,   # actual seconds
-              "actions_count":     int,
-              "abandoned_actions": int,
-              "completion_ratio":  float,   # actual / estimated duration
-              "suspicious_short":  bool,
-              "suspicious_abandon":bool,
-            }
+        Outcome keys (all optional, all bool/float):
+            upload_success, captcha, blocked, shadow_ban_signal,
+            completion_ratio, suspicious_short, suspicious_abandon.
         """
         mem = self.get_memory(account_id)
-        record = {
+        record: dict[str, Any] = {
             "ts":                time.time(),
             "upload_success":    bool(outcome.get("upload_success",    False)),
             "captcha":           bool(outcome.get("captcha",           False)),
             "blocked":           bool(outcome.get("blocked",           False)),
             "shadow_ban_signal": bool(outcome.get("shadow_ban_signal", False)),
+            "completion_ratio":  float(outcome.get("completion_ratio", 1.0)),
+            "suspicious_short":  bool(outcome.get("suspicious_short",  False)),
+            "suspicious_abandon":bool(outcome.get("suspicious_abandon", False)),
             "fingerprint":       profile.fingerprint_hash[:12],
-            # Layer 4 behavioral signals
-            "session_duration":  float(outcome.get("session_duration",  0.0)),
-            "actions_count":     int(outcome.get("actions_count",       0)),
-            "abandoned_actions": int(outcome.get("abandoned_actions",   0)),
-            "completion_ratio":   float(outcome.get("completion_ratio",   1.0)),
-            "suspicious_short":   bool(outcome.get("suspicious_short",   False)),
-            "suspicious_abandon": bool(outcome.get("suspicious_abandon",  False)),
-            "estimated_duration": float(outcome.get("estimated_duration", 0.0)),
         }
-
-
-        # Detect behavioral risk: too-short sessions or high abandon → flag
-        if record["suspicious_short"] or record["suspicious_abandon"]:
-            LOGGER.warning("stealth_behavioral_risk_flagged", extra={
-                "account_id":        account_id,
-                "suspicious_short":  record["suspicious_short"],
-                "suspicious_abandon":record["suspicious_abandon"],
-                "completion_ratio":  record["completion_ratio"],
-            })
-
-        mem.outcome_history.append(record)
-        if len(mem.outcome_history) > 10:
-            mem.outcome_history.pop(0)
-
-        # Also persist into profile.risk_history so it survives restarts
-        profile.risk_history.append({"outcome": record})
-        if len(profile.risk_history) > 10:
-            profile.risk_history.pop(0)
+        mem.add_outcome(record)
+        mem.total_sessions += 1
 
         if record["blocked"]:
-            if profile.fingerprint_hash not in mem.banned_fingerprints:
-                mem.banned_fingerprints.append(profile.fingerprint_hash)
+            if not mem.is_banned(profile.fingerprint_hash):
+                mem.add_banned(profile.fingerprint_hash)
+                # Report to global memory: advisory signal for other accounts.
+                # Exception-safe — DB unavailability does not affect local logic.
+                _gm = get_global_memory()
+                _gm.record_ban(profile.fingerprint_hash, reason=f"account={account_id}")
+                _gm.record_event("ban", account_id, float(record.get("completion_ratio", 0.0)))
             mem.total_bans += 1
-            LOGGER.critical("stealth_outcome_blocked", extra={
-                "account_id": account_id,
-                "hash":       profile.fingerprint_hash[:12],
-                "total_bans": mem.total_bans,
-            })
-
+            LOGGER.critical(
+                "stealth_blocked account=%s hash=%s total_bans=%d",
+                account_id, profile.fingerprint_hash[:8], mem.total_bans,
+            )
         elif record["captcha"]:
             mem.total_checkpoints += 1
-            LOGGER.warning("stealth_outcome_captcha", extra={
-                "account_id":       account_id,
-                "total_captchas":   mem.total_checkpoints,
-            })
-
+            LOGGER.warning("stealth_captcha account=%s total=%d", account_id, mem.total_checkpoints)
         elif record["shadow_ban_signal"]:
-            LOGGER.warning("stealth_outcome_shadow_ban", extra={
-                "account_id": account_id,
-                "fingerprint": profile.fingerprint_hash[:12],
-            })
-
+            LOGGER.warning("stealth_shadow_ban account=%s", account_id)
         elif record["upload_success"]:
-            LOGGER.info("stealth_outcome_success", extra={
-                "account_id": account_id,
+            LOGGER.info("stealth_success account=%s", account_id)
+
+        # Part 3: evolve persona based on this session's outcome.
+        # Part 4: push persona summary to GlobalMemory (advisory, exception-safe).
+        try:
+            _pe = get_persona_engine()
+            _persona = _pe.evolve(account_id, outcome, now=int(record["ts"]))
+            # Part 4: store summary in global_memory stats (non-blocking, best-effort)
+            _gm = get_global_memory()
+            _gm.set_stat(f"persona:{account_id}", {
+                "dominant_niche":   _persona.dominant_niche(),
+                "risk_bucket":      _persona.risk_bucket(),
+                "activity_bias":    round(_persona.activity_bias, 3),
+                "session_count":    _persona.session_count,
             })
+        except Exception as exc:
+            LOGGER.warning("stealth_persona_evolve_error account=%s error=%s", account_id, exc)
 
     def process_session_outcome(
         self,
@@ -331,116 +387,96 @@ class StealthBrain:
         outcome: Literal["success", "checkpoint", "ban"],
         profile: IdentityProfile,
     ) -> None:
-        """Legacy string-based outcome recorder. Prefer record_outcome() for new code."""
-        mapping = {
-            "success":    {"upload_success": True,  "captcha": False, "blocked": False, "shadow_ban_signal": False},
-            "checkpoint": {"upload_success": False, "captcha": True,  "blocked": False, "shadow_ban_signal": False},
-            "ban":        {"upload_success": False, "captcha": False, "blocked": True,  "shadow_ban_signal": False},
+        """Legacy string-based recorder. Prefer record_outcome() for new code."""
+        mapping: dict[str, dict] = {
+            "success":    {"upload_success": True},
+            "checkpoint": {"captcha": True},
+            "ban":        {"blocked": True},
         }
-        self.record_outcome(account_id, mapping.get(outcome, mapping["success"]), profile)
+        self.record_outcome(account_id, mapping.get(outcome, {}), profile)
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _classify_risk(score: float) -> RiskLevel:
-        if score >= 0.60:
-            return RiskLevel.HIGH
-        if score >= 0.30:
-            return RiskLevel.MEDIUM
-        return RiskLevel.LOW
-
-    @staticmethod
-    def _build_actions(signals: RuntimeSignals, profile: IdentityProfile) -> list[Action]:
-        """Translate normalized signals into a typed Action list."""
-        actions: list[Action] = []
-
-        # Rendering issues → rotate GPU + canvas
-        if not signals.webgl_vendor_match or not signals.webgl_renderer_match:
-            actions.append(Action(
-                type="rotate_gpu",
-                targets=["webgl_noise_seed"],
-                intensity=0.8 if not signals.webgl_vendor_match else 0.4,
-            ))
-
-        if not signals.language_match or not signals.platform_match:
-            actions.append(Action(
-                type="rotate_canvas",
-                targets=["canvas_noise_seed"],
-                intensity=0.5,
-            ))
-
-        # Geo mismatch → sync geo (metadata carries detected values)
-        if not signals.timezone_match or not signals.language_match:
-            actions.append(Action(
-                type="sync_geo",
-                targets=["timezone", "locale"],
-                intensity=1.0,
-                # NOTE: actual detected values would come from runtime_env;
-                # here we emit the action — the coordinator fills metadata.
-                metadata={},
-            ))
-
-        # Behavioral signals → add cooldown action
-        if not signals.webdriver_hidden or not signals.eval_ok:
-            actions.append(Action(
-                type="cooldown",
-                targets=[],
-                intensity=1.0,
-            ))
-
-        # Screen/hardware → rotate canvas noise
-        if not signals.screen_match or not signals.hardware_match:
-            actions.append(Action(
-                type="rotate_canvas",
-                targets=["canvas_noise_seed"],
-                intensity=0.3,
-            ))
-
-        return actions
-
-    @staticmethod
-    def _build_strategy(
-        risk: RiskLevel,
-        actions: list[Action],
-        signals: RuntimeSignals,
-    ) -> Strategy:
-        """Map risk level to delay/warmup/interaction parameters."""
-        if risk == RiskLevel.LOW:
-            return Strategy(
-                risk_level           = RiskLevel.LOW,
-                actions              = actions,
-                delay_multiplier     = 1.0,
-                warmup_delay         = 5.0,
-                interaction_mode     = "NORMAL",
-                fingerprint_patch_level = "STRICT",
-            )
-        elif risk == RiskLevel.MEDIUM:
-            return Strategy(
-                risk_level           = RiskLevel.MEDIUM,
-                actions              = actions,
-                delay_multiplier     = 1.5,
-                warmup_delay         = 15.0,
-                interaction_mode     = "SAFE",
-                fingerprint_patch_level = "STRICT",
-            )
-        else:  # HIGH
-            return Strategy(
-                risk_level           = RiskLevel.HIGH,
-                actions              = actions,
-                delay_multiplier     = 2.5,
-                warmup_delay         = 30.0,
-                interaction_mode     = "SAFE",
-                fingerprint_patch_level = "STRICT",
-            )
-
-    # ── Persistence helpers ───────────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────────────────────
 
     def snapshot_all(self) -> dict[str, Any]:
+        """Serialize all per-account memories for external persistence."""
         return {k: v.to_dict() for k, v in self._memories.items()}
 
     def load_all(self, data: dict[str, dict[str, Any]]) -> None:
+        """Restore per-account memories from serialized data."""
         for k, v in data.items():
             self._memories[k] = StealthMemory.from_dict(v)
+
+
+# ── Module-level helpers (stateless) ─────────────────────────────────────────
+
+def _classify_risk(score: float) -> tuple[RiskLevel, str]:
+    """Map risk score to RiskLevel using fixed thresholds.
+
+    LOW    score < 0.30
+    MEDIUM 0.30 <= score < 0.70
+    HIGH   score >= 0.70
+    """
+    if score >= RISK_HIGH_MIN:
+        return RiskLevel.HIGH, f"score={score:.3f} >= {RISK_HIGH_MIN}"
+    if score >= RISK_LOW_MAX:
+        return RiskLevel.MEDIUM, f"score={score:.3f} in [{RISK_LOW_MAX},{RISK_HIGH_MIN})"
+    return RiskLevel.LOW, f"score={score:.3f} < {RISK_LOW_MAX}"
+
+
+def _build_actions(signals: RuntimeSignals, risk: RiskLevel) -> list[Action]:
+    """Build action list based on risk level and signal failures.
+
+    LOW    → no actions.
+    MEDIUM → canvas rotation and/or geo sync (safe surface only).
+    HIGH   → canvas + GPU rotation, geo sync, cooldown if webdriver exposed.
+    """
+    if risk == RiskLevel.LOW:
+        return []
+
+    actions: list[Action] = []
+
+    # Canvas rotation: triggered by navigator or screen mismatches.
+    if not signals.language_match or not signals.platform_match or not signals.screen_match:
+        actions.append(Action(type="rotate_canvas", targets=["canvas_noise_seed"]))
+
+    # Geo sync: triggered by timezone or language mismatch.
+    if not signals.timezone_match or not signals.language_match:
+        actions.append(Action(type="sync_geo", targets=["timezone", "locale"], metadata={}))
+
+    if risk == RiskLevel.HIGH:
+        # GPU rotation: triggered by WebGL mismatch.
+        if not signals.webgl_vendor_match or not signals.webgl_renderer_match:
+            actions.append(Action(type="rotate_gpu", targets=["webgl_noise_seed"]))
+        # Cooldown: triggered by webdriver or eval failure.
+        if not signals.webdriver_hidden or not signals.eval_ok:
+            actions.append(Action(type="cooldown", targets=[]))
+
+    return actions
+
+
+def _build_strategy(
+    risk: RiskLevel,
+    actions: list[Action],
+    reason: str,
+) -> Strategy:
+    """Map risk level to Strategy parameters."""
+    if risk == RiskLevel.LOW:
+        return Strategy(
+            risk_level=RiskLevel.LOW, actions=[],
+            delay_multiplier=1.0, warmup_delay=5.0,
+            interaction_mode="NORMAL", reason=reason,
+        )
+    if risk == RiskLevel.MEDIUM:
+        return Strategy(
+            risk_level=RiskLevel.MEDIUM, actions=actions,
+            delay_multiplier=1.5, warmup_delay=15.0,
+            interaction_mode="SAFE", reason=reason,
+        )
+    return Strategy(
+        risk_level=RiskLevel.HIGH, actions=actions,
+        delay_multiplier=2.5, warmup_delay=30.0,
+        interaction_mode="SAFE", reason=reason,
+    )
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

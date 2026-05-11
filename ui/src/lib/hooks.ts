@@ -7,14 +7,55 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
 
 // ── Content Queue ─────────────────────────────────────────────────────────────
-// Fetches ALL statuses in one call (status=all) so ContentQueue can
-// show pending/approved/rejected without 3 round trips.
 export function useQueue() {
   return useQuery({
     queryKey: ['queue'],
     queryFn: () => api.queue('all'),
     staleTime: 15_000,
     refetchInterval: 15_000,
+  });
+}
+
+// ── Accounts ──────────────────────────────────────────────────────────────────
+export function useAccounts() {
+  return useQuery({
+    queryKey: ['accounts'],
+    queryFn: api.accounts,
+    staleTime: 20_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { platform: string; account_handle: string; proxy_url?: string }) =>
+      api.createAccount(payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
+}
+
+export function useDeleteAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteAccount(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
+}
+
+export function useMarkSoftBan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.markSoftBan(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
+}
+
+export function useClearSoftBan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.clearSoftBan(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
   });
 }
 
@@ -64,6 +105,15 @@ export function useStrategy() {
     queryKey: ['strategy'],
     queryFn: api.strategy,
     staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useUpdateStrategy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: object) => api.updateStrategy(patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['strategy'] }),
   });
 }
 
@@ -72,6 +122,24 @@ export function useNiches() {
     queryKey: ['niches'],
     queryFn: api.niches,
     staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useRecommendations() {
+  return useQuery({
+    queryKey: ['recommendations'],
+    queryFn: api.recommendations,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useStrategyLog(limit = 50) {
+  return useQuery({
+    queryKey: ['strategyLog', limit],
+    queryFn: () => api.strategyLog(limit),
+    staleTime: 30_000,
   });
 }
 
@@ -80,6 +148,41 @@ export function useOverrides() {
     queryKey: ['overrides'],
     queryFn: api.overrides,
     staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+}
+
+// ── Policy Rules ──────────────────────────────────────────────────────────────
+export function usePolicyRules() {
+  return useQuery({
+    queryKey: ['policyRules'],
+    queryFn: api.policyRules,
+    staleTime: 30_000,
+  });
+}
+
+export function useCreatePolicyRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: object) => api.createPolicyRule(payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['policyRules'] }),
+  });
+}
+
+export function useTogglePolicyRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.togglePolicyRule(id, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['policyRules'] }),
+  });
+}
+
+export function useDeletePolicyRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deletePolicyRule(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['policyRules'] }),
   });
 }
 
@@ -105,7 +208,10 @@ export function useFreezeAccount() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.freezeAccount(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['fleet'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['fleet'] });
+      qc.invalidateQueries({ queryKey: ['overrides'] });
+    },
   });
 }
 
@@ -141,5 +247,74 @@ export function useRemoveOverride() {
   return useMutation({
     mutationFn: (id: string) => api.removeOverride(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['overrides'] }),
+  });
+}
+
+// ── Artifacts ─────────────────────────────────────────────────────────────────
+export function useArtifacts(limit = 50) {
+  return useQuery({
+    queryKey: ['artifacts', limit],
+    queryFn: () => api.artifacts(limit),
+    staleTime: 20_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useUpdateArtifactStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'approved' | 'rejected' }) =>
+      api.updateArtifactStatus(id, status),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['artifacts'] }),
+  });
+}
+
+// ── Jobs / Pipeline ───────────────────────────────────────────────────────────
+export function useJobs() {
+  return useQuery({
+    queryKey: ['jobs'],
+    queryFn: api.jobs,
+    staleTime: 15_000,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useLaunchPipeline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { product_url: string; top_n?: number; priority?: number }) =>
+      api.launchPipeline(payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+  });
+}
+
+// ── Niche Upsert ──────────────────────────────────────────────────────────────
+export function useUpsertNiche() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      niche: string; platform: string; win_rate: number;
+      avg_views: number; avg_revenue: number; posts_count: number; growth_potential: number;
+    }) => api.upsertNiche(payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['niches'] }),
+  });
+}
+
+// ── Brain Config ──────────────────────────────────────────────────────────────
+export function useBrainConfig() {
+  return useQuery({
+    queryKey: ['brainConfig'],
+    queryFn: api.brainConfig,
+    staleTime: 60_000,
+  });
+}
+
+// ── Analytics Overview ────────────────────────────────────────────────────────
+export function useAnalyticsOverview() {
+  return useQuery({
+    queryKey: ['analyticsOverview'],
+    queryFn: api.analyticsOverview,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   });
 }

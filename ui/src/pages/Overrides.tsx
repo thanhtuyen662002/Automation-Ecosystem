@@ -1,8 +1,11 @@
 // ── Overrides — Control Interface (Rank 7) ────────────────────────────────────
+// Data source: GET /api/v1/strategy/overrides → array (unwrapped from .overrides)
+// NO mock data. All actions call real API.
 import React, { useState } from 'react';
 import { Trash2, AlertTriangle, Zap } from 'lucide-react';
 import { PageHeader, SectionHeader, Badge, SlideOver, EmptyState, ConfirmDialog } from '@/components/ui';
-import { mockOverrides } from '@/lib/mock';
+import { useI18n } from '@/lib/i18n';
+import { useOverrides, useAddOverride, useRemoveOverride } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 
 const OVERRIDE_TYPES = ['freeze', 'boost', 'kill', 'force_publish', 'restrict'];
@@ -13,84 +16,113 @@ const overrideColor: Record<string, string> = {
 };
 
 // Rank 7: Preset quick interventions — most common emergency actions
-interface Preset { label: string; override: string; target_type: string; description: string; severity: 'danger' | 'warning' | 'info'; ttl_hours: number; needsTarget: boolean }
+interface Preset { labelKey: string; override: string; target_type: string; descKey: string; severity: 'danger' | 'warning' | 'info'; ttl_hours: number; needsTarget: boolean }
 const PRESETS: Preset[] = [
-  { label: 'Freeze Account',    override: 'freeze',        target_type: 'account', description: 'Suspend all uploads from a specific account immediately.', severity: 'danger',  ttl_hours: 24,  needsTarget: true },
-  { label: 'Pause All Uploads', override: 'freeze',        target_type: 'niche',   description: 'Fleet-wide publish halt across all niches for 2 hours.', severity: 'danger',  ttl_hours: 2,   needsTarget: false },
-  { label: 'Boost Niche',       override: 'boost',         target_type: 'niche',   description: 'Increase budget priority for a niche — more content pushed.', severity: 'info', ttl_hours: 48, needsTarget: true },
-  { label: 'Kill Content',      override: 'kill',          target_type: 'content', description: 'Immediately stop a specific content item from publishing.', severity: 'warning', ttl_hours: 72, needsTarget: true },
-  { label: 'Force Publish',     override: 'force_publish', target_type: 'content', description: 'Bypass score gate and publish a specific content item now.', severity: 'info', ttl_hours: 1,  needsTarget: true },
+  { labelKey: 'override.ps_freeze',    override: 'freeze',        target_type: 'account', descKey: 'override.ps_freeze_desc', severity: 'danger',  ttl_hours: 24,  needsTarget: true },
+  { labelKey: 'override.ps_pause',     override: 'freeze',        target_type: 'niche',   descKey: 'override.ps_pause_desc',  severity: 'danger',  ttl_hours: 2,   needsTarget: false },
+  { labelKey: 'override.ps_boost',     override: 'boost',         target_type: 'niche',   descKey: 'override.ps_boost_desc',  severity: 'info',    ttl_hours: 48,  needsTarget: true },
+  { labelKey: 'override.ps_kill',      override: 'kill',          target_type: 'content', descKey: 'override.ps_kill_desc',   severity: 'warning', ttl_hours: 72,  needsTarget: true },
+  { labelKey: 'override.ps_force',     override: 'force_publish', target_type: 'content', descKey: 'override.ps_force_desc',  severity: 'info',    ttl_hours: 1,   needsTarget: true },
 ];
 
 export function Overrides() {
-  const [overrides, setOverrides] = useState(mockOverrides);
-  const [showAdd, setShowAdd]     = useState(false);
-  const [showCustom, setShowCustom] = useState(false);
+  const { t } = useI18n();
+  const { data: overrides = [], isLoading, error } = useOverrides();
+  const addOverride    = useAddOverride();
+  const removeOverride = useRemoveOverride();
+
+  const [showAdd, setShowAdd]             = useState(false);
+  const [showCustom, setShowCustom]       = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
-  const [presetTarget, setPresetTarget]     = useState('');
-  const [confirmRemove, setConfirmRemove]   = useState<{ target_id: string; override: string } | null>(null);
+  const [presetTarget, setPresetTarget]   = useState('');
+  const [confirmRemove, setConfirmRemove] = useState<{ target_id: string; override: string } | null>(null);
   const [form, setForm] = useState({ target_id: '', target_type: 'account', override: 'freeze', reason: '', ttl_hours: 24 });
 
-  const active = overrides.filter(o => o.active && o.expires_at > Date.now() / 1000);
+  const now = Date.now() / 1000;
+  const active = (overrides as any[]).filter((o: any) => o.active && (o.expires_at ?? 0) > now);
 
-  function remove(target_id: string, override: string) {
-    setOverrides(prev => prev.filter(o => !(o.target_id === target_id && o.override === override)));
-    setConfirmRemove(null);
+  function handleRemove(target_id: string) {
+    removeOverride.mutate(target_id, {
+      onSuccess: () => setConfirmRemove(null),
+    });
   }
-  function addPreset() {
+
+  function handleAddPreset() {
     if (!selectedPreset) return;
-    const now = Date.now() / 1000;
     const targetId = selectedPreset.needsTarget ? presetTarget : 'ALL';
     if (selectedPreset.needsTarget && !targetId) return;
-    setOverrides(prev => [...prev, {
-      target_id: targetId, target_type: selectedPreset.target_type,
-      override: selectedPreset.override, reason: selectedPreset.description,
-      ttl_hours: selectedPreset.ttl_hours, created_at: now,
-      expires_at: now + selectedPreset.ttl_hours * 3600, active: 1,
-    }]);
-    setSelectedPreset(null);
-    setPresetTarget('');
-    setShowAdd(false);
+    addOverride.mutate(
+      {
+        target_id: targetId,
+        target_type: selectedPreset.target_type,
+        override: selectedPreset.override,
+        reason: t(selectedPreset.descKey),
+        ttl_hours: selectedPreset.ttl_hours,
+      },
+      {
+        onSuccess: () => {
+          setSelectedPreset(null);
+          setPresetTarget('');
+          setShowAdd(false);
+        },
+      },
+    );
   }
-  function addCustom() {
-    const now = Date.now() / 1000;
-    setOverrides(prev => [...prev, { ...form, created_at: now, expires_at: now + form.ttl_hours * 3600, active: 1 }]);
-    setForm({ target_id: '', target_type: 'account', override: 'freeze', reason: '', ttl_hours: 24 });
-    setShowCustom(false);
+
+  function handleAddCustom() {
+    if (!form.target_id) return;
+    addOverride.mutate(
+      { ...form },
+      {
+        onSuccess: () => {
+          setForm({ target_id: '', target_type: 'account', override: 'freeze', reason: '', ttl_hours: 24 });
+          setShowCustom(false);
+        },
+      },
+    );
   }
 
   return (
     <div>
       <PageHeader
-        title="Strategy Overrides"
-        subtitle="Active fleet directives — freeze, boost, kill, force-publish"
+        title={t('override.title')}
+        subtitle={t('override.sub')}
         action={
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-              <Zap size={13} /> Quick Override
+              <Zap size={13} /> {t('override.act_quick')}
             </button>
             <button className="btn btn-secondary btn-sm" onClick={() => setShowCustom(true)}>
-              Custom
+              {t('override.act_custom')}
             </button>
           </div>
         }
       />
 
+      {isLoading && (
+        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>Loading overrides…</div>
+      )}
+      {error && (
+        <div style={{ padding: '1rem', color: 'var(--danger)', fontSize: '0.875rem' }}>
+          {(error as Error).message}
+        </div>
+      )}
+
       {/* Active overrides */}
-      {active.length === 0
-        ? <EmptyState icon="✅" message="No active overrides" />
+      {!isLoading && active.length === 0
+        ? <EmptyState icon="✅" message={t('override.no_data')} />
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {active.map((o, i) => {
-              const ttlLeft = Math.max(0, (o.expires_at - Date.now() / 1000) / 3600);
+            {active.map((o: any, i: number) => {
+              const ttlLeft = Math.max(0, ((o.expires_at ?? 0) - now) / 3600);
               const pct = Math.min(100, (ttlLeft / (o.ttl_hours ?? 24)) * 100);
               return (
-                <div key={i} className="card" style={{ borderLeft: `4px solid ${overrideColor[o.override] ?? 'var(--border)'}` }}>
+                <div key={o.id ?? i} className="card" style={{ borderLeft: `4px solid ${overrideColor[o.override] ?? 'var(--border)'}` }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.375rem', flexWrap: 'wrap' }}>
                         <span style={{ background: overrideColor[o.override], color: '#fff', borderRadius: '9999px', padding: '0.15rem 0.6rem', fontSize: '0.75rem', fontWeight: 700 }}>
-                          {o.override.toUpperCase().replace(/_/g, ' ')}
+                          {String(o.override ?? '').toUpperCase().replace(/_/g, ' ')}
                         </span>
                         <Badge status="muted">{o.target_type}</Badge>
                         <code style={{ fontSize: '0.8125rem', color: 'var(--primary)', background: 'var(--primary-muted)', padding: '0.125rem 0.5rem', borderRadius: 4 }}>
@@ -99,9 +131,9 @@ export function Overrides() {
                       </div>
                       {o.reason && <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>{o.reason}</div>}
                       <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        <span>Created {fmtRelative(o.created_at)}</span>
+                        <span>{t('override.lbl_created')} {fmtRelative(o.created_at)}</span>
                         <span style={{ color: ttlLeft < 2 ? 'var(--danger)' : 'var(--text-muted)' }}>
-                          {ttlLeft.toFixed(1)}h remaining
+                          {ttlLeft.toFixed(1)}{t('override.lbl_remain')}
                         </span>
                       </div>
                     </div>
@@ -122,21 +154,21 @@ export function Overrides() {
         )
       }
 
-      {/* Rank 7: Quick override presets panel */}
-      <SlideOver open={showAdd} onClose={() => { setShowAdd(false); setSelectedPreset(null); setPresetTarget(''); }} title="Quick Override">
+      {/* Quick override presets panel */}
+      <SlideOver open={showAdd} onClose={() => { setShowAdd(false); setSelectedPreset(null); setPresetTarget(''); }} title={t('override.act_quick')}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>
           <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-            Select the intervention you need. The most common patterns are pre-configured.
+            {t('override.desc_quick')}
           </div>
           {PRESETS.map(p => (
             <div
-              key={p.label}
-              className={`card-elevated ${selectedPreset?.label === p.label ? '' : ''}`}
+              key={p.labelKey}
+              className="card-elevated"
               style={{
                 padding: '0.875rem', cursor: 'pointer',
-                border: `1px solid ${selectedPreset?.label === p.label ? overrideColor[p.override] : 'var(--border)'}`,
+                border: `1px solid ${selectedPreset?.labelKey === p.labelKey ? overrideColor[p.override] : 'var(--border)'}`,
                 borderRadius: 'var(--radius)',
-                background: selectedPreset?.label === p.label ? 'var(--surface-2)' : undefined,
+                background: selectedPreset?.labelKey === p.labelKey ? 'var(--surface-2)' : undefined,
               }}
               onClick={() => { setSelectedPreset(p); setPresetTarget(''); }}
             >
@@ -144,10 +176,10 @@ export function Overrides() {
                 <span style={{ background: overrideColor[p.override], color: '#fff', borderRadius: '9999px', padding: '0.1rem 0.5rem', fontSize: '0.7rem', fontWeight: 700 }}>
                   {p.override.toUpperCase()}
                 </span>
-                <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{p.label}</span>
-                <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-muted)' }}>TTL {p.ttl_hours}h</span>
+                <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{t(p.labelKey)}</span>
+                <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{t('override.lbl_ttl')} {p.ttl_hours}h</span>
               </div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.description}</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t(p.descKey)}</div>
             </div>
           ))}
 
@@ -156,41 +188,46 @@ export function Overrides() {
               {selectedPreset.needsTarget && (
                 <div style={{ marginBottom: '0.75rem' }}>
                   <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
-                    {selectedPreset.target_type === 'account' ? 'Account ID (e.g. acc-006)' : selectedPreset.target_type === 'niche' ? 'Niche (e.g. finance)' : 'Content ID (e.g. c-8820)'}
+                    {selectedPreset.target_type === 'account' ? t('override.lbl_acc_id') : selectedPreset.target_type === 'niche' ? t('override.lbl_niche_id') : t('override.lbl_content_id')}
                   </label>
-                  <input className="input" placeholder={`Enter ${selectedPreset.target_type} ID`}
+                  <input className="input" placeholder={t('override.ph_target_id').replace('{target}', selectedPreset.target_type)}
                     value={presetTarget} onChange={e => setPresetTarget(e.target.value)} />
                 </div>
               )}
               <div style={{ padding: '0.5rem 0.75rem', background: 'var(--warning-muted)', borderRadius: 'var(--radius-sm)', display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
                 <AlertTriangle size={14} color="var(--warning)" />
-                <span style={{ fontSize: '0.8rem', color: 'var(--warning)' }}>Override will take effect immediately on the execution brain.</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--warning)' }}>{t('override.warn_effect')}</span>
               </div>
+              {addOverride.isError && (
+                <div style={{ color: 'var(--danger)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>
+                  {(addOverride.error as Error)?.message}
+                </div>
+              )}
               <button className="btn btn-primary" style={{ width: '100%' }}
-                disabled={selectedPreset.needsTarget && !presetTarget}
-                onClick={addPreset}>
-                Deploy: {selectedPreset.label}
+                disabled={(selectedPreset.needsTarget && !presetTarget) || addOverride.isPending}
+                onClick={handleAddPreset}>
+                {addOverride.isPending ? t('override.deploying') : `${t('override.btn_deploy')} ${t(selectedPreset.labelKey)}`}
               </button>
             </div>
           )}
         </div>
       </SlideOver>
 
-      {/* Custom override form (secondary) */}
-      <SlideOver open={showCustom} onClose={() => setShowCustom(false)} title="Custom Override">
+      {/* Custom override form */}
+      <SlideOver open={showCustom} onClose={() => setShowCustom(false)} title={t('override.act_custom')}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>Target Type</label>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('override.lbl_type')}</label>
             <select className="select" value={form.target_type} onChange={e => setForm(f => ({ ...f, target_type: e.target.value }))}>
               {TARGET_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>Target ID</label>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('override.lbl_id')}</label>
             <input className="input" placeholder="acc-001 or finance" value={form.target_id} onChange={e => setForm(f => ({ ...f, target_id: e.target.value }))} />
           </div>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>Override Action</label>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('override.lbl_action')}</label>
             <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap' }}>
               {OVERRIDE_TYPES.map(t => (
                 <button key={t} onClick={() => setForm(f => ({ ...f, override: t }))}
@@ -199,25 +236,32 @@ export function Overrides() {
             </div>
           </div>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>Reason</label>
-            <input className="input" placeholder="Why is this override needed?" value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} />
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('override.lbl_reason')}</label>
+            <input className="input" placeholder={t('override.ph_reason')} value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} />
           </div>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>TTL: {form.ttl_hours}h</label>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('override.lbl_ttl')}: {form.ttl_hours}h</label>
             <input type="range" min={1} max={168} step={1} value={form.ttl_hours}
               onChange={e => setForm(f => ({ ...f, ttl_hours: +e.target.value }))}
               style={{ width: '100%', accentColor: 'var(--primary)' }} />
           </div>
-          <button className="btn btn-primary" disabled={!form.target_id} onClick={addCustom}>Add Override</button>
+          {addOverride.isError && (
+            <div style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>
+              {(addOverride.error as Error)?.message}
+            </div>
+          )}
+          <button className="btn btn-primary" disabled={!form.target_id || addOverride.isPending} onClick={handleAddCustom}>
+            {addOverride.isPending ? t('override.adding') : t('override.btn_add')}
+          </button>
         </div>
       </SlideOver>
 
       <ConfirmDialog
         open={!!confirmRemove}
         onClose={() => setConfirmRemove(null)}
-        onConfirm={() => confirmRemove && remove(confirmRemove.target_id, confirmRemove.override)}
-        title="Remove Override"
-        message={`Remove the ${confirmRemove?.override.toUpperCase()} override on ${confirmRemove?.target_id}?`}
+        onConfirm={() => confirmRemove && handleRemove(confirmRemove.target_id)}
+        title={t('override.confirm_rem_title')}
+        message={t('override.confirm_rem_msg').replace('{override}', String(confirmRemove?.override).toUpperCase()).replace('{id}', confirmRemove?.target_id ?? '')}
         danger
       />
     </div>

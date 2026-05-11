@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { KeyRound, Lock, Unlock, RefreshCw, ShieldAlert } from 'lucide-react';
 import { PageHeader, Badge, SectionHeader, SlideOver, StatRow, EmptyState } from '@/components/ui';
+import { useI18n } from '@/lib/i18n';
 
 const mockIdentities = [
   { account_id: 'acc-001', fingerprint_hash: 'sha256:a1b2c3d4e5f6...', proxy_url: 'http://proxy-vn-01:8080', proxy_country: 'VN', locked: true, validation_issues: [], force_safe_mode: false },
@@ -13,6 +14,7 @@ const mockIdentities = [
 type Identity = typeof mockIdentities[0];
 
 export function Identities() {
+  const { t } = useI18n();
   const [identities, setIdentities] = useState(mockIdentities);
   const [selected, setSelected] = useState<Identity | null>(null);
 
@@ -21,31 +23,31 @@ export function Identities() {
   }
   function regen(id: string) {
     setIdentities(prev => prev.map(i => i.account_id === id ? { ...i, fingerprint_hash: `sha256:${Math.random().toString(36).slice(2)}...`, validation_issues: [] } : i));
-    alert(`Fingerprint regenerated for ${id}`);
+    alert(`${t('id.btn_regen')} - ${id}`);
   }
   function validate(id: string) {
-    alert(`Validation triggered for ${id} (mock)`);
+    alert(`${t('id.btn_val')} - ${id}`);
   }
 
   return (
     <div>
       <PageHeader
-        title="Identities"
-        subtitle="Device fingerprints, proxy assignments & validation"
+        title={t('id.title')}
+        subtitle={t('id.sub')}
       />
 
       <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: '1.25rem' }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Account</th>
-              <th>Fingerprint</th>
-              <th>Proxy</th>
-              <th>Country</th>
-              <th>Locked</th>
-              <th>Issues</th>
-              <th>Safe Mode</th>
-              <th>Actions</th>
+              <th>{t('id.col_acc')}</th>
+              <th>{t('id.col_fp')}</th>
+              <th>{t('id.col_proxy')}</th>
+              <th>{t('id.col_country')}</th>
+              <th>{t('id.col_locked')}</th>
+              <th>{t('id.col_issues')}</th>
+              <th>{t('id.col_safe')}</th>
+              <th>{t('id.col_actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -57,37 +59,37 @@ export function Identities() {
                     {id.fingerprint_hash.slice(0, 24)}…
                   </span>
                 </td>
-                <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{id.proxy_url?.split('://')[1] ?? '—'}</td>
+                <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{id.proxy_url?.split('://')[1] ?? (t('common.dash') ?? '—')}</td>
                 <td><Badge status="muted">{id.proxy_country}</Badge></td>
                 <td>
                   {id.locked
-                    ? <Badge status="success"><Lock size={10} /> Locked</Badge>
-                    : <Badge status="muted"><Unlock size={10} /> Unlocked</Badge>
+                    ? <Badge status="success"><Lock size={10} /> {t('id.locked')}</Badge>
+                    : <Badge status="muted"><Unlock size={10} /> {t('id.unlocked')}</Badge>
                   }
                 </td>
                 <td>
                   {id.validation_issues.length > 0
-                    ? <Badge status="danger">{id.validation_issues.length} issues</Badge>
-                    : <Badge status="success">Clean</Badge>
+                    ? <Badge status="danger">{id.validation_issues.length} {t('id.issues')}</Badge>
+                    : <Badge status="success">{t('id.clean')}</Badge>
                   }
                 </td>
                 <td>
                   {id.force_safe_mode
-                    ? <Badge status="danger"><ShieldAlert size={10} /> Forced</Badge>
-                    : <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                    ? <Badge status="danger"><ShieldAlert size={10} /> {t('id.forced')}</Badge>
+                    : <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{t('common.dash') ?? '—'}</span>
                   }
                 </td>
                 <td onClick={e => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: '0.375rem' }}>
-                    <button className="btn btn-ghost btn-icon btn-sm" title={id.locked ? 'Unlock' : 'Lock'}
+                    <button className="btn btn-ghost btn-icon btn-sm" title={id.locked ? t('id.act_unlock') : t('id.act_lock')}
                       onClick={() => toggleLock(id.account_id)}>
                       {id.locked ? <Unlock size={12} /> : <Lock size={12} />}
                     </button>
-                    <button className="btn btn-ghost btn-icon btn-sm" title="Regenerate fingerprint"
+                    <button className="btn btn-ghost btn-icon btn-sm" title={t('id.act_regen')}
                       onClick={() => regen(id.account_id)} disabled={id.locked}>
                       <RefreshCw size={12} />
                     </button>
-                    <button className="btn btn-ghost btn-icon btn-sm btn-sm" title="Validate consistency"
+                    <button className="btn btn-ghost btn-icon btn-sm btn-sm" title={t('id.act_val')}
                       onClick={() => validate(id.account_id)}>
                       <KeyRound size={12} />
                     </button>
@@ -99,27 +101,27 @@ export function Identities() {
         </table>
       </div>
 
-      <SlideOver open={!!selected} onClose={() => setSelected(null)} title="Identity Detail">
+      <SlideOver open={!!selected} onClose={() => setSelected(null)} title={t('id.detail_title')}>
         {selected && (
           <div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-              {selected.locked && <Badge status="success"><Lock size={10} /> Locked</Badge>}
-              {selected.force_safe_mode && <Badge status="danger">Force Safe Mode</Badge>}
-              {selected.validation_issues.length === 0 && <Badge status="success">No Issues</Badge>}
+              {selected.locked && <Badge status="success"><Lock size={10} /> {t('id.locked')}</Badge>}
+              {selected.force_safe_mode && <Badge status="danger">{t('id.force_safe')}</Badge>}
+              {selected.validation_issues.length === 0 && <Badge status="success">{t('id.no_issues')}</Badge>}
             </div>
 
             <div className="card-elevated" style={{ marginBottom: '1rem' }}>
-              <StatRow label="Account ID" value={<span className="mono">{selected.account_id}</span>} mono />
-              <StatRow label="Fingerprint" value={<span className="mono" style={{ fontSize: '0.7rem' }}>{selected.fingerprint_hash}</span>} mono />
-              <StatRow label="Proxy URL" value={<span className="mono">{selected.proxy_url ?? '—'}</span>} mono />
-              <StatRow label="Proxy Country" value={selected.proxy_country} />
-              <StatRow label="Locked" value={selected.locked ? '🔒 Yes' : '🔓 No'} />
-              <StatRow label="Force Safe Mode" value={selected.force_safe_mode ? '⚠ YES' : '—'} />
+              <StatRow label={t('id.lbl_acc_id')} value={<span className="mono">{selected.account_id}</span>} mono />
+              <StatRow label={t('id.lbl_fp')} value={<span className="mono" style={{ fontSize: '0.7rem' }}>{selected.fingerprint_hash}</span>} mono />
+              <StatRow label={t('id.lbl_proxy_url')} value={<span className="mono">{selected.proxy_url ?? (t('common.dash') ?? '—')}</span>} mono />
+              <StatRow label={t('id.lbl_proxy_country')} value={selected.proxy_country} />
+              <StatRow label={t('id.lbl_locked')} value={selected.locked ? t('id.val_yes_lock') : t('id.val_no_lock')} />
+              <StatRow label={t('id.lbl_force_safe')} value={selected.force_safe_mode ? t('id.val_yes_warn') : (t('common.dash') ?? '—')} />
             </div>
 
             {selected.validation_issues.length > 0 && (
               <div style={{ padding: '0.625rem 0.875rem', background: 'var(--danger-muted)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--danger)', marginBottom: '1rem' }}>
-                <div style={{ fontWeight: 600, color: 'var(--danger)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Validation Issues</div>
+                <div style={{ fontWeight: 600, color: 'var(--danger)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>{t('id.val_issues')}</div>
                 {selected.validation_issues.map(issue => (
                   <div key={issue} style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>• {issue.replace(/_/g, ' ')}</div>
                 ))}
@@ -128,13 +130,13 @@ export function Identities() {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
               <button className="btn btn-secondary" onClick={() => { toggleLock(selected.account_id); setSelected(null); }}>
-                {selected.locked ? <><Unlock size={14} /> Unlock Fingerprint</> : <><Lock size={14} /> Lock Fingerprint</>}
+                {selected.locked ? <><Unlock size={14} /> {t('id.btn_unlock')}</> : <><Lock size={14} /> {t('id.btn_lock')}</>}
               </button>
               <button className="btn btn-danger" disabled={selected.locked} onClick={() => { regen(selected.account_id); setSelected(null); }}>
-                <RefreshCw size={14} /> Regenerate Fingerprint
+                <RefreshCw size={14} /> {t('id.btn_regen')}
               </button>
               <button className="btn btn-secondary" onClick={() => validate(selected.account_id)}>
-                <KeyRound size={14} /> Validate Consistency
+                <KeyRound size={14} /> {t('id.btn_val')}
               </button>
             </div>
           </div>

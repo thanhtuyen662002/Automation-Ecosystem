@@ -1585,6 +1585,27 @@ class AutomationDatabase:
                 await conn.execute("ROLLBACK")
                 raise e
 
+    async def update_policy_rule_enabled(self, rule_id: str, enabled: bool) -> dict[str, Any] | None:
+        """Toggle the enabled flag on a policy rule. Returns updated row or None if not found."""
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await conn.execute(
+                    "UPDATE policy_rules SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (1 if enabled else 0, rule_id),
+                )
+                row = await (await conn.execute(
+                    "SELECT id, account_id, platform, action_type, rule_name, enabled, config, "
+                    "cooldown_seconds, max_actions, window_seconds, created_at, updated_at "
+                    "FROM policy_rules WHERE id = ?",
+                    (rule_id,),
+                )).fetchone()
+                await conn.execute("COMMIT")
+                return dict(row) if row else None
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
     async def get_account_publish_count(self, account_id: str, last_hours: int = 24) -> int:
 
         """Return the number of publish_* actions logged for an account in the last `last_hours` hours."""

@@ -1,71 +1,69 @@
-// ── App Sidebar ───────────────────────────────────────────────────────────────
+// ── Glassmorp Sidebar — white, clean, violet accents ─────────────────────────
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
-import { useUIStore, useWSStore } from '@/lib/store';
+import { NavLink } from 'react-router-dom';
+import { useUIStore, useWSStore, useAuthStore } from '@/lib/store';
+import { useI18n } from '@/lib/i18n';
 import {
   LayoutDashboard, Terminal, Shield, Cpu, Settings,
   ChevronLeft, ChevronRight, Zap, Users, FileVideo,
   BarChart3, Layers, AlertTriangle, KeyRound, Scale,
-  ListTodo, Activity,
+  ListTodo, Activity, Lock,
 } from 'lucide-react';
 
-interface NavItem {
-  to: string;
-  icon: React.ReactNode;
-  label: string;
-  badge?: number;
-}
-
-interface NavSection {
-  title: string;
-  items: NavItem[];
-}
+interface NavItem { to: string; icon: React.ReactNode; label: string; badge?: number; }
+interface NavSection { title: string; items: NavItem[]; }
 
 export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
   const { connected } = useWSStore();
-  const location = useLocation();
+  const { user } = useAuthStore();
+  const { t } = useI18n();
+  const isAdmin = user?.account?.toLowerCase() === 'admin';
 
   const sections: NavSection[] = [
     {
-      title: 'Dashboard',
+      title: t('section.dashboard'),
       items: [
-        { to: '/dashboard/executive', icon: <BarChart3 size={16} />, label: 'Executive View' },
-        { to: '/dashboard/command', icon: <Terminal size={16} />, label: 'Command Center' },
+        { to: '/dashboard/executive', icon: <BarChart3 size={15} />, label: t('nav.executive') },
+        { to: '/dashboard/command',   icon: <Terminal size={15} />,  label: t('nav.command') },
       ],
     },
     {
-      title: 'Operations',
+      title: t('section.operations'),
       items: [
-        { to: '/operations/queue', icon: <ListTodo size={16} />, label: 'Content Queue', badge: pendingCount || undefined },
-        { to: '/operations/jobs', icon: <Layers size={16} />, label: 'Pipeline Jobs' },
-        { to: '/operations/artifacts', icon: <FileVideo size={16} />, label: 'Artifacts' },
+        { to: '/operations/queue',     icon: <ListTodo size={15} />,  label: t('nav.queue'), badge: pendingCount || undefined },
+        { to: '/operations/jobs',      icon: <Layers size={15} />,    label: t('nav.jobs') },
+        { to: '/operations/artifacts', icon: <FileVideo size={15} />, label: t('nav.artifacts') },
       ],
     },
     {
-      title: 'Fleet',
+      title: t('section.fleet'),
       items: [
-        { to: '/fleet/health', icon: <Activity size={16} />, label: 'Fleet Health' },
-        { to: '/fleet/accounts', icon: <Users size={16} />, label: 'Accounts' },
-        { to: '/fleet/identities', icon: <KeyRound size={16} />, label: 'Identities' },
+        { to: '/fleet/health',     icon: <Activity size={15} />, label: t('nav.fleet') },
+        { to: '/fleet/accounts',   icon: <Users size={15} />,    label: t('nav.accounts') },
+        { to: '/fleet/identities', icon: <KeyRound size={15} />, label: t('nav.identities') },
       ],
     },
     {
-      title: 'Strategy',
+      title: t('section.strategy'),
       items: [
-        { to: '/strategy/ceo', icon: <Cpu size={16} />, label: 'CEO Brain' },
-        { to: '/strategy/niches', icon: <LayoutDashboard size={16} />, label: 'Niche Performance' },
-        { to: '/strategy/overrides', icon: <AlertTriangle size={16} />, label: 'Overrides' },
+        { to: '/strategy/ceo',       icon: <Cpu size={15} />,            label: t('nav.brain') },
+        { to: '/strategy/niches',    icon: <LayoutDashboard size={15} />, label: t('nav.niches') },
+        { to: '/strategy/overrides', icon: <AlertTriangle size={15} />,   label: t('nav.overrides') },
       ],
     },
     {
-      title: 'Settings',
+      title: t('section.settings'),
       items: [
-        { to: '/settings/general', icon: <Settings size={16} />, label: 'General' },
-        { to: '/settings/advanced', icon: <Zap size={16} />, label: 'Advanced' },
-        { to: '/settings/policy', icon: <Scale size={16} />, label: 'Policy Rules' },
+        { to: '/settings/general',  icon: <Settings size={15} />, label: t('nav.settings_gen') },
+        { to: '/settings/advanced', icon: <Zap size={15} />,      label: t('nav.settings_adv') },
+        { to: '/settings/policy',   icon: <Scale size={15} />,    label: t('nav.settings_pol') },
       ],
     },
+    ...(isAdmin ? [{
+      title: t('section.admin'),
+      items: [{ to: '/admin/licenses', icon: <Lock size={15} />, label: t('nav.licenses') }],
+    }] : []),
   ];
 
   return (
@@ -84,26 +82,46 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
       }}
     >
       {/* Logo */}
-      <div style={{ padding: '1rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.625rem', minHeight: '56px' }}>
-        <div style={{ width: 28, height: 28, background: 'var(--primary)', borderRadius: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <div style={{
+        padding: '0.875rem 0.875rem',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.625rem',
+        minHeight: '56px',
+      }}>
+        <div style={{
+          width: 30, height: 30,
+          background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)',
+          borderRadius: '0.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          boxShadow: '0 4px 10px rgba(124,58,237,0.35)',
+        }}>
           <Shield size={14} color="#fff" />
         </div>
         {!sidebarCollapsed && (
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.8125rem', lineHeight: 1 }}>AutoEcosystem</div>
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginTop: '0.125rem' }}>Command Center</div>
+            <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1 }}>
+              AutoEcosystem
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', marginTop: '0.15rem' }}>
+              Command Center
+            </div>
           </div>
         )}
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, overflowY: 'auto', padding: '0.5rem 0.5rem', display: 'flex', flexDirection: 'column', gap: '0.125rem' }}>
+      <nav style={{ flex: 1, overflowY: 'auto', padding: '0.375rem 0.5rem', display: 'flex', flexDirection: 'column', gap: '0.05rem' }}>
         {sections.map((section) => (
           <React.Fragment key={section.title}>
             {!sidebarCollapsed && (
               <div className="sidebar-section">{section.title}</div>
             )}
-            {sidebarCollapsed && <div style={{ height: '0.5rem' }} />}
+            {sidebarCollapsed && <div style={{ height: '0.375rem' }} />}
             {section.items.map((item) => (
               <NavLink
                 key={item.to}
@@ -117,9 +135,14 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
                     <span style={{ flex: 1 }}>{item.label}</span>
                     {item.badge != null && item.badge > 0 && (
                       <span style={{
-                        background: 'var(--danger)', color: '#fff', borderRadius: '9999px',
-                        fontSize: '0.65rem', fontWeight: 700, padding: '0.1rem 0.4rem',
-                        minWidth: '18px', textAlign: 'center',
+                        background: 'var(--danger)',
+                        color: '#fff',
+                        borderRadius: '9999px',
+                        fontSize: '0.6rem',
+                        fontWeight: 700,
+                        padding: '0.1rem 0.4rem',
+                        minWidth: '16px',
+                        textAlign: 'center',
                       }}>
                         {item.badge}
                       </span>
@@ -132,18 +155,27 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         ))}
       </nav>
 
-      {/* Footer: WS status + collapse toggle */}
-      <div style={{ padding: '0.625rem 0.75rem', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: sidebarCollapsed ? 'center' : 'space-between' }}>
+      {/* Footer */}
+      <div style={{
+        padding: '0.625rem 0.75rem',
+        borderTop: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+        justifyContent: sidebarCollapsed ? 'center' : 'space-between',
+      }}>
         {!sidebarCollapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <span className={`dot ${connected ? 'dot-success pulse' : 'dot-danger'}`} />
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{connected ? 'Live' : 'Offline'}</span>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+              {connected ? 'Live' : 'Offline'}
+            </span>
           </div>
         )}
         <button
           className="btn btn-ghost btn-icon"
           onClick={toggleSidebar}
-          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={sidebarCollapsed ? 'Expand' : 'Collapse'}
           style={{ color: 'var(--text-muted)' }}
         >
           {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}

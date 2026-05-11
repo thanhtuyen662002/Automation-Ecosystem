@@ -19,6 +19,10 @@ class PolicyRuleListResponse(BaseModel):
     items: list[PolicyRuleResponse]
 
 
+class PolicyRuleToggleRequest(BaseModel):
+    enabled: bool
+
+
 @router.get("", response_model=PolicyRuleListResponse)
 async def list_policy_rules(
     database: DatabaseDependency,
@@ -56,9 +60,27 @@ async def create_policy_rule(
     return PolicyRuleResponse.from_row(row)
 
 
+@router.patch("/{rule_id}", response_model=PolicyRuleResponse)
+async def toggle_policy_rule(
+    rule_id: str,
+    request: PolicyRuleToggleRequest,
+    database: DatabaseDependency,
+) -> PolicyRuleResponse:
+    """Toggle enabled/disabled state of a policy rule."""
+    row = await database.update_policy_rule_enabled(rule_id, request.enabled)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Policy rule not found")
+    LOGGER.info(
+        "policy_rule_toggled",
+        extra={"event": "policy_rule_toggled", "rule_id": rule_id, "enabled": request.enabled},
+    )
+    return PolicyRuleResponse.from_row(row)
+
+
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_policy_rule(rule_id: str, database: DatabaseDependency) -> None:
     deleted = await database.delete_policy_rule(rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Policy rule not found")
     LOGGER.info("policy_rule_deleted", extra={"event": "policy_rule_deleted", "rule_id": rule_id})
+

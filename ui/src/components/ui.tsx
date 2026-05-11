@@ -708,4 +708,120 @@ export function DecisionBlock({
   );
 }
 
+// ── GlassKpiCard — Glassmorp KPI card (white, icon circle, big number) ────────
+interface GlassKpiCardProps {
+  label: string;
+  value: string | number;
+  delta?: string;
+  deltaUp?: boolean;
+  icon?: React.ReactNode;
+  iconBg?: string;
+  iconColor?: string;
+  sub?: string;
+}
+export function GlassKpiCard({ label, value, delta, deltaUp, icon, iconBg, iconColor, sub }: GlassKpiCardProps) {
+  return (
+    <div className="card" style={{ padding: '1.125rem' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.625rem' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+            <span className="stat-label">{label}</span>
+            {delta && (
+              <span style={{
+                fontSize: '0.68rem', fontWeight: 700,
+                color: deltaUp ? 'var(--success)' : 'var(--danger)',
+                background: deltaUp ? 'var(--success-muted)' : 'var(--danger-muted)',
+                padding: '0.1rem 0.4rem', borderRadius: '9999px',
+              }}>{deltaUp ? '↑' : '↓'} {delta}</span>
+            )}
+          </div>
+        </div>
+        {icon && (
+          <div style={{
+            width: 36, height: 36, borderRadius: '50%',
+            background: iconBg ?? 'var(--primary-muted)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0, color: iconColor ?? 'var(--primary)',
+          }}>{icon}</div>
+        )}
+      </div>
+      <div style={{ fontSize: '1.625rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.025em', lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>{sub}</div>}
+    </div>
+  );
+}
 
+// ── ChartCard — white card with Glassmorp blob background ────────────────────
+interface ChartCardProps {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  blobLeft?: string;
+  blobRight?: string;
+  minHeight?: number;
+}
+export function ChartCard({ title, action, children, blobLeft, blobRight, minHeight = 240 }: ChartCardProps) {
+  return (
+    <div className="card" style={{ padding: '1.25rem', position: 'relative', overflow: 'hidden' }}>
+      <div style={{
+        position: 'absolute', width: 220, height: 220, top: -70, left: -50, borderRadius: '50%',
+        background: `radial-gradient(circle, ${blobLeft ?? 'rgba(167,139,250,0.40)'} 0%, transparent 70%)`,
+        filter: 'blur(48px)', pointerEvents: 'none',
+      }} />
+      <div style={{
+        position: 'absolute', width: 180, height: 180, bottom: -30, right: 30, borderRadius: '50%',
+        background: `radial-gradient(circle, ${blobRight ?? 'rgba(251,146,60,0.35)'} 0%, transparent 70%)`,
+        filter: 'blur(40px)', pointerEvents: 'none',
+      }} />
+      <div style={{ position: 'relative', zIndex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+          <div style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--text-primary)' }}>{title}</div>
+          {action}
+        </div>
+        <div style={{ minHeight }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── GlassProgressBar — country/item progress bar ──────────────────────────────
+export function GlassProgressBar({ label, value, color, flag }: {
+  label: string; value: number; color?: string; flag?: string;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.75rem' }}>
+      {flag && <span style={{ fontSize: '1rem', flexShrink: 0 }}>{flag}</span>}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+          <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 500, flexShrink: 0, marginLeft: '0.5rem' }}>{value}%</span>
+        </div>
+        <div style={{ height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${value}%`, background: color ?? 'linear-gradient(90deg, var(--primary), var(--primary-light))', borderRadius: 3, transition: 'width 0.5s ease' }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── StatMiniCard — inline stat with icon (right-panel style) ─────────────────
+export function StatMiniCard({ label, value, icon, delta, deltaUp }: {
+  label: string; value: string | number; icon?: React.ReactNode; delta?: string; deltaUp?: boolean;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
+      {icon && (
+        <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--primary-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', flexShrink: 0 }}>{icon}</div>
+      )}
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.15rem' }}>{label}</div>
+        <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
+      </div>
+      {delta && (
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: deltaUp ? 'var(--success)' : 'var(--danger)', background: deltaUp ? 'var(--success-muted)' : 'var(--danger-muted)', padding: '0.15rem 0.45rem', borderRadius: '9999px' }}>
+          {deltaUp ? '↑' : '↓'} {delta}
+        </span>
+      )}
+    </div>
+  );
+}

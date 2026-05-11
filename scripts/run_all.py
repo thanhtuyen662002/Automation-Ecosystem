@@ -3,16 +3,48 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+# ── Ensure project root is on sys.path regardless of cwd ──────────────────────
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+# ──────────────────────────────────────────────────────────────────────────────
 
 import uvicorn
+
+from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings, _load_env
+
+
+
+def _bootstrap_env(env_file: str = ".env") -> None:
+    """Load .env file into os.environ so all components share the same config."""
+    merged = _load_env(env_file)
+    for key, value in merged.items():
+        if key not in os.environ:
+            os.environ[key] = value
+
+
+# ── Bootstrap: load .env before importing any app modules ─────────────────────
+_env_file = ".env"
+for _i, _arg in enumerate(sys.argv[1:], 1):
+    if _arg in ("--env-file", "-e") and _i < len(sys.argv):
+        _env_file = sys.argv[_i + 1]
+        break
+    if _arg.startswith("--env-file="):
+        _env_file = _arg.split("=", 1)[1]
+        break
+
+_bootstrap_env(_env_file)
+# ──────────────────────────────────────────────────────────────────────────────
 
 from api.main import app
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import AutomationDatabase, RetryConfig
 from workers.handlers import register_default_handlers
-from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
 
 
 @dataclass(frozen=True)

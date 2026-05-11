@@ -4,9 +4,10 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ShieldOff, Power, RefreshCw } from 'lucide-react';
-import { DecisionBlock, ConfirmDialog, StatusDot } from '@/components/ui';
+import { DecisionBlock, ConfirmDialog, StatusDot, GlassKpiCard } from '@/components/ui';
 import { useDecisions, useSystemStats, useFleetAccounts, useApproveContent, useRejectContent, useFreezeAccount, useSetBrainConfig } from '@/lib/hooks';
 import { useUIStore, useWSStore, useAuthStore } from '@/lib/store';
+import { useI18n } from '@/lib/i18n';
 
 type Decision = {
   id: string; type: 'system' | 'content' | 'account';
@@ -19,6 +20,7 @@ export function CommandDashboard() {
   const { executionEnabled, setExecutionEnabled, autoApprove } = useUIStore();
   const { connected } = useWSStore();
   const { user, logout } = useAuthStore();
+  const { t } = useI18n();
   const [confirmSafe, setConfirmSafe] = useState(false);
 
   // PRIMARY: decision feed from backend
@@ -53,12 +55,12 @@ export function CommandDashboard() {
   const pendingCount   = contentDecisions.length;
 
   function actionLabel(d: Decision) {
-    const map: Record<string, string> = { approve: '✓ Đăng Ngay', freeze: '🔒 Đóng Băng', enable_execution: '⚡ Bật Máy Ngay', pause: '⏸ Tạm Nghỉ', monitor: '👁 Giám Sát' };
+    const map: Record<string, string> = { approve: t('act.approve'), freeze: t('act.freeze'), enable_execution: t('act.enable_exec'), pause: t('act.pause'), monitor: t('act.monitor') };
     return map[d.action] ?? d.action;
   }
   function passiveLabel(d: Decision) {
-    const map: Record<string, string> = { approve: 'Từ chối', freeze: 'Chỉ Giám Sát', enable_execution: 'Để Sau', pause: 'Tiếp tục', monitor: 'Bỏ qua' };
-    return map[d.action] ?? 'Bỏ qua';
+    const map: Record<string, string> = { approve: t('pass.reject'), freeze: t('pass.monitor'), enable_execution: t('pass.later'), pause: t('pass.continue'), monitor: t('pass.ignore') };
+    return map[d.action] ?? t('pass.ignore');
   }
   function blockRisk(d: Decision): 'low' | 'medium' | 'high' {
     if (d.type === 'system' || d.risk_flags.length > 0) return 'high';
@@ -67,22 +69,22 @@ export function CommandDashboard() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 800, margin: '0 auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem', maxWidth: 860, margin: '0 auto' }}>
 
       {/* ─── SECTION 1: SYSTEM ─────────────────────────────────────────────── */}
       {systemDecisions.length > 0 && (
         <div>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.625rem' }}>
-            🔴 HỆ THỐNG — Cần Hành Động Ngay
+            {t('cmd.system_alert')}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {systemDecisions.map(d => (
               <DecisionBlock key={d.id}
-                badge="HỆ THỐNG" badgeColor="var(--danger)"
+                badge={t('cmd.badge_system')} badgeColor="var(--danger)"
                 title={d.title} reason={d.reason}
                 risk="high"
                 riskFlags={d.risk_flags.length > 0 ? d.risk_flags : undefined}
-                ifSkip="Hệ thống tiếp tục đứng im — mất toàn bộ doanh thu"
+                ifSkip={t('cmd.system_skip')}
                 action={{ label: actionLabel(d), onClick: () => handleAction(d) }}
                 passive={{ label: passiveLabel(d), onClick: undefined }}
               />
@@ -95,7 +97,7 @@ export function CommandDashboard() {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.625rem' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            📄 NỘI DUNG — {contentDecisions.length} đang chờ duyệt
+            {t('cmd.content_title')} {contentDecisions.length} {t('cmd.content_pending')}
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => refetch()} style={{ color: 'var(--text-muted)' }}>
             <RefreshCw size={12} />
@@ -103,36 +105,36 @@ export function CommandDashboard() {
         </div>
 
         {decisionsLoading ? (
-          <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Đang tải...</div>
+          <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>{t('cmd.loading')}</div>
         ) : decisionsError ? (
           <div style={{ padding: '1rem', background: 'var(--surface)', border: '1px solid var(--danger)', borderRadius: 'var(--radius)', fontSize: '0.8rem', color: 'var(--danger)' }}>
-            ⚠ Không thể tải dữ liệu: {(decisionsError as Error).message}
-            <button className="btn btn-ghost btn-sm" onClick={() => refetch()} style={{ marginLeft: '0.5rem' }}>Thử lại</button>
+            {t('cmd.error_load')} {(decisionsError as Error).message}
+            <button className="btn btn-ghost btn-sm" onClick={() => refetch()} style={{ marginLeft: '0.5rem' }}>{t('cmd.retry')}</button>
           </div>
         ) : contentDecisions.length === 0 ? (
           <div style={{ padding: '1.5rem', textAlign: 'center', background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-            <div style={{ color: 'var(--success)', fontWeight: 600 }}>✅ Không có nội dung nào cần duyệt</div>
+            <div style={{ color: 'var(--success)', fontWeight: 600 }}>{t('cmd.no_content')}</div>
             <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '0.25rem' }}>
-              <Link to="/operations/queue" style={{ color: 'var(--primary)' }}>Xem toàn bộ hàng chờ →</Link>
+              <Link to="/operations/queue" style={{ color: 'var(--primary)' }}>{t('cmd.view_all_queue')}</Link>
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {contentDecisions.map(d => (
               <DecisionBlock key={d.id}
-                badge="NỘI DUNG" badgeColor="var(--primary)"
+                badge={t('cmd.badge_content')} badgeColor="var(--primary)"
                 title={d.title} reason={d.reason}
                 ev={`$${d.expected_value.toFixed(2)}`}
                 confidence={`${Math.round(d.confidence * 100)}%`}
                 risk={blockRisk(d)}
                 riskFlags={d.risk_flags.length > 0 ? d.risk_flags : undefined}
-                ifSkip="Bỏ lỡ cơ hội doanh thu"
+                ifSkip={t('cmd.miss_revenue')}
                 action={{ label: actionLabel(d), onClick: () => handleAction(d) }}
                 passive={{ label: passiveLabel(d), onClick: () => handlePassive(d) }}
               />
             ))}
             <Link to="/operations/queue" style={{ fontSize: '0.75rem', color: 'var(--primary)', textAlign: 'right', paddingRight: '0.25rem' }}>
-              Xem tất cả hàng chờ →
+              {t('cmd.view_all_queue')}
             </Link>
           </div>
         )}
@@ -142,22 +144,22 @@ export function CommandDashboard() {
       {fleetDecisions.length > 0 && (
         <div>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.625rem' }}>
-            ⚡ ĐỘI — {fleetDecisions.length} tài khoản cần chú ý
+            {t('cmd.fleet_alert')} {fleetDecisions.length} {t('cmd.fleet_attn')}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {fleetDecisions.map(d => (
               <DecisionBlock key={d.id}
-                badge="ĐỘI" badgeColor={d.action === 'freeze' ? 'var(--danger)' : 'var(--warning)'}
+                badge={t('cmd.badge_fleet')} badgeColor={d.action === 'freeze' ? 'var(--danger)' : 'var(--warning)'}
                 title={d.title} reason={d.reason}
                 risk={blockRisk(d)}
                 riskFlags={d.risk_flags.length > 0 ? d.risk_flags : undefined}
-                ifSkip={d.action === 'freeze' ? 'Tài khoản có thể bị ban vĩnh viễn' : 'Tăng rủi ro bị phát hiện'}
+                ifSkip={d.action === 'freeze' ? t('cmd.account_ban') : t('cmd.risk_detect')}
                 action={{ label: actionLabel(d), onClick: () => handleAction(d), danger: d.action === 'freeze' }}
                 passive={{ label: passiveLabel(d), onClick: undefined }}
               />
             ))}
             <Link to="/fleet/health" style={{ fontSize: '0.75rem', color: 'var(--primary)', textAlign: 'right', paddingRight: '0.25rem' }}>
-              Xem toàn bộ đội →
+              {t('cmd.view_all_fleet')}
             </Link>
           </div>
         </div>
@@ -166,37 +168,41 @@ export function CommandDashboard() {
       {/* ─── STATUS BAR ────────────────────────────────────────────────────── */}
       <div>
         <h2 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-          ⚠ TRẠNG THÁI HỆ THỐNG
+          {t('cmd.status_title')}
         </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.625rem' }}>
-          <div style={{ background: 'var(--surface)', border: `1px solid ${executionEnabled ? 'var(--success)' : 'var(--danger)'}`, borderRadius: 'var(--radius)', padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1.25rem' }}>
+          <GlassKpiCard
+            label={t('cmd.active_accs')}
+            value={activeAccounts}
+            iconBg="rgba(16,185,129,0.12)" iconColor="#10b981"
+            sub={highRiskCount > 0 ? `${highRiskCount} ${t('cmd.high_risk')}` : undefined}
+          />
+          <GlassKpiCard
+            label={t('cmd.content_queue')}
+            value={pendingCount}
+            iconBg={pendingCount > 0 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.10)'}
+            iconColor={pendingCount > 0 ? '#f59e0b' : '#10b981'}
+          />
+          <div className="card" style={{ padding: '1.125rem' }}>
+            <div className="stat-label" style={{ marginBottom: '0.5rem' }}>{t('cmd.engine_on')}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.625rem' }}>
               <StatusDot status={executionEnabled ? 'healthy' : 'failed'} />
               <span style={{ fontSize: '0.8rem', fontWeight: 600, color: executionEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                {executionEnabled ? 'Máy Đang Chạy' : 'Máy Đã Tắt'}
+                {executionEnabled ? t('cmd.engine_on') : t('cmd.engine_off')}
               </span>
             </div>
             <button className={`btn btn-sm ${executionEnabled ? 'btn-secondary' : 'btn-primary'}`}
               onClick={() => executionEnabled ? setConfirmSafe(true) : (brainConfig.mutate({ EXECUTION_ENABLED: true }), setExecutionEnabled(true))}>
-              {executionEnabled ? <><ShieldOff size={11} /> Tắt Khẩn Cấp</> : <><Power size={11} /> Bật Lại</>}
+              {executionEnabled ? <><ShieldOff size={11} /> {t('cmd.emer_stop')}</> : <><Power size={11} /> {t('cmd.emer_start')}</>}
             </button>
           </div>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.875rem' }}>
-            <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--primary)', lineHeight: 1 }}>{activeAccounts}</div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>tài khoản hoạt động</div>
-            {highRiskCount > 0 && <Link to="/fleet/health" style={{ fontSize: '0.7rem', color: 'var(--danger)', display: 'block', marginTop: '0.3rem' }}>{highRiskCount} rủi ro cao →</Link>}
-          </div>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.875rem' }}>
-            <div style={{ fontSize: '1.75rem', fontWeight: 800, color: pendingCount > 0 ? 'var(--warning)' : 'var(--success)', lineHeight: 1 }}>{pendingCount}</div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>nội dung chờ duyệt</div>
-            {pendingCount > 0 && <Link to="/operations/queue" style={{ fontSize: '0.7rem', color: 'var(--primary)', display: 'block', marginTop: '0.3rem' }}>Xem tất cả →</Link>}
-          </div>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.875rem' }}>
+          <div className="card" style={{ padding: '1.125rem' }}>
+            <div className="stat-label" style={{ marginBottom: '0.5rem' }}>WebSocket</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
               <StatusDot status={connected ? 'healthy' : 'failed'} />
-              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: connected ? 'var(--success)' : 'var(--text-muted)' }}>{connected ? 'Live' : 'Offline'}</span>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: connected ? 'var(--success)' : 'var(--text-muted)' }}>{connected ? t('cmd.live') : t('cmd.offline')}</span>
             </div>
-            {autoApprove && <div style={{ fontSize: '0.65rem', color: 'var(--warning)', marginTop: '0.3rem' }}>⚡ Tự động duyệt BẬT</div>}
+            {autoApprove && <div style={{ fontSize: '0.65rem', color: 'var(--warning)', marginTop: '0.375rem' }}>{t('cmd.auto_app_on')}</div>}
           </div>
         </div>
       </div>
@@ -204,10 +210,10 @@ export function CommandDashboard() {
       {/* ─── BACKGROUND ────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', padding: '0.875rem 1.25rem', background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
         {[
-          { label: 'Tasks Đang Chạy', val: stats?.running ?? '—' },
-          { label: 'Tasks Chờ',       val: stats?.pending ?? '—' },
-          { label: 'Lỗi Hôm Nay',    val: stats?.failed  ?? '—', warn: (stats?.failed ?? 0) > 5 },
-          { label: 'Operator',        val: user?.account  ?? '—' },
+          { label: t('cmd.tasks_run'), val: stats?.running ?? '—' },
+          { label: t('cmd.tasks_pend'),       val: stats?.pending ?? '—' },
+          { label: t('cmd.tasks_fail'),    val: stats?.failed  ?? '—', warn: (stats?.failed ?? 0) > 5 },
+          { label: t('cmd.operator'),        val: user?.account  ?? '—' },
         ].map(({ label, val, warn }) => (
           <div key={label}>
             <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.1rem' }}>{label}</div>
@@ -215,7 +221,7 @@ export function CommandDashboard() {
           </div>
         ))}
         <div style={{ marginLeft: 'auto' }}>
-          <button className="btn btn-ghost btn-sm" onClick={logout} style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Đăng xuất</button>
+          <button className="btn btn-ghost btn-sm" onClick={logout} style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{t('cmd.logout')}</button>
         </div>
       </div>
 
@@ -223,8 +229,8 @@ export function CommandDashboard() {
         open={confirmSafe}
         onClose={() => setConfirmSafe(false)}
         onConfirm={() => { brainConfig.mutate({ EXECUTION_ENABLED: false }); setExecutionEnabled(false); setConfirmSafe(false); }}
-        title="Tắt Khẩn Cấp"
-        message="Sẽ dừng TẤT CẢ upload và xử lý. Hệ thống vào chế độ an toàn. Bạn chắc chắn?"
+        title={t('cmd.emer_stop')}
+        message={t('cmd.stop_msg')}
         danger
       />
     </div>

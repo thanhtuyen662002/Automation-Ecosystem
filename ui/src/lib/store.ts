@@ -24,7 +24,7 @@ interface UIStore {
 export const useUIStore = create<UIStore>()(
   persist(
     (set) => ({
-      theme: 'dark',
+      theme: 'light',
       language: 'en',
       sidebarCollapsed: false,
       pendingCount: 3,
@@ -40,7 +40,15 @@ export const useUIStore = create<UIStore>()(
       setExecutionEnabled: (executionEnabled) => set({ executionEnabled }),
       setAutoApprove: (autoApprove) => set({ autoApprove }),
     }),
-    { name: 'ae-ui-prefs' }
+    {
+      name: 'ae-ui-prefs',
+      version: 2,
+      // v1→v2: reset old 'dark' default to 'light' (Glassmorp redesign)
+      migrate: (state: any, version: number) => {
+        if (version < 2) return { ...state, theme: 'light' };
+        return state;
+      },
+    }
   )
 );
 
@@ -73,13 +81,21 @@ export const useWSStore = create<WSStore>()((set) => ({
 }));
 
 // ── Auth Store ────────────────────────────────────────────────────────────────
+interface AuthUser {
+  account: string;
+  role: 'operator' | 'admin' | 'viewer';
+  max_accounts: number;
+}
+
 interface AuthStore {
   token: string | null;
-  user: { account: string } | null;
+  user: AuthUser | null;
   isAuthenticated: boolean;
-  login: (token: string, account: string) => void;
+  login: (token: string, user: AuthUser) => void;
   logout: () => void;
 }
+
+import { createJSONStorage } from 'zustand/middleware';
 
 export const useAuthStore = create<AuthStore>()(
   persist(
@@ -87,16 +103,29 @@ export const useAuthStore = create<AuthStore>()(
       token: null,
       user: null,
       isAuthenticated: false,
-      login: (token, account) => {
-        localStorage.setItem('auth_token', token);
-        set({ token, user: { account }, isAuthenticated: true });
+      login: (token, user) => {
+        // Save token to dedicated key so tokenStore.get() always works
+        sessionStorage.setItem('auth_token', token);
+        set({ token, user, isAuthenticated: true });
       },
       logout: () => {
+        sessionStorage.removeItem('auth_token');
         localStorage.removeItem('auth_token');
         set({ token: null, user: null, isAuthenticated: false });
       },
     }),
-    { name: 'ae-auth' }
+    {
+      name: 'ae-auth',
+      storage: createJSONStorage(() => sessionStorage),
+      // Re-sync auth_token to sessionStorage after zustand rehydrates.
+      // This covers the edge case where 'ae-auth' persisted state is
+      // restored but the standalone 'auth_token' key was cleared.
+      onRehydrateStorage: () => (state) => {
+        if (state?.token) {
+          sessionStorage.setItem('auth_token', state.token);
+        }
+      },
+    }
   )
 );
 

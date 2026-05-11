@@ -62,6 +62,47 @@ from workers.handlers.tiktok._base import (
 LOGGER = logging.getLogger("workers.handlers.tiktok.remake_video")
 
 # ── Segment parameters ────────────────────────────────────────────────────────
+
+
+# ── Content Decision Gate ─────────────────────────────────────────────────────
+
+def _content_decision_gate(payload: dict[str, Any], mode: str = "remark") -> None:
+    """
+    Mandatory EV + match guard before FFmpeg processing.
+
+    remark mode enforces: match_score >= 0.6 AND EV >= 0.05.
+    Raises ValueError if blocked. Fail-open on import errors.
+    """
+    try:
+        from core.content_decision import ContentCandidate, should_produce
+        signals = payload.get("decision_signals") or {}
+        item_id = str(payload.get("job_id") or payload.get("item_id") or "rv_job")
+        hook_text = str(payload.get("hook_text", "")).strip()
+        candidate = ContentCandidate(
+            item_id         = item_id,
+            trend_score     = float(signals.get("trend_score",    0.5)),
+            product_intent  = float(signals.get("product_intent", 0.5)),
+            hook_potential  = float(signals.get("hook_potential", -1.0)),
+            match_score     = float(signals.get("match_score",    0.5)),
+            novelty_score   = float(signals.get("novelty_score",  0.5)),
+            production_cost = float(signals.get("production_cost", 0.7)),
+            metadata        = {"text": hook_text, **(signals.get("metadata") or {})},
+        )
+        niche = str(signals.get("niche", ""))
+        allowed, reason = should_produce(candidate, mode=mode, niche=niche)
+        if not allowed:
+            LOGGER.info(
+                "remake_video_decision_blocked item=%s mode=%s reason=%s",
+                item_id, mode, reason,
+            )
+            raise ValueError(f"content_decision BLOCKED [{mode}]: {reason}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        LOGGER.debug("remake_video_gate_error (non-fatal): %s", exc)
+
+
+# ── Segment parameters ────────────────────────────────────────────────────────
 _MIN_SEGMENT_SECONDS = 0.8
 _MAX_SEGMENT_SECONDS = 2.0
 _MIN_CLIPS_TOTAL = 5
@@ -85,6 +126,11 @@ async def remake_video_handler(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Idempotency guard ─────────────────────────────────────────────────────
     if (cached := check_already_processed(payload)) is not None:
         return cached
+
+    # ── Content Decision Gate (MANDATORY — remark mode) ─────────────────────
+    # match_score < 0.6 → blocked (wrong product)
+    # EV < 0.05         → blocked (not worth FFmpeg cost)
+    _content_decision_gate(payload, mode="remark")
 
     # ── Resolve inputs ────────────────────────────────────────────────────────
     try:

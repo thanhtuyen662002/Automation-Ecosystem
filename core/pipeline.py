@@ -33,6 +33,99 @@ from typing import Any
 LOGGER = logging.getLogger("core.pipeline")
 
 
+# ── Content Decision helpers (PART 2 hard integration) ────────────────────────
+
+def _intent_to_mode(intent_value: str) -> str:
+    """
+    Map a strategy intent string to a content decision mode.
+
+    Mapping:
+        REUP    → "reup"     (cheap: minor refresh, no AI generation)
+        REMARK  → "remark"   (medium: remix/edit, strict match guard)
+        CREATE  → "generate" (expensive: full AI generation)
+        (any)   → "remark"   (safe default)
+    """
+    _MAP = {
+        "reup":    "reup",
+        "remark":  "remark",
+        "remake":  "remark",
+        "create":  "generate",
+        "generate":"generate",
+    }
+    return _MAP.get(intent_value.lower(), "remark")
+
+
+def _content_gate(
+    plan:       Any,
+    account_id: str,
+    niche:      str,
+    now:        int,
+    intensity:  float = 0.5,
+) -> tuple[bool, str]:
+    """
+    MANDATORY content decision gate.
+
+    Builds a minimal ContentCandidate from the plan and runs filter_candidates().
+    Returns (allowed, reason).
+
+    HARD RULES:
+      - NEVER proceed to produce() without passing this gate
+      - Generate mode: score < threshold → SKIP, log as cost_rejected
+      - Remark mode: match_score < 0.6 → SKIP immediately
+
+    The gate is intentionally lightweight:
+      - trend_score      from plan.intensity (proxy; real TrendAgent signal injected later)
+      - match_score      from plan.intensity (account-niche alignment proxy)
+      - hook_potential   neutral 0.5 (caller may override via plan.metadata)
+      - product_intent   neutral 0.5 (caller may override via plan.metadata)
+      - production_cost  inversely proportional to intensity (cheap = low cost)
+    """
+    try:
+        from core.content_decision import ContentCandidate, filter_candidates
+
+        intent_str = getattr(getattr(plan, "intent_type", None), "value", "remark")
+        mode       = _intent_to_mode(intent_str)
+
+        # Extract richer signals if caller embedded them in plan metadata
+        meta            = getattr(plan, "metadata", {}) or {}
+        trend_score     = float(meta.get("trend_score",     min(1.0, intensity)))
+        product_intent  = float(meta.get("product_intent",  0.5))
+        hook_potential  = float(meta.get("hook_potential",  0.5))
+        match_score     = float(meta.get("match_score",     min(1.0, intensity)))
+        novelty_score   = float(meta.get("novelty_score",   0.5))
+        # Cost proxy: high-intensity plans cost more; generate always expensive
+        base_cost       = 1.0 - intensity   # high intensity → willing to spend
+        production_cost = float(meta.get("production_cost", max(0.1, base_cost)))
+
+        candidate = ContentCandidate(
+            item_id         = f"{account_id}:{intent_str}:{now}",
+            trend_score     = trend_score,
+            product_intent  = product_intent,
+            hook_potential  = hook_potential,
+            match_score     = match_score,
+            novelty_score   = novelty_score,
+            production_cost = production_cost,
+        )
+
+        kept, dropped = filter_candidates(
+            [candidate],
+            mode    = mode,
+            niche   = niche,
+            explore = False,   # no exploration in per-account gate
+        )
+
+        if kept:
+            return True, f"content_gate_pass mode={mode} score={kept[0].score:.3f}"
+        else:
+            reason = dropped[0].reason if dropped else f"content_gate_drop mode={mode}"
+            return False, reason
+
+    except Exception as gate_exc:
+        # Gate failure is non-fatal — allow plan to proceed
+        LOGGER.debug("pipeline_content_gate_error account=%s error=%s", account_id, gate_exc)
+        return True, "gate_error_passthrough"
+
+
 # ── Data types ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -221,6 +314,30 @@ class Pipeline:
                 result.lifecycle_stage = lifecycle_stage_str
             except Exception:
                 pass
+
+            # ── CONTENT DECISION GATE (MANDATORY) ────────────────────────────
+            # Score this plan as a ContentCandidate BEFORE any production work.
+            # HARD RULE: plan must pass filter_candidates() to proceed.
+            # IDLE role is exempt (no content produced).
+            if plan.role.value != "IDLE":
+                gate_allowed, gate_reason = _content_gate(
+                    plan       = plan,
+                    account_id = account_id,
+                    niche      = plan.niche,
+                    now        = now,
+                    intensity  = plan.intensity,
+                )
+                if not gate_allowed:
+                    LOGGER.debug(
+                        "pipeline_content_gate_skip account=%s reason=%s",
+                        account_id, gate_reason,
+                    )
+                    result.plan_skipped = True
+                    account_plan_data.append({
+                        "account_id": account_id, "result": result,
+                        "plan": None, "feed_post": None, "stage": lifecycle_stage_str,
+                    })
+                    continue
 
             # ── DARWIN: scale intensity by cluster resource share (Part 4) ──
             darwin_intensity = plan.intensity
@@ -463,6 +580,94 @@ class Pipeline:
             except Exception:
                 pass   # clustering is advisory; never blocks the pipeline
 
+            # Stage 9a: Attribution Engine — generate tracking code + flush real revenue
+            # Tracking code embedded in affiliate links/bio; flush converts pending
+            # conversions into real revenue signals before profit_engine update.
+            _content_id = f"{account_id}:{plan.niche}:{plan.intent_type.value}"
+            _page_id    = account_id   # platform page = account identifier
+            _real_revenue: float | None = None
+            try:
+                from core.attribution_engine import (
+                    generate_tracking_code as _gen_code,
+                    flush_to_profit_engine as _attr_flush,
+                    get_revenue as _get_rev,
+                )
+                _tracking_code = _gen_code(
+                    content_id=_content_id,
+                    page_id=_page_id,
+                    timestamp=float(now),
+                )
+                # Attach tracking code to result so publisher can embed it
+                result.__dict__["tracking_code"] = _tracking_code
+
+                # Flush any pending conversions → propagates real revenue to profit_engine
+                _mode_cost_map_atr = {"REUP": 0.15, "REMARK": 0.35, "CREATE": 0.65}
+                _cost_atr = _mode_cost_map_atr.get(plan.role.value, 0.35)
+                _attr_flush(cost_map={_content_id: _cost_atr})
+
+                # Try to read real attributed revenue (may be 0.0 on first cycle)
+                _measured_rev = _get_rev(_content_id, plan.niche)
+                if _measured_rev > 0.0:
+                    _real_revenue = _measured_rev
+            except Exception as _attr_exc:
+                LOGGER.debug("pipeline_attribution_error account=%s error=%s", account_id, _attr_exc)
+
+            # Stage 10a: Profit Engine — update_profit AFTER attribution flush
+            # Uses real revenue from attribution when available; falls back to proxy.
+            # Pipeline: track → attribution_flush → profit_eval → scaling → next cycle
+            _profit_score_for_scaling: float = -1.0   # sentinel = auto-read in scaling
+            try:
+                from core.profit_engine import update_profit as _profit_update
+                # Revenue: prefer real attribution data, fallback to engagement×reach proxy
+                _mode_cost_map = {"REUP": 0.15, "REMARK": 0.35, "CREATE": 0.65}
+                _est_cost      = _mode_cost_map.get(plan.role.value, 0.35)
+                _est_revenue   = result.engagement_score * result.reach_score * 2.0
+                _final_revenue = _real_revenue if _real_revenue is not None else _est_revenue
+                _prec = _profit_update(
+                    content_id = _content_id,
+                    niche      = plan.niche,
+                    revenue    = _final_revenue,
+                    cost       = _est_cost,
+                )
+                _profit_score_for_scaling = _prec.profit_score
+            except Exception as _profit_exc:
+                LOGGER.debug("pipeline_profit_error account=%s error=%s", account_id, _profit_exc)
+
+            # Stage 10b: Self-Scaling Engine — update_performance with profit_score
+            try:
+                from core.self_scaling import update_performance as _scale_update
+                _content_id = f"{account_id}:{plan.niche}:{plan.intent_type.value}"
+                _scale_update(
+                    content_id      = _content_id,
+                    niche           = plan.niche,
+                    views           = result.reach_score,
+                    engagement_rate = result.engagement_score,
+                    conversion_rate = result.share_rate,
+                    retention       = result.virality_score,
+                    cycle           = cycle,
+                    seed            = now ^ (hash(account_id) & 0xFFFFFFFF),
+                    profit_score    = _profit_score_for_scaling,
+                )
+            except Exception as _scale_exc:
+                LOGGER.debug("pipeline_scaling_error account=%s error=%s", account_id, _scale_exc)
+
+            # Stage 10c: Page Intelligence — update page-level distribution metrics
+            try:
+                from core.page_intelligence import register_page, update_page_metrics
+                _page_id = account_id   # account_id is the page identifier in this pipeline
+                register_page(_page_id, account_id=account_id, niche=plan.niche, is_new=False)
+                update_page_metrics(
+                    page_id    = _page_id,
+                    views      = result.reach_score,
+                    engagement = result.engagement_score,
+                    revenue    = _final_revenue if _real_revenue is not None else 0.0,
+                    cost       = _est_cost,
+                    converted  = (_real_revenue or 0.0) > 0.0,
+                    post_count = 1,
+                )
+            except Exception as _page_exc:
+                LOGGER.debug("pipeline_page_intel_error account=%s error=%s", account_id, _page_exc)
+
             account_results.append(result)
 
         # ── Phase 4: Fleet-wide Optimizer + Per-cluster Adaptation ───────────
@@ -692,7 +897,129 @@ class Pipeline:
         )
 
         LOGGER.info("pipeline_cycle %s", report.summary())
+
+        # ── Phase 5: Real Execution V2 — Approval → Scheduler → Metrics ──────
+        # Fires when EXECUTION_ENABLED=1 env var is set. All steps optional.
+        # Pipeline simulation is always complete before this stage runs.
+        #
+        # Flow:
+        #   top candidates → approval_queue.submit()
+        #   approved items → scheduler.enqueue()  (peak-hour scheduling)
+        #   scheduler.tick()  → dispatches due jobs (up to MAX_EXEC_PER_CYCLE)
+        #   metrics_collector.collect_all_due() → re-scrape published posts
+        try:
+            import os as _os
+            if _os.environ.get("EXECUTION_ENABLED", "0") == "1" and active:
+                _max_exec = int(_os.environ.get("MAX_EXEC_PER_CYCLE", "3"))
+
+                # Select top candidates from this cycle
+                _exec_candidates = sorted(
+                    [r for r in active if r.success and not r.ban],
+                    key=lambda r: r.engagement_score * r.reach_score,
+                    reverse=True,
+                )[:_max_exec]
+
+                for _exec_r in _exec_candidates:
+                    _content_id = f"{_exec_r.account_id}:{_exec_r.plan_niche}:{now}"
+                    _mode       = _intent_to_mode(_exec_r.plan_intent)
+                    _candidate  = {
+                        "content_id": _content_id,
+                        "mode":       _mode,
+                        "platform":   self.platform,
+                        "niche":      _exec_r.plan_niche,
+                        "source_url": _os.environ.get("DEFAULT_SOURCE_URL", ""),
+                        "caption":    _os.environ.get(
+                            "DEFAULT_CAPTION", f"#{_exec_r.plan_niche} 🔥"
+                        ),
+                        "hashtags":   [_exec_r.plan_niche, "trending", "viral"],
+                        "score":      round(
+                            _exec_r.engagement_score * _exec_r.reach_score, 4
+                        ),
+                    }
+
+                    # Stage 11a: Submit to approval queue
+                    try:
+                        from execution.approval_queue import submit as _aq_submit
+                        _item_id = _aq_submit(_candidate)
+                        LOGGER.info(
+                            "pipeline_approval_submitted item_id=%s content_id=%s",
+                            _item_id, _content_id,
+                        )
+                        _candidate["approval_id"] = _item_id
+                    except Exception as _aq_exc:
+                        LOGGER.debug("pipeline_approval_queue_error error=%s", _aq_exc)
+
+                    # Stage 11b: Enqueue approved items into scheduler
+                    try:
+                        from execution.approval_queue import get_approved as _aq_approved
+                        from execution.approval_queue import mark_dispatched as _aq_dispatch
+                        from execution.scheduler import enqueue as _sched_enqueue
+                        from execution.account_manager import get_next_account as _get_acct
+
+                        for _approved in _aq_approved(limit=_max_exec):
+                            _appr_id   = _approved["item_id"]
+                            _appr_cand = _approved.get("candidate", _approved)
+                            _platform  = _appr_cand.get("platform", self.platform)
+                            _acct      = _get_acct(_platform)
+                            _acct_id   = _acct["account_id"] if _acct else ""
+                            _job_id    = _sched_enqueue(
+                                _appr_cand,
+                                account_id  = _acct_id,
+                                approval_id = _appr_id,
+                                priority    = 3,
+                            )
+                            _aq_dispatch(_appr_id)
+                            LOGGER.info(
+                                "pipeline_scheduler_enqueue job_id=%s account=%s",
+                                _job_id, _acct_id,
+                            )
+                    except Exception as _sched_exc:
+                        LOGGER.debug("pipeline_scheduler_enqueue_error error=%s", _sched_exc)
+
+                # Stage 11c: Tick scheduler (dispatch due jobs)
+                try:
+                    from execution.scheduler import tick as _sched_tick
+                    _job_results = _sched_tick()
+                    for _jr in _job_results:
+                        LOGGER.info(
+                            "pipeline_scheduler_tick job_id=%s status=%s url=%s",
+                            _jr.job_id, _jr.status, _jr.url,
+                        )
+                        # Stage 11d: Register published posts for metrics collection
+                        if _jr.status == "success" and _jr.url:
+                            try:
+                                from execution.metrics_collector_playwright import (
+                                    register_post as _reg_post,
+                                )
+                                _reg_post(
+                                    content_id = _jr.content_id,
+                                    post_url   = _jr.url,
+                                    platform   = _jr.platform,
+                                    account_id = _jr.account_id,
+                                )
+                            except Exception:
+                                pass
+                except Exception as _tick_exc:
+                    LOGGER.debug("pipeline_scheduler_tick_error error=%s", _tick_exc)
+
+                # Stage 11e: Collect metrics for due posts (async, non-blocking)
+                try:
+                    from execution.metrics_collector_playwright import (
+                        collect_all_due as _collect_due,
+                    )
+                    _collect_results = _collect_due(headless=True)
+                    if _collect_results:
+                        LOGGER.info(
+                            "pipeline_metrics_collected count=%d", len(_collect_results)
+                        )
+                except Exception as _collect_exc:
+                    LOGGER.debug("pipeline_metrics_collect_error error=%s", _collect_exc)
+
+        except Exception as _phase5_exc:
+            LOGGER.debug("pipeline_phase5_error cycle=%d error=%s", cycle, _phase5_exc)
+
         return report
+
 
     # ── Multi-cycle run ────────────────────────────────────────────────────────
 

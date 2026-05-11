@@ -342,6 +342,51 @@ def _dry_run_content(title: str, cta: str, style_key: str) -> dict[str, str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CONTENT DECISION GATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _content_decision_gate(
+    payload: dict[str, Any],
+    title:   str  = "",
+    mode:    str  = "generate",
+) -> None:
+    """
+    Mandatory EV gate before expensive generation.
+
+    Reads payload["decision_signals"] for context.
+    Falls back to title-based curiosity signal for hook estimation.
+    Raises ValueError if should_produce() returns False.
+    Fail-open on import errors (non-fatal).
+    """
+    try:
+        from core.content_decision import ContentCandidate, should_produce
+        signals = payload.get("decision_signals") or {}
+        item_id = str(payload.get("job_id") or payload.get("item_id") or "gc_job")
+        candidate = ContentCandidate(
+            item_id         = item_id,
+            trend_score     = float(signals.get("trend_score",    0.5)),
+            product_intent  = float(signals.get("product_intent", 0.5)),
+            hook_potential  = float(signals.get("hook_potential", -1.0)),  # auto-estimate
+            match_score     = float(signals.get("match_score",    0.5)),
+            novelty_score   = float(signals.get("novelty_score",  0.5)),
+            production_cost = float(signals.get("production_cost", 0.8)),
+            metadata        = {"text": title, **(signals.get("metadata") or {})},
+        )
+        niche = str(signals.get("niche", ""))
+        allowed, reason = should_produce(candidate, mode=mode, niche=niche)
+        if not allowed:
+            LOGGER.info(
+                "generate_content_decision_blocked item=%s mode=%s reason=%s",
+                item_id, mode, reason,
+            )
+            raise ValueError(f"content_decision BLOCKED [{mode}]: {reason}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        LOGGER.debug("generate_content_gate_error (non-fatal): %s", exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # HANDLER
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -362,6 +407,10 @@ async def generate_content_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not title:
         raise ValueError("generate_content requires 'title' from parent extract_product_info result")
+
+    # ── Content Decision Gate (MANDATORY — before any AI API call) ────────────
+    # generate mode: EV < 0.1 or final_score < 0 → skip entirely.
+    _content_decision_gate(payload, title=title, mode="generate")
 
     # ── Config flags ──────────────────────────────────────────────────────────
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"

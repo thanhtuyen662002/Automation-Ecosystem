@@ -13,12 +13,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
+      // changeOrigin: true  → strips the browser Origin header, BE sees 127.0.0.1
+      // ws: true            → also proxy WebSocket upgrade requests (used by /api/v1/ws/brain)
+      '/api':       { target: 'http://localhost:8000', changeOrigin: true, ws: true },
       '/pipelines': { target: 'http://localhost:8000', changeOrigin: true },
       '/analytics': { target: 'http://localhost:8000', changeOrigin: true },
-      '/jobs': { target: 'http://localhost:8000', changeOrigin: true },
-      '/tasks': { target: 'http://localhost:8000', changeOrigin: true },
-      '/system': { target: 'http://localhost:8000', changeOrigin: true },
+      '/jobs':      { target: 'http://localhost:8000', changeOrigin: true },
+      '/tasks':     { target: 'http://localhost:8000', changeOrigin: true },
+      '/system':    { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

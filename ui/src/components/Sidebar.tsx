@@ -1,4 +1,4 @@
-// ── Glassmorp Sidebar — white, clean, violet accents ─────────────────────────
+// ── Glassmorp Sidebar — glass, clean, violet pill active ──────────────────────
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useUIStore, useWSStore, useAuthStore } from '@/lib/store';
@@ -70,8 +70,11 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
     <aside
       className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}
       style={{
-        background: 'var(--surface)',
-        borderRight: '1px solid var(--border)',
+        background: 'rgba(255, 255, 255, 0.78)',
+        backdropFilter: 'blur(14px)',
+        WebkitBackdropFilter: 'blur(14px)',
+        borderRight: '1px solid rgba(255,255,255,0.55)',
+        boxShadow: '2px 0 20px rgba(124,58,237,0.06)',
         display: 'flex',
         flexDirection: 'column',
         height: '100vh',
@@ -81,73 +84,130 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         flexShrink: 0,
       }}
     >
-      {/* Logo */}
+      {/* ── Logo ── */}
       <div style={{
-        padding: '0.875rem 0.875rem',
-        borderBottom: '1px solid var(--border)',
+        padding: sidebarCollapsed ? '0.875rem 0.5rem' : '0.875rem 1rem',
+        borderBottom: '1px solid rgba(237,233,248,0.6)',
         display: 'flex',
         alignItems: 'center',
         gap: '0.625rem',
         minHeight: '56px',
       }}>
         <div style={{
-          width: 30, height: 30,
+          width: 32, height: 32,
           background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)',
-          borderRadius: '0.5rem',
+          borderRadius: '0.625rem',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
-          boxShadow: '0 4px 10px rgba(124,58,237,0.35)',
+          boxShadow: '0 4px 12px rgba(124,58,237,0.38)',
         }}>
           <Shield size={14} color="#fff" />
         </div>
         {!sidebarCollapsed && (
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-primary)', lineHeight: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.1 }}>
               AutoEcosystem
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', marginTop: '0.15rem' }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.6rem', marginTop: '0.1rem', letterSpacing: '0.03em' }}>
               Command Center
             </div>
           </div>
         )}
       </div>
 
-      {/* Nav */}
-      <nav style={{ flex: 1, overflowY: 'auto', padding: '0.375rem 0.5rem', display: 'flex', flexDirection: 'column', gap: '0.05rem' }}>
+      {/* ── Nav ── */}
+      <nav style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '0.5rem 0.625rem',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 0,
+      }}>
         {sections.map((section) => (
           <React.Fragment key={section.title}>
+            {/* Section label */}
             {!sidebarCollapsed && (
-              <div className="sidebar-section">{section.title}</div>
+              <div style={{
+                fontSize: '0.62rem',
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                color: 'var(--text-muted)',
+                padding: '0.75rem 0.5rem 0.3rem',
+                opacity: 0.7,
+              }}>
+                {section.title}
+              </div>
             )}
-            {sidebarCollapsed && <div style={{ height: '0.375rem' }} />}
+            {sidebarCollapsed && <div style={{ height: '0.5rem' }} />}
+
+            {/* Nav items */}
             {section.items.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
-                className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                 title={sidebarCollapsed ? item.label : undefined}
+                style={{ textDecoration: 'none' }}
               >
-                <span style={{ flexShrink: 0 }}>{item.icon}</span>
-                {!sidebarCollapsed && (
-                  <>
-                    <span style={{ flex: 1 }}>{item.label}</span>
-                    {item.badge != null && item.badge > 0 && (
-                      <span style={{
-                        background: 'var(--danger)',
-                        color: '#fff',
-                        borderRadius: '9999px',
-                        fontSize: '0.6rem',
-                        fontWeight: 700,
-                        padding: '0.1rem 0.4rem',
-                        minWidth: '16px',
-                        textAlign: 'center',
-                      }}>
-                        {item.badge}
-                      </span>
+                {({ isActive }) => (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: sidebarCollapsed ? '0.5rem' : '0.44rem 0.625rem',
+                    borderRadius: '0.5rem',
+                    margin: '0.08rem 0',
+                    cursor: 'pointer',
+                    justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                    transition: 'all 0.15s ease',
+                    background: isActive
+                      ? 'linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)'
+                      : 'transparent',
+                    color: isActive ? '#fff' : 'var(--text-secondary)',
+                    boxShadow: isActive ? '0 4px 12px rgba(124,58,237,0.30)' : 'none',
+                    fontWeight: isActive ? 600 : 400,
+                    fontSize: '0.8125rem',
+                  }}
+                    onMouseEnter={e => {
+                      if (!isActive) {
+                        (e.currentTarget as HTMLElement).style.background = 'rgba(124,58,237,0.08)';
+                        (e.currentTarget as HTMLElement).style.color = 'var(--primary)';
+                      }
+                    }}
+                    onMouseLeave={e => {
+                      if (!isActive) {
+                        (e.currentTarget as HTMLElement).style.background = 'transparent';
+                        (e.currentTarget as HTMLElement).style.color = 'var(--text-secondary)';
+                      }
+                    }}
+                  >
+                    <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{item.icon}</span>
+                    {!sidebarCollapsed && (
+                      <>
+                        <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {item.label}
+                        </span>
+                        {item.badge != null && item.badge > 0 && (
+                          <span style={{
+                            background: isActive ? 'rgba(255,255,255,0.3)' : 'var(--danger)',
+                            color: '#fff',
+                            borderRadius: '9999px',
+                            fontSize: '0.6rem',
+                            fontWeight: 700,
+                            padding: '0.08rem 0.38rem',
+                            minWidth: '16px',
+                            textAlign: 'center',
+                            flexShrink: 0,
+                          }}>
+                            {item.badge}
+                          </span>
+                        )}
+                      </>
                     )}
-                  </>
+                  </div>
                 )}
               </NavLink>
             ))}
@@ -155,10 +215,10 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         ))}
       </nav>
 
-      {/* Footer */}
+      {/* ── Footer ── */}
       <div style={{
         padding: '0.625rem 0.75rem',
-        borderTop: '1px solid var(--border)',
+        borderTop: '1px solid rgba(237,233,248,0.6)',
         display: 'flex',
         alignItems: 'center',
         gap: '0.5rem',
@@ -166,19 +226,42 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
       }}>
         {!sidebarCollapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <span className={`dot ${connected ? 'dot-success pulse' : 'dot-danger'}`} />
+            <span
+              style={{
+                width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                background: connected ? 'var(--success)' : 'var(--danger)',
+                boxShadow: connected ? '0 0 6px var(--success)' : 'none',
+                display: 'inline-block',
+              }}
+            />
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
               {connected ? 'Live' : 'Offline'}
             </span>
           </div>
         )}
         <button
-          className="btn btn-ghost btn-icon"
           onClick={toggleSidebar}
           title={sidebarCollapsed ? 'Expand' : 'Collapse'}
-          style={{ color: 'var(--text-muted)' }}
+          style={{
+            width: 28, height: 28,
+            borderRadius: '0.4rem',
+            background: 'rgba(124,58,237,0.08)',
+            border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer',
+            color: 'var(--text-muted)',
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(124,58,237,0.15)';
+            (e.currentTarget as HTMLElement).style.color = 'var(--primary)';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(124,58,237,0.08)';
+            (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)';
+          }}
         >
-          {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          {sidebarCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
         </button>
       </div>
     </aside>

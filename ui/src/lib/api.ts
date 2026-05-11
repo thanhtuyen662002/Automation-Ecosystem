@@ -10,7 +10,9 @@
 
 import { getElectronMachineId } from '@/lib/machine';
 
-const BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+// BASE: empty string = relative URL → goes through Vite proxy → no CORS.
+// Set VITE_API_BASE in .env.local only if connecting to a remote server.
+const BASE = import.meta.env.VITE_API_BASE ?? '';
 
 // ── Token storage (sessionStorage > localStorage) ───────────────────────────
 const TOKEN_KEY = 'auth_token';

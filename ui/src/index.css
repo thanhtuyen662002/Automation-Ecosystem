@@ -7,17 +7,22 @@
    Cards NEVER touch each other — always separated by gap
    ───────────────────────────────────────────────────────────────────────── */
 
-/* ── LIGHT THEME (default = Glassmorp style) ─────────────────────────────── */
+/* ── LIGHT THEME (default = Glassmorp style) ───────────────────────────── */
 :root,
 [data-theme="light"] {
-  /* Page background — very light lavender like Glassmorp */
-  --bg:      #f5f3ff;
-  --bg-soft: #faf9ff;
+  /* Page background — soft lavender-to-blue gradient */
+  --bg:      linear-gradient(to right, #e4aaf3 0%, #a3dff0 100%);
+  --bg-soft: rgba(250,249,255,0.70);
 
-  /* Surfaces — pure WHITE cards */
-  --surface:        #ffffff;
-  --surface-2:      #f9f8ff;
-  --surface-header: #ffffff;
+  /* Surfaces — semi-transparent glass */
+  --surface:        rgba(255, 255, 255, 0.72);
+  --surface-2:      rgba(249, 248, 255, 0.65);
+  --surface-header: rgba(255, 255, 255, 0.78);
+
+  /* Glass blur */
+  --glass-blur:   blur(12px);
+  --glass-border: rgba(255, 255, 255, 0.55);
+
 
   /* Borders */
   --border:        #ede9f8;
@@ -116,6 +121,7 @@ html { font-size: 14px; }
 body {
   font-family: 'Inter', system-ui, sans-serif;
   background: var(--bg);
+  background-attachment: fixed;
   color: var(--text-primary);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -133,26 +139,53 @@ body {
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   padding: 1.25rem;
   box-shadow: var(--shadow-card);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   transition: box-shadow 0.22s ease, transform 0.22s ease, border-color 0.22s ease;
 }
 .card:hover {
   box-shadow: var(--shadow-card-hover);
-  border-color: var(--primary-border);
+  border-color: rgba(124, 58, 237, 0.30);
   transform: translateY(-1px);
 }
 .card-elevated {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.80);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   padding: 1rem;
   box-shadow: var(--shadow-card);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
-/* ── Glassmorp Chart Card (colorful blobs inside chart area) ─────────────── */
+/* ── Global glass — apply backdrop-filter to all surface elements ────────── */
+.data-table th {
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  background: var(--surface) !important;
+  border-bottom-color: var(--glass-border) !important;
+}
+
+.slide-over {
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  background: var(--surface-header) !important;
+  border-left-color: var(--glass-border) !important;
+}
+
+.input, .select {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background: var(--bg-soft) !important;
+}
+
+/* Sidebar + topbar already have backdrop-filter via inline styles */
+
+
 .chart-glass {
   position: relative;
   overflow: hidden;
@@ -353,16 +386,17 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Sidebar ─────────────────────────────────────────────────────────────── */
-.sidebar { width: 240px; min-width: 240px; transition: width 0.25s, min-width 0.25s; }
-.sidebar.collapsed { width: 64px; min-width: 64px; }
+/* ── Sidebar ────────────────────────────────────────────────────── */
+.sidebar { width: 200px; min-width: 200px; transition: width 0.25s ease, min-width 0.25s ease; }
+.sidebar.collapsed { width: 60px; min-width: 60px; }
 
+/* sidebar-item: base only — active/hover handled via inline styles in Sidebar.tsx */
 .sidebar-item {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  padding: 0.45rem 0.75rem;
-  border-radius: var(--radius-sm);
+  gap: 0.5rem;
+  padding: 0.44rem 0.625rem;
+  border-radius: 0.5rem;
   cursor: pointer;
   transition: all 0.15s ease;
   color: var(--text-secondary);
@@ -371,23 +405,26 @@ body {
   font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
+  margin: 0.06rem 0;
 }
 .sidebar-item:hover {
-  background: var(--primary-soft);
+  background: rgba(124,58,237,0.08);
   color: var(--primary);
 }
 .sidebar-item.active {
-  background: var(--primary-muted);
-  color: var(--primary);
+  background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+  color: #fff;
   font-weight: 600;
+  box-shadow: 0 4px 12px rgba(124,58,237,0.30);
 }
 .sidebar-section {
-  font-size: 0.62rem;
+  font-size: 0.61rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.08em;
   color: var(--text-muted);
-  padding: 0.875rem 0.75rem 0.3rem;
+  padding: 0.75rem 0.5rem 0.3rem;
+  opacity: 0.7;
 }
 
 /* ── Slide-over ──────────────────────────────────────────────────────────── */

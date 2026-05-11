@@ -5,7 +5,8 @@ import { useAuthStore } from '@/lib/store';
 import { tokenStore } from '@/lib/api';
 import { Shield, LogIn } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+// Empty string = relative URL → goes through Vite proxy → no CORS
+const API = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_API_BASE ?? '';
 
 const TESTIMONIALS = [
   {

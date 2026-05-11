@@ -2,7 +2,14 @@
 import { useEffect, useRef } from 'react';
 import { useWSStore, type LiveEvent } from './store';
 
-const WS_URL = 'ws://localhost:8000/api/v1/ws/brain';
+// Derive WS URL from current window location so it works in both:
+//   dev  → wss?://localhost:5173/api/v1/ws/brain  (proxied by Vite → 8000)
+//   prod → wss?://<real-host>/api/v1/ws/brain
+const WS_URL = (() => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const host  = window.location.host;                // e.g. localhost:5173
+  return `${proto}://${host}/api/v1/ws/brain`;
+})();
 
 let wsInstance: WebSocket | null = null;
 

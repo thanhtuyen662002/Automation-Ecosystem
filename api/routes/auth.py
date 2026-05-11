@@ -225,6 +225,19 @@ async def login(req: LoginRequest, request: Request) -> LoginResponse:
             raise HTTPException(401, "License key không hợp lệ (debug mode: >= 16 ký tự).")
         LOGGER.warning("auth_debug_mode", extra={"event": "auth_debug_mode", "account": account})
 
+        # FIX: lookup_session() uses INNER JOIN sessions→licenses.
+        # In dev/debug mode the licenses table is empty → JOIN returns nothing → 401.
+        # Solution: upsert a dummy license row so the JOIN always finds a match.
+        import uuid as _uuid_debug
+        async with db.connection() as conn:
+            await conn.execute(
+                """INSERT OR IGNORE INTO licenses
+                       (id, license_key, label, role, max_accounts, is_active)
+                   VALUES (?, ?, 'DEBUG — auto-created', 'operator', 100, 1)""",
+                (str(_uuid_debug.uuid4()), key),
+            )
+            await conn.commit()
+
     # Fetch role from license (default operator if col not yet present)
     role: str = "operator"
     try:

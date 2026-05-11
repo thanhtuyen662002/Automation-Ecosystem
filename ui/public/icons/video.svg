@@ -1,0 +1,48 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M37.0458 13.6037L25.2536 20.0052C23.9692 20.7025 23.842 22.4969 25.0151 23.3684L36.8074 32.1284C38.127 33.1086 40 32.1667 40 30.5229V15.3615C40 13.8451 38.3785 12.8803 37.0458 13.6037Z" fill="#FD3300"/>
+<foreignObject x="-6" y="-1" width="50" height="46"><div xmlns="http://www.w3.org/1999/xhtml" style="backdrop-filter:blur(5px);clip-path:url(#bgblur_0_2002_255_clip_path);height:100%;width:100%"></div></foreignObject><g filter="url(#filter0_din_2002_255)" data-figma-bg-blur-radius="10">
+<path d="M4 17C4 12.5817 7.58172 9 12 9H26C30.4183 9 34 12.5817 34 17V27C34 31.4183 30.4183 35 26 35H12C7.58172 35 4 31.4183 4 27V17Z" fill="url(#paint0_linear_2002_255)" shape-rendering="crispEdges"/>
+<path d="M4 17C4 12.5817 7.58172 9 12 9H26C30.4183 9 34 12.5817 34 17V27C34 31.4183 30.4183 35 26 35H12C7.58172 35 4 31.4183 4 27V17Z" fill="#FD3300" fill-opacity="0.25" shape-rendering="crispEdges"/>
+<path d="M12 9.09961H26C30.363 9.09961 33.9004 12.637 33.9004 17V27C33.9004 31.363 30.363 34.9004 26 34.9004H12C7.63695 34.9004 4.09961 31.363 4.09961 27V17C4.09961 12.637 7.63695 9.09961 12 9.09961Z" stroke="url(#paint1_linear_2002_255)" stroke-width="0.2" shape-rendering="crispEdges"/>
+</g>
+<defs>
+<filter id="filter0_din_2002_255" x="-6" y="-1" width="50" height="46" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="2"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.12 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_2002_255"/>
+<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="1.5"/>
+<feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0"/>
+<feBlend mode="normal" in2="shape" result="effect2_innerShadow_2002_255"/>
+<feTurbulence type="fractalNoise" baseFrequency="10 10" stitchTiles="stitch" numOctaves="3" result="noise" seed="4151" />
+<feColorMatrix in="noise" type="luminanceToAlpha" result="alphaNoise" />
+<feComponentTransfer in="alphaNoise" result="coloredNoise1">
+<feFuncA type="discrete" tableValues="0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "/>
+</feComponentTransfer>
+<feComposite operator="in" in2="effect2_innerShadow_2002_255" in="coloredNoise1" result="noise1Clipped" />
+<feFlood flood-color="rgba(0, 0, 0, 0.05)" result="color1Flood" />
+<feComposite operator="in" in2="noise1Clipped" in="color1Flood" result="color1" />
+<feMerge result="effect3_noise_2002_255">
+<feMergeNode in="effect2_innerShadow_2002_255" />
+<feMergeNode in="color1" />
+</feMerge>
+<feBlend mode="normal" in="effect3_noise_2002_255" in2="effect1_dropShadow_2002_255" result="effect3_noise_2002_255"/>
+</filter>
+<clipPath id="bgblur_0_2002_255_clip_path" transform="translate(6 1)"><path d="M4 17C4 12.5817 7.58172 9 12 9H26C30.4183 9 34 12.5817 34 17V27C34 31.4183 30.4183 35 26 35H12C7.58172 35 4 31.4183 4 27V17Z"/>
+</clipPath><linearGradient id="paint0_linear_2002_255" x1="19" y1="7.91667" x2="19" y2="35" gradientUnits="userSpaceOnUse">
+<stop stop-color="white" stop-opacity="0.1"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="paint1_linear_2002_255" x1="19" y1="9" x2="19" y2="35" gradientUnits="userSpaceOnUse">
+<stop stop-color="white" stop-opacity="0.15"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+</defs>
+</svg>

@@ -4,6 +4,7 @@ import React, { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useI18n } from '@/lib/i18n';
 import { api } from '@/lib/api';
+import { GlassIcon } from '@/components/Icons';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface License {
@@ -47,7 +48,7 @@ function CopyButton({ text }: { text: string }) {
   const { t } = useI18n();
   return (
     <button onClick={copy} style={styles.copyBtn} title={t('lic.tooltip_copy')}>
-      {copied ? '✓' : '⎘'}
+      <GlassIcon name={copied ? 'check-circle' : 'document'} size={13} style={{ opacity: 0.7 }} />
     </button>
   );
 }
@@ -150,7 +151,7 @@ export function LicenseManager() {
     return (
       <div style={styles.page}>
         <div style={styles.authCard}>
-          <div style={styles.authIcon}>🔐</div>
+          <div style={styles.authIcon}><GlassIcon name="key" size={48} /></div>
           <h2 style={styles.authTitle}>{t('lic.auth_title')}</h2>
           <p style={styles.authSub}>{t('lic.auth_sub')}</p>
           <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -206,7 +207,7 @@ export function LicenseManager() {
             style={{ ...styles.secondaryBtn, color: 'var(--danger)' }}
             title={t('lic.act_logout')}
           >
-            ✕
+            <GlassIcon name="cross-circle" size={15} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)', opacity: 0.85 }} />
           </button>
         </div>
       </div>
@@ -214,13 +215,13 @@ export function LicenseManager() {
       {/* Stats */}
       <div style={styles.statsRow}>
         {[
-          { label: t('lic.stat_total'), value: licenses.length, icon: '🗝️', color: 'var(--primary)' },
-          { label: t('lic.stat_active'), value: totalActive,  icon: '✅', color: '#22c55e' },
-          { label: t('lic.stat_bound'), value: totalBound,  icon: '🖥️', color: '#f59e0b' },
-          { label: t('lic.stat_revoked'), value: totalRevoked, icon: '❌', color: 'var(--danger)' },
+          { label: t('lic.stat_total'), value: licenses.length, icon: 'key',          color: 'var(--primary)' },
+          { label: t('lic.stat_active'), value: totalActive,  icon: 'check-circle',  color: '#22c55e' },
+          { label: t('lic.stat_bound'), value: totalBound,   icon: 'cloud',          color: '#f59e0b' },
+          { label: t('lic.stat_revoked'), value: totalRevoked, icon: 'cross-circle', color: 'var(--danger)' },
         ].map(s => (
           <div key={s.label} style={styles.statCard}>
-            <div style={{ fontSize: '1.5rem' }}>{s.icon}</div>
+            <GlassIcon name={s.icon as any} size={26} style={{ opacity: 0.8, marginBottom: '0.25rem' }} />
             <div style={{ fontSize: '1.75rem', fontWeight: 800, color: s.color }}>{s.value}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.label}</div>
           </div>
@@ -266,8 +267,9 @@ export function LicenseManager() {
                     </td>
                     <td style={styles.td}>
                       {lic.machine_id ? (
-                        <span style={styles.machineChip} title={lic.machine_id}>
-                          🖥️ {truncate(lic.machine_id, 12)}
+                        <span style={{ ...styles.machineChip, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }} title={lic.machine_id}>
+                          <GlassIcon name="cloud" size={11} style={{ opacity: 0.8 }} />
+                          {truncate(lic.machine_id, 12)}
                         </span>
                       ) : (
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('lic.val_unbound')}</span>

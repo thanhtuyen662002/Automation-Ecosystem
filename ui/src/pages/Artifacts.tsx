@@ -1,7 +1,8 @@
 // ── Artifacts ─────────────────────────────────────────────────────────────────
 import React, { useState } from 'react';
-import { CheckCircle, XCircle, FileVideo, File, RefreshCw } from 'lucide-react';
-import { PageHeader, Badge, SectionHeader, EmptyState, ConfirmDialog, Skeleton } from '@/components/ui';
+import { RefreshCw } from 'lucide-react';
+import { PageHeader, Badge, EmptyState, ConfirmDialog, Skeleton } from '@/components/ui';
+import { GlassIcon } from '@/components/Icons';
 import { useArtifacts, useUpdateArtifactStatus } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
@@ -39,13 +40,9 @@ export function Artifacts() {
     <div>
       <PageHeader title={t('art.title')} subtitle={t('art.sub')} />
       <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--danger)' }}>
-        <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>⚠</div>
-        <div style={{ fontSize: '0.875rem', marginBottom: '1rem' }}>
-          {(error as Error).message ?? t('art.fail_load')}
-        </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => refetch()}>
-          <RefreshCw size={13} /> {t('art.retry')}
-        </button>
+        <GlassIcon name="warning" size={42} style={{ marginBottom: '0.75rem', filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
+        <div style={{ fontSize: '0.875rem', marginBottom: '1rem' }}>{(error as Error).message ?? t('art.fail_load')}</div>
+        <button className="btn btn-secondary btn-sm" onClick={() => refetch()}><RefreshCw size={13} /> {t('art.retry')}</button>
       </div>
     </div>
   );
@@ -54,9 +51,13 @@ export function Artifacts() {
     <div>
       <PageHeader title={t('art.title')} subtitle={t('art.sub')} />
 
-      <div style={{ display: 'flex', gap: '0.375rem', marginBottom: '1.25rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem' }}>
+      {/* Filter tabs */}
+      <div style={{ display: 'flex', gap: '0.375rem', marginBottom: '1.25rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem', flexWrap: 'wrap' }}>
         {(['all', 'pending', 'approved', 'rejected'] as const).map(f => (
           <button key={f} onClick={() => setFilter(f)} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-ghost'}`}>
+            <GlassIcon name={f === 'approved' ? 'check-circle' : f === 'rejected' ? 'cross-circle' : f === 'pending' ? 'calendar' : 'video'} size={12}
+              style={{ filter: filter === f ? 'brightness(0) invert(1)' : 'none', opacity: filter === f ? 1 : 0.6 }}
+            />
             {t(`art.filter_${f}`)}
             <span style={{ marginLeft: '0.25rem', opacity: 0.7 }}>
               ({f === 'all' ? artifacts.length : artifacts.filter((a: any) => a.status === f).length})
@@ -69,14 +70,23 @@ export function Artifacts() {
       </div>
 
       {filtered.length === 0
-        ? <EmptyState icon="🎬" message={`${t('art.no_data').replace('{filter}', t(`art.filter_${filter}`))}`} />
+        ? <EmptyState icon="video" message={`${t('art.no_data').replace('{filter}', t(`art.filter_${filter}`))}`} />
         : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
             {filtered.map((art: any) => (
               <div key={art.id} className="card">
+                {/* Artifact header */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.75rem' }}>
-                  <div style={{ width: 40, height: 40, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', flexShrink: 0 }}>
-                    {art.artifact_type === 'video' ? <FileVideo size={20} /> : <File size={20} />}
+                  <div style={{
+                    width: 44, height: 44,
+                    background: 'rgba(255,255,255,0.60)',
+                    border: '1px solid rgba(255,255,255,0.75)',
+                    borderRadius: '0.625rem',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0, backdropFilter: 'blur(8px)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                  }}>
+                    <GlassIcon name={art.artifact_type === 'video' ? 'video' : 'document'} size={22} />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -87,31 +97,27 @@ export function Artifacts() {
                   <Badge status={art.status}>{art.status}</Badge>
                 </div>
 
+                {/* Metadata */}
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                  <span>{t('art.lbl_mime')} {art.mime_type ?? (t('common.dash') ?? '—')}</span>
-                  <span>{t('art.lbl_size')} {art.size_bytes ? `${(art.size_bytes / 1024 / 1024).toFixed(1)} MB` : (t('common.dash') ?? '—')}</span>
-                  <span>{t('art.lbl_created')} {art.created_at ? fmtRelative(new Date(art.created_at).getTime() / 1000) : (t('common.dash') ?? '—')}</span>
+                  <span>{t('art.lbl_mime')} {art.mime_type ?? '—'}</span>
+                  <span>{t('art.lbl_size')} {art.size_bytes ? `${(art.size_bytes / 1024 / 1024).toFixed(1)} MB` : '—'}</span>
+                  <span>{t('art.lbl_created')} {art.created_at ? fmtRelative(new Date(art.created_at).getTime() / 1000) : '—'}</span>
                   {art.metadata?.duration_sec && <span>{t('art.lbl_duration')} {art.metadata.duration_sec}s</span>}
                   {art.metadata?.resolution && <span>{t('art.lbl_resolution')} {art.metadata.resolution as string}</span>}
                 </div>
 
+                {/* Actions */}
                 {art.status === 'pending' && (
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      style={{ flex: 1 }}
+                    <button className="btn btn-primary btn-sm" style={{ flex: 1 }}
                       disabled={updateStatus.isPending}
-                      onClick={() => setConfirmAction({ id: art.id, action: 'approved' })}
-                    >
-                      <CheckCircle size={12} /> {t('art.act_approve')}
+                      onClick={() => setConfirmAction({ id: art.id, action: 'approved' })}>
+                      <GlassIcon name="check-circle" size={12} style={{ filter: 'brightness(0) invert(1)' }} /> {t('art.act_approve')}
                     </button>
-                    <button
-                      className="btn btn-danger btn-sm"
-                      style={{ flex: 1 }}
+                    <button className="btn btn-danger btn-sm" style={{ flex: 1 }}
                       disabled={updateStatus.isPending}
-                      onClick={() => setConfirmAction({ id: art.id, action: 'rejected' })}
-                    >
-                      <XCircle size={12} /> {t('art.act_reject')}
+                      onClick={() => setConfirmAction({ id: art.id, action: 'rejected' })}>
+                      <GlassIcon name="cross-circle" size={12} style={{ filter: 'brightness(0) invert(1)' }} /> {t('art.act_reject')}
                     </button>
                   </div>
                 )}
@@ -122,9 +128,7 @@ export function Artifacts() {
       }
 
       <ConfirmDialog
-        open={!!confirmAction}
-        onClose={() => setConfirmAction(null)}
-        onConfirm={handleConfirm}
+        open={!!confirmAction} onClose={() => setConfirmAction(null)} onConfirm={handleConfirm}
         title={confirmAction?.action === 'approved' ? t('art.confirm_app') : t('art.confirm_rej')}
         message={`${t('art.confirm_msg')} ${confirmAction?.action === 'approved' ? t('art.filter_approved').toLowerCase() : t('art.filter_rejected').toLowerCase()}?`}
         danger={confirmAction?.action === 'rejected'}

@@ -3,35 +3,47 @@ import React from 'react';
 import { scoreGradient, scoreColor, statusBadgeClass, modeBadgeClass, fmtRelative, fmtScore } from '@/lib/utils';
 
 // ── KPI Card ─────────────────────────────────────────────────────────────────
+import { GlassIconBadge, GlassIcon } from './Icons';
+import type { GlassIconName } from './Icons';
+
 interface KpiCardProps {
   label: string;
   value: string | number;
   sub?: string;
-  icon?: React.ReactNode;
+  icon?: React.ReactNode | GlassIconName;
   trend?: 'up' | 'down' | 'neutral';
   color?: string;
 }
 export function KpiCard({ label, value, sub, icon, trend, color }: KpiCardProps) {
+  const iconNode = typeof icon === 'string' 
+    ? <GlassIconBadge name={icon as GlassIconName} size={28} />
+    : icon;
+
   return (
-    <div className="card" style={{ position: 'relative', overflow: 'hidden' }}>
+    <div className="card" style={{ position: 'relative', overflow: 'hidden', padding: '1.25rem' }}>
       {color && (
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: color, borderRadius: 'var(--radius) var(--radius) 0 0' }} />
       )}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem' }}>
-        <div style={{ flex: 1 }}>
-          <div className="stat-label" style={{ marginBottom: '0.5rem' }}>{label}</div>
-          <div className="stat-value">{value}</div>
-          {sub && <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.375rem' }}>{sub}</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+        {/* Top row: Label and Trend */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+          <div className="stat-label" style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>{label}</div>
+          {trend && (
+             <div className="stat-change" style={{ color: trend === 'up' ? 'var(--success)' : trend === 'down' ? 'var(--danger)' : 'var(--text-muted)', fontSize: '0.8125rem', fontWeight: 600 }}>
+               {trend === 'up' ? '↑ ' : trend === 'down' ? '↓ ' : '→ '}
+               {sub}
+             </div>
+          )}
         </div>
-        {icon && (
-          <div style={{ color: color ?? 'var(--primary)', opacity: 0.8, marginTop: '0.125rem' }}>{icon}</div>
-        )}
+        
+        {/* Bottom row: Icon and Value */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          {iconNode && (
+            <div style={{ color: color ?? 'var(--primary)', opacity: 0.9 }}>{iconNode}</div>
+          )}
+          <div className="stat-value" style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
+        </div>
       </div>
-      {trend && (
-        <div className="stat-change" style={{ marginTop: '0.5rem', color: trend === 'up' ? 'var(--success)' : trend === 'down' ? 'var(--danger)' : 'var(--text-muted)' }}>
-          {trend === 'up' ? '↑' : trend === 'down' ? '↓' : '→'}
-        </div>
-      )}
     </div>
   );
 }
@@ -108,8 +120,23 @@ export function SectionHeader({ title, action }: { title: string; action?: React
 export function EmptyState({ icon, message }: { icon?: string; message: string }) {
   return (
     <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
-      {icon && <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>{icon}</div>}
-      <div style={{ fontSize: '0.875rem' }}>{message}</div>
+      {icon && (
+        <div style={{ marginBottom: '0.875rem', display: 'flex', justifyContent: 'center' }}>
+          <div style={{
+            width: 64, height: 64,
+            borderRadius: '1.125rem',
+            background: 'rgba(255,255,255,0.55)',
+            border: '1px solid rgba(255,255,255,0.70)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 4px 16px rgba(124,58,237,0.08)',
+          }}>
+            <GlassIcon name={icon as GlassIconName} size={32} style={{ opacity: 0.55 }} />
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>{message}</div>
     </div>
   );
 }
@@ -193,7 +220,7 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message, danger
   return (
     <>
       <div className="slide-over-backdrop" onClick={onClose} />
-      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1.5rem', width: '380px', zIndex: 60, animation: 'fadeIn 0.2s ease' }}>
+      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: 'rgba(255,255,255,0.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.65)', borderRadius: 'var(--radius-lg)', padding: '1.5rem', width: '380px', zIndex: 60, animation: 'fadeIn 0.2s ease', boxShadow: '0 16px 60px rgba(124,58,237,0.16)' }}>
         <div style={{ fontWeight: 700, marginBottom: '0.75rem' }}>{title}</div>
         <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>{message}</div>
         <div style={{ display: 'flex', gap: '0.625rem', justifyContent: 'flex-end' }}>
@@ -206,14 +233,28 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message, danger
 }
 
 // ── Page Header ───────────────────────────────────────────────────────────────
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
+// NOTE: Title is now rendered by BreadcrumbBar in AppLayout.
+// PageHeader renders only the subtitle description + action buttons row.
+export function PageHeader({ title: _title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
+  if (!subtitle && !action) return null;
   return (
-    <div className="page-header" style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-      <div>
-        <h1 className="page-title">{title}</h1>
-        {subtitle && <p className="page-subtitle">{subtitle}</p>}
-      </div>
-      {action && <div>{action}</div>}
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      marginBottom: '1.25rem', gap: '1rem',
+    }}>
+      {subtitle && (
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', margin: 0, flex: 1 }}>{subtitle}</p>
+      )}
+      {action && <div style={{ flexShrink: 0 }}>{action}</div>}
+    </div>
+  );
+}
+
+// ── Page Actions — action-only header row ─────────────────────────────────────
+export function PageActions({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.625rem', marginBottom: '1.25rem' }}>
+      {children}
     </div>
   );
 }
@@ -631,9 +672,12 @@ export function DecisionBlock({
       display: 'flex', flexDirection: 'column', gap: '0.625rem',
       padding: '1rem 1.25rem',
       background: 'var(--surface)',
+      backdropFilter: 'var(--glass-blur)',
+      WebkitBackdropFilter: 'var(--glass-blur)',
       border: `1px solid ${riskColor}22`,
       borderLeft: `4px solid ${riskColor}`,
       borderRadius: 'var(--radius)',
+      boxShadow: 'var(--shadow-card)',
     }}>
       {/* Header row: badge · title · risk */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', flexWrap: 'wrap' }}>
@@ -708,7 +752,8 @@ export function DecisionBlock({
   );
 }
 
-// ── GlassKpiCard — Glassmorp KPI card (white, icon circle, big number) ────────
+// ── GlassKpiCard — Glassmorp KPI card matching reference image layout ─────────
+// Layout: label (top-left) + delta % (top-right) | icon circle (bottom-left) + big value (bottom-right)
 interface GlassKpiCardProps {
   label: string;
   value: string | number;
@@ -721,37 +766,42 @@ interface GlassKpiCardProps {
 }
 export function GlassKpiCard({ label, value, delta, deltaUp, icon, iconBg, iconColor, sub }: GlassKpiCardProps) {
   return (
-    <div className="card" style={{ padding: '1.125rem' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.625rem' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-            <span className="stat-label">{label}</span>
-            {delta && (
-              <span style={{
-                fontSize: '0.68rem', fontWeight: 700,
-                color: deltaUp ? 'var(--success)' : 'var(--danger)',
-                background: deltaUp ? 'var(--success-muted)' : 'var(--danger-muted)',
-                padding: '0.1rem 0.4rem', borderRadius: '9999px',
-              }}>{deltaUp ? '↑' : '↓'} {delta}</span>
-            )}
-          </div>
-        </div>
-        {icon && (
-          <div style={{
-            width: 36, height: 36, borderRadius: '50%',
-            background: iconBg ?? 'var(--primary-muted)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0, color: iconColor ?? 'var(--primary)',
-          }}>{icon}</div>
+    <div className="card" style={{ padding: '1.125rem 1.25rem' }}>
+      {/* Top row: label (left) + delta badge (right) */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.875rem' }}>
+        <span className="stat-label">{label}</span>
+        {delta && (
+          <span style={{
+            fontSize: '0.72rem', fontWeight: 700,
+            color: deltaUp ? 'var(--success)' : 'var(--danger)',
+          }}>
+            {deltaUp ? '+' : ''}{delta}
+          </span>
         )}
       </div>
-      <div style={{ fontSize: '1.625rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.025em', lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>{sub}</div>}
+      {/* Bottom row: outlined icon circle (left) + large value (right) */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '0.75rem' }}>
+        {icon && (
+          <div style={{
+            width: 44, height: 44, borderRadius: '50%',
+            background: 'transparent',
+            border: `1.5px solid ${iconColor ?? 'var(--primary)'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
+            color: iconColor ?? 'var(--primary)',
+            opacity: 0.85,
+          }}>{icon}</div>
+        )}
+        <div style={{ textAlign: 'right' }}>
+          <div className="stat-value">{value}</div>
+          {sub && <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>{sub}</div>}
+        </div>
+      </div>
     </div>
   );
 }
 
-// ── ChartCard — white card with Glassmorp blob background ────────────────────
+// ── ChartCard — glass card with pastel mesh blob background ──────────────────
 interface ChartCardProps {
   title: string;
   action?: React.ReactNode;
@@ -763,15 +813,23 @@ interface ChartCardProps {
 export function ChartCard({ title, action, children, blobLeft, blobRight, minHeight = 240 }: ChartCardProps) {
   return (
     <div className="card" style={{ padding: '1.25rem', position: 'relative', overflow: 'hidden' }}>
+      {/* Pastel purple blob — top-left (matches chart area in reference) */}
       <div style={{
-        position: 'absolute', width: 220, height: 220, top: -70, left: -50, borderRadius: '50%',
-        background: `radial-gradient(circle, ${blobLeft ?? 'rgba(167,139,250,0.40)'} 0%, transparent 70%)`,
-        filter: 'blur(48px)', pointerEvents: 'none',
+        position: 'absolute', width: 280, height: 280, top: -90, left: -70, borderRadius: '50%',
+        background: `radial-gradient(circle, ${blobLeft ?? 'rgba(192,132,252,0.38)'} 0%, transparent 68%)`,
+        filter: 'blur(60px)', pointerEvents: 'none', zIndex: 0,
       }} />
+      {/* Pastel pink blob — bottom-right */}
       <div style={{
-        position: 'absolute', width: 180, height: 180, bottom: -30, right: 30, borderRadius: '50%',
-        background: `radial-gradient(circle, ${blobRight ?? 'rgba(251,146,60,0.35)'} 0%, transparent 70%)`,
-        filter: 'blur(40px)', pointerEvents: 'none',
+        position: 'absolute', width: 220, height: 220, bottom: -50, right: 10, borderRadius: '50%',
+        background: `radial-gradient(circle, ${blobRight ?? 'rgba(249,168,212,0.32)'} 0%, transparent 68%)`,
+        filter: 'blur(52px)', pointerEvents: 'none', zIndex: 0,
+      }} />
+      {/* Amber accent blob — mid (creates the peach orb visible in reference chart) */}
+      <div style={{
+        position: 'absolute', width: 160, height: 160, top: '30%', left: '45%', borderRadius: '50%',
+        background: 'radial-gradient(circle, rgba(251,191,36,0.22) 0%, transparent 70%)',
+        filter: 'blur(44px)', pointerEvents: 'none', zIndex: 0,
       }} />
       <div style={{ position: 'relative', zIndex: 1 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>

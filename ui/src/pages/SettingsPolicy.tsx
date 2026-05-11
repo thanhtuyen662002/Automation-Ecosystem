@@ -1,16 +1,9 @@
 // ── Settings — Policy Rules ───────────────────────────────────────────────────
-// Data source: GET /api/v1/policy-rules → { items: PolicyRuleResponse[] }
-// Toggle: PATCH /api/v1/policy-rules/{id}  { enabled: bool }
-// Delete: DELETE /api/v1/policy-rules/{id}
-// Create: POST /api/v1/policy-rules
-// NO mock data. All actions call real API.
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import { PageHeader, Badge, SlideOver, EmptyState, ConfirmDialog } from '@/components/ui';
+import { GlassIcon } from '@/components/Icons';
 import { useI18n } from '@/lib/i18n';
-import {
-  usePolicyRules, useCreatePolicyRule, useTogglePolicyRule, useDeletePolicyRule,
-} from '@/lib/hooks';
+import { usePolicyRules, useCreatePolicyRule, useTogglePolicyRule, useDeletePolicyRule } from '@/lib/hooks';
 
 interface Rule {
   id: string; account_id: string | null; platform: string | null;
@@ -43,47 +36,46 @@ export function SettingsPolicy() {
   function handleToggle(id: string, currentEnabled: boolean) {
     toggleRule.mutate({ id, enabled: !currentEnabled });
   }
-
   function handleDelete(id: string) {
     deleteRule.mutate(id, { onSuccess: () => setConfirmDelete(null) });
   }
-
   function handleAddRule() {
     if (!form.rule_name) return;
-    createRule.mutate(
-      { ...form },
-      {
-        onSuccess: () => {
-          setForm({
-            platform: 'tiktok', action_type: 'publish_tiktok', rule_name: '',
-            max_actions: 2, window_seconds: 86400, cooldown_seconds: 0,
-          });
-          setShowAdd(false);
-        },
+    createRule.mutate({ ...form }, {
+      onSuccess: () => {
+        setForm({ platform: 'tiktok', action_type: 'publish_tiktok', rule_name: '', max_actions: 2, window_seconds: 86400, cooldown_seconds: 0 });
+        setShowAdd(false);
       },
-    );
+    });
   }
 
   return (
-    <div style={{ maxWidth: 800 }}>
-      <PageHeader
-        title={t('policy.title')}
-        subtitle={t('policy.sub')}
-        action={<button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}><Plus size={13} /> {t('policy.act_add')}</button>}
+    <div>
+      <PageHeader title={t('policy.title')} subtitle={t('policy.sub')}
+        action={
+          <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <GlassIcon name="add-circle" size={15} style={{ filter: 'brightness(0) invert(1)' }} />
+            {t('policy.act_add')}
+          </button>
+        }
       />
 
       {isLoading && (
-        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>{t('ceo.loading')}</div>
+        <div style={{ textAlign: 'center', padding: '2rem' }}>
+          <GlassIcon name="shield" size={36} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
+          <div style={{ color: 'var(--text-muted)' }}>{t('ceo.loading')}</div>
+        </div>
       )}
       {error && (
-        <div style={{ padding: '1rem', color: 'var(--danger)', fontSize: '0.875rem' }}>
+        <div style={{ padding: '1rem', color: 'var(--danger)', fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <GlassIcon name="warning" size={16} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
           {(error as Error).message}
         </div>
       )}
 
       {!isLoading && !error && (
         (rules as Rule[]).length === 0
-          ? <EmptyState icon="📋" message={t('policy.no_data')} />
+          ? <EmptyState icon="shield" message={t('policy.no_data')} />
           : (
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <table className="data-table">
@@ -103,8 +95,13 @@ export function SettingsPolicy() {
                   {(rules as Rule[]).map(r => (
                     <tr key={r.id}>
                       <td>
-                        <div style={{ fontWeight: 500 }}>{r.rule_name}</div>
-                        <div className="mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{r.id}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <GlassIcon name="shield" size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
+                          <div>
+                            <div style={{ fontWeight: 500 }}>{r.rule_name}</div>
+                            <div className="mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{r.id}</div>
+                          </div>
+                        </div>
                       </td>
                       <td><Badge status="info">{r.platform ?? '—'}</Badge></td>
                       <td><span className="mono" style={{ fontSize: '0.75rem' }}>{r.action_type}</span></td>
@@ -113,24 +110,14 @@ export function SettingsPolicy() {
                       <td style={{ color: 'var(--text-secondary)' }}>{r.cooldown_seconds > 0 ? fmtWindow(r.cooldown_seconds) : '—'}</td>
                       <td>
                         <label className="toggle">
-                          <input
-                            type="checkbox"
-                            checked={r.enabled}
-                            onChange={() => handleToggle(r.id, r.enabled)}
-                            disabled={toggleRule.isPending}
-                          />
+                          <input type="checkbox" checked={r.enabled} onChange={() => handleToggle(r.id, r.enabled)} disabled={toggleRule.isPending} />
                           <div className="toggle-track" />
                           <div className="toggle-thumb" />
                         </label>
                       </td>
                       <td>
-                        <button
-                          className="btn btn-ghost btn-icon btn-sm"
-                          style={{ color: 'var(--danger)' }}
-                          onClick={() => setConfirmDelete(r)}
-                          disabled={deleteRule.isPending}
-                        >
-                          <Trash2 size={13} />
+                        <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setConfirmDelete(r)} disabled={deleteRule.isPending}>
+                          <GlassIcon name="trash" size={14} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)', opacity: 0.8 }} />
                         </button>
                       </td>
                     </tr>
@@ -164,9 +151,7 @@ export function SettingsPolicy() {
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_max')}: {form.max_actions}</label>
-            <input type="range" min={1} max={50} step={1} value={form.max_actions}
-              onChange={e => setForm(f => ({ ...f, max_actions: +e.target.value }))}
-              style={{ width: '100%', accentColor: 'var(--primary)' }} />
+            <input type="range" min={1} max={50} step={1} value={form.max_actions} onChange={e => setForm(f => ({ ...f, max_actions: +e.target.value }))} style={{ width: '100%', accentColor: 'var(--primary)' }} />
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_window')}: {fmtWindow(form.window_seconds)}</label>
@@ -178,7 +163,7 @@ export function SettingsPolicy() {
             </select>
           </div>
           <div>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_cooldown')} (after limit hit): {fmtWindow(form.cooldown_seconds)}</label>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_cooldown')}: {fmtWindow(form.cooldown_seconds)}</label>
             <select className="select" value={form.cooldown_seconds} onChange={e => setForm(f => ({ ...f, cooldown_seconds: +e.target.value }))}>
               <option value={0}>{t('policy.win_none')}</option>
               <option value={1800}>{t('policy.win_30m')}</option>
@@ -187,15 +172,12 @@ export function SettingsPolicy() {
             </select>
           </div>
           {createRule.isError && (
-            <div style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>
+            <div style={{ color: 'var(--danger)', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <GlassIcon name="warning" size={13} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
               {(createRule.error as Error)?.message}
             </div>
           )}
-          <button
-            className="btn btn-primary"
-            disabled={!form.rule_name || createRule.isPending}
-            onClick={handleAddRule}
-          >
+          <button className="btn btn-primary" disabled={!form.rule_name || createRule.isPending} onClick={handleAddRule}>
             {createRule.isPending ? t('policy.adding') : t('policy.act_add')}
           </button>
         </div>

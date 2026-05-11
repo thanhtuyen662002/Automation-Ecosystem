@@ -1,7 +1,8 @@
 // ── Niche Performance ─────────────────────────────────────────────────────────
 import React, { useState } from 'react';
-import { Plus, RefreshCw, AlertCircle } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { PageHeader, Badge, SectionHeader, ScoreBar, SlideOver, EmptyState, Skeleton } from '@/components/ui';
+import { GlassIcon } from '@/components/Icons';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { useI18n } from '@/lib/i18n';
 import { useNiches, useUpsertNiche } from '@/lib/hooks';
@@ -30,16 +31,15 @@ export function NichePerformance() {
 
   return (
     <div>
-      <PageHeader
-        title={t('niche.title')}
-        subtitle={t('niche.sub')}
+      <PageHeader title={t('niche.title')} subtitle={t('niche.sub')}
         action={
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button className="btn btn-ghost btn-sm btn-icon" onClick={() => refetch()} title={t('cmd.retry')}>
               <RefreshCw size={13} />
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-              <Plus size={13} /> {t('niche.act_add')}
+            <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <GlassIcon name="add-circle" size={15} style={{ filter: 'brightness(0) invert(1)' }} />
+              {t('niche.act_add')}
             </button>
           </div>
         }
@@ -52,16 +52,15 @@ export function NichePerformance() {
         </div>
       ) : error ? (
         <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--danger)' }}>
-          <AlertCircle size={32} style={{ marginBottom: '0.75rem', opacity: 0.7 }} />
+          <GlassIcon name="warning" size={36} style={{ marginBottom: '0.75rem', filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
           <div style={{ fontSize: '0.875rem', marginBottom: '1rem' }}>{(error as Error).message}</div>
-          <button className="btn btn-secondary btn-sm" onClick={() => refetch()}>
-            <RefreshCw size={13} /> {t('cmd.retry')}
-          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => refetch()}><RefreshCw size={13} /> {t('cmd.retry')}</button>
         </div>
       ) : niches.length === 0 ? (
-        <EmptyState icon="📊" message={t('niche.no_data')} />
+        <EmptyState icon="compass" message={t('niche.no_data')} />
       ) : (
         <>
+          {/* Charts Row */}
           <div className="grid-2" style={{ marginBottom: '1.25rem' }}>
             <div className="card">
               <SectionHeader title={t('niche.title_win')} />
@@ -92,17 +91,17 @@ export function NichePerformance() {
             </div>
           </div>
 
-          {/* Detail Cards */}
+          {/* Niche Detail Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
             {niches.map((n: any, i: number) => (
               <div key={n.niche} className="card">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.875rem' }}>
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: CHART_COLORS[i % CHART_COLORS.length], flexShrink: 0 }} />
-                  <div style={{ fontWeight: 700, fontSize: '0.9375rem', textTransform: 'capitalize' }}>{n.niche}</div>
-                  <Badge status="info">{n.platform}</Badge>
-                  <div style={{ marginLeft: 'auto' }}>
-                    <span className="badge badge-primary">{fmtPct(n.budget_share ?? 0)}</span>
+                  <div style={{ width: 36, height: 36, borderRadius: '0.5rem', background: `${CHART_COLORS[i % CHART_COLORS.length]}22`, border: `1.5px solid ${CHART_COLORS[i % CHART_COLORS.length]}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <GlassIcon name="compass" size={18} />
                   </div>
+                  <div style={{ fontWeight: 700, fontSize: '0.9375rem', textTransform: 'capitalize', flex: 1 }}>{n.niche}</div>
+                  <Badge status="info">{n.platform}</Badge>
+                  <span className="badge badge-primary">{fmtPct(n.budget_share ?? 0)}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <div>
@@ -121,9 +120,24 @@ export function NichePerformance() {
                   </div>
                 </div>
                 <div style={{ marginTop: '0.75rem', display: 'flex', gap: '1rem' }}>
-                  <div><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{t('niche.lbl_views')}</div><div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{((n.avg_views ?? 0) / 1000).toFixed(0)}K</div></div>
-                  <div><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{t('niche.lbl_rev')}</div><div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--success)' }}>{fmtCurrency(n.avg_revenue ?? 0)}</div></div>
-                  <div><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{t('niche.lbl_posts')}</div><div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{n.posts_count ?? 0}</div></div>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <GlassIcon name="eye" size={10} style={{ opacity: 0.5 }} /> {t('niche.lbl_views')}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{((n.avg_views ?? 0) / 1000).toFixed(0)}K</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <GlassIcon name="currency" size={10} style={{ opacity: 0.5 }} /> {t('niche.lbl_rev')}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--success)' }}>{fmtCurrency(n.avg_revenue ?? 0)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <GlassIcon name="document" size={10} style={{ opacity: 0.5 }} /> {t('niche.lbl_posts')}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{n.posts_count ?? 0}</div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -160,7 +174,8 @@ export function NichePerformance() {
             </div>
           ))}
           {saveError && (
-            <div style={{ padding: '0.5rem 0.75rem', background: 'var(--danger-muted)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: 'var(--danger)' }}>
+            <div style={{ padding: '0.5rem 0.75rem', background: 'var(--danger-muted)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <GlassIcon name="warning" size={13} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
               {saveError}
             </div>
           )}

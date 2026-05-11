@@ -1,0 +1,65 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_2002_33)">
+<path d="M2 8C2 4.68629 4.68629 2 8 2H16C19.3137 2 22 4.68629 22 8V16C22 19.3137 19.3137 22 16 22H8C4.68629 22 2 19.3137 2 16V8Z" fill="#008CFF"/>
+<foreignObject x="-1" y="0" width="52" height="52"><div xmlns="http://www.w3.org/1999/xhtml" style="backdrop-filter:blur(5px);clip-path:url(#bgblur_1_2002_33_clip_path);height:100%;width:100%"></div></foreignObject><g filter="url(#filter0_din_2002_33)" data-figma-bg-blur-radius="10">
+<path d="M9 18C9 13.5817 12.5817 10 17 10H33C37.4183 10 41 13.5817 41 18V34C41 38.4183 37.4183 42 33 42H17C12.5817 42 9 38.4183 9 34V18Z" fill="url(#paint0_linear_2002_33)" shape-rendering="crispEdges"/>
+<path d="M9 18C9 13.5817 12.5817 10 17 10H33C37.4183 10 41 13.5817 41 18V34C41 38.4183 37.4183 42 33 42H17C12.5817 42 9 38.4183 9 34V18Z" fill="#008CFF" fill-opacity="0.25" shape-rendering="crispEdges"/>
+<path d="M17 10.0996H33C37.363 10.0996 40.9004 13.637 40.9004 18V34C40.9004 38.363 37.363 41.9004 33 41.9004H17C12.637 41.9004 9.09961 38.363 9.09961 34V18C9.09961 13.637 12.637 10.0996 17 10.0996Z" stroke="url(#paint1_linear_2002_33)" stroke-width="0.2" shape-rendering="crispEdges"/>
+</g>
+<g opacity="0.8">
+<path d="M17.5 34V21.6211L15.0605 24.0605C14.4748 24.6463 13.5252 24.6463 12.9394 24.0605C12.3537 23.4748 12.3537 22.5252 12.9394 21.9395L17.9394 16.9395L18.0537 16.8359C18.6429 16.3558 19.5115 16.3904 20.0605 16.9395L25.0605 21.9395C25.6463 22.5252 25.6463 23.4748 25.0605 24.0605C24.4748 24.6463 23.5252 24.6463 22.9394 24.0605L20.5 21.6211V34C20.5 34.8284 19.8284 35.5 19 35.5C18.1716 35.5 17.5 34.8284 17.5 34Z" fill="url(#paint2_linear_2002_33)"/>
+<path d="M29.5 18V30.3789L27.0605 27.9395C26.4748 27.3537 25.5252 27.3537 24.9394 27.9395C24.3537 28.5252 24.3537 29.4748 24.9394 30.0605L29.9394 35.0605L30.0537 35.1641C30.6429 35.6442 31.5115 35.6096 32.0605 35.0605L37.0605 30.0605C37.6463 29.4748 37.6463 28.5252 37.0605 27.9395C36.4748 27.3537 35.5252 27.3537 34.9394 27.9395L32.5 30.3789V18C32.5 17.1716 31.8284 16.5 31 16.5C30.1716 16.5 29.5 17.1716 29.5 18Z" fill="url(#paint3_linear_2002_33)"/>
+</g>
+</g>
+<defs>
+<filter id="filter0_din_2002_33" x="-1" y="0" width="52" height="52" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="2"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.12 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_2002_33"/>
+<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="1.5"/>
+<feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0"/>
+<feBlend mode="normal" in2="shape" result="effect2_innerShadow_2002_33"/>
+<feTurbulence type="fractalNoise" baseFrequency="10 10" stitchTiles="stitch" numOctaves="3" result="noise" seed="4151" />
+<feColorMatrix in="noise" type="luminanceToAlpha" result="alphaNoise" />
+<feComponentTransfer in="alphaNoise" result="coloredNoise1">
+<feFuncA type="discrete" tableValues="0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "/>
+</feComponentTransfer>
+<feComposite operator="in" in2="effect2_innerShadow_2002_33" in="coloredNoise1" result="noise1Clipped" />
+<feFlood flood-color="rgba(0, 0, 0, 0.05)" result="color1Flood" />
+<feComposite operator="in" in2="noise1Clipped" in="color1Flood" result="color1" />
+<feMerge result="effect3_noise_2002_33">
+<feMergeNode in="effect2_innerShadow_2002_33" />
+<feMergeNode in="color1" />
+</feMerge>
+<feBlend mode="normal" in="effect3_noise_2002_33" in2="effect1_dropShadow_2002_33" result="effect3_noise_2002_33"/>
+</filter>
+<clipPath id="bgblur_1_2002_33_clip_path" transform="translate(1 0)"><path d="M9 18C9 13.5817 12.5817 10 17 10H33C37.4183 10 41 13.5817 41 18V34C41 38.4183 37.4183 42 33 42H17C12.5817 42 9 38.4183 9 34V18Z"/>
+</clipPath><linearGradient id="paint0_linear_2002_33" x1="25" y1="8.66667" x2="25" y2="42" gradientUnits="userSpaceOnUse">
+<stop stop-color="white" stop-opacity="0.1"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="paint1_linear_2002_33" x1="25" y1="10" x2="25" y2="42" gradientUnits="userSpaceOnUse">
+<stop stop-color="white" stop-opacity="0.15"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="paint2_linear_2002_33" x1="25" y1="23.4091" x2="25" y2="35.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="1" stop-color="white" stop-opacity="0.3"/>
+</linearGradient>
+<linearGradient id="paint3_linear_2002_33" x1="25" y1="23.4091" x2="25" y2="35.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="1" stop-color="white" stop-opacity="0.3"/>
+</linearGradient>
+<clipPath id="clip0_2002_33">
+<rect width="44" height="44" fill="white"/>
+</clipPath>
+</defs>
+</svg>

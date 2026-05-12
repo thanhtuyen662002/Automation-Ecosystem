@@ -34,21 +34,36 @@ class BackendSettings:
 
     @classmethod
     def load(cls) -> "BackendSettings":
-        env_path = Path(os.getenv("AE_ENV_FILE", _get_appdata_dir() / ".env.production"))
+        app_data_dir = _get_appdata_dir()
+        env_path = Path(os.getenv("AE_ENV_FILE", app_data_dir / ".env.production"))
         _ensure_env_file(env_path)
-        _load_env(env_path)
+        _load_env(env_path, app_data_dir)
         
         db_path = os.getenv("DATABASE_PATH")
         if not db_path:
-            db_path = str(_get_appdata_dir() / "data" / "app.db")
+            db_path = str(app_data_dir / "data" / "app.db")
+        
+        # Ensure directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Override DATABASE_URL if it's the old postgres default or not set
+        # Resolve DATABASE_URL:
         current_db_url = os.environ.get("DATABASE_URL", "")
         if not current_db_url or "postgresql" in current_db_url:
-            os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+            # Standard format: sqlite+aiosqlite:///C:/path/to/db
+            normalized_db_path = db_path.replace("\\", "/")
+            os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{normalized_db_path}"
+        elif "AppData" in current_db_url or ".automation-ecosystem" in current_db_url or "{APP_DATA_DIR}" in current_db_url:
+            # Ensure it uses forward slashes for the URL part
+            current_db_url = current_db_url.replace("\\", "/")
+            # If the path doesn't exist and it's a default path, re-resolve to current app_data_dir
+            path_part = current_db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite+aiosqlite://", "")
+            if not Path(path_part).exists() and ("Automation-Ecosystem" in path_part):
+                normalized_db_path = db_path.replace("\\", "/")
+                os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{normalized_db_path}"
+            else:
+                os.environ["DATABASE_URL"] = current_db_url
 
-        log_path = Path(os.getenv("AE_LOG_FILE", _get_appdata_dir() / "logs" / "app.log"))
+        log_path = Path(os.getenv("AE_LOG_FILE", app_data_dir / "logs" / "app.log"))
         return cls(
             host=os.getenv("API_HOST", "127.0.0.1"),
             port=_int_env("APP_PORT", _int_env("API_PORT", 8000, 1), 1),
@@ -59,6 +74,7 @@ class BackendSettings:
 
 async def main() -> None:
     settings = BackendSettings.load()
+    print(f"DEBUG: DATABASE_URL={os.environ.get('DATABASE_URL')}")
     configure_logging(settings.log_path)
     os.environ["API_HOST"] = settings.host
     os.environ["API_PORT"] = str(settings.port)
@@ -211,7 +227,7 @@ def _ensure_env_file(path: Path) -> None:
     path.write_text(
         "\n".join(
             [
-                f"DATABASE_URL=sqlite+aiosqlite:///{str(_get_appdata_dir() / 'data' / 'app.db')}",
+                "DATABASE_URL=sqlite+aiosqlite:///{APP_DATA_DIR}/data/app.db",
                 "WORKER_ID=desktop-worker-1",
                 "WORKER_MAX_CONCURRENCY=4",
                 "WORKER_BATCH_SIZE=10",
@@ -230,13 +246,18 @@ def _ensure_env_file(path: Path) -> None:
     )
 
 
-def _load_env(path: Path) -> None:
+def _load_env(path: Path, app_data_dir: Path) -> None:
+    """Load env file and resolve placeholders like {APP_DATA_DIR}."""
+    if not path.exists():
+        return
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), _strip_quotes(value.strip()))
+        # Resolve placeholder for portability
+        resolved_value = _strip_quotes(value.strip()).replace("{APP_DATA_DIR}", str(app_data_dir).replace("\\", "/"))
+        os.environ[key.strip()] = resolved_value
 
 
 def _strip_quotes(value: str) -> str:

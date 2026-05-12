@@ -597,6 +597,10 @@ def _load_env(env_file: str | Path) -> dict[str, str]:
         return merged
     if not path.is_file():
         raise RuntimeError(f".env path is not a file: {path}")
+        
+    # Get current app data dir for placeholder resolution
+    app_data_dir = _get_appdata_dir()
+    
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -609,8 +613,19 @@ def _load_env(env_file: str | Path) -> dict[str, str]:
         key = key.strip()
         if not key:
             raise RuntimeError(f"Invalid .env line {line_number}: empty key")
-        merged[key] = _strip_quotes(value.strip())
+        
+        # Resolve placeholder for portability
+        resolved_value = _strip_quotes(value.strip()).replace("{APP_DATA_DIR}", str(app_data_dir).replace("\\", "/"))
+        merged[key] = resolved_value
     return merged
+
+
+def _get_appdata_dir() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Automation-Ecosystem"
+    return Path.home() / ".automation-ecosystem"
 
 
 def _strip_quotes(value: str) -> str:

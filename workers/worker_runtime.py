@@ -210,6 +210,10 @@ class WorkerRuntime:
                     str(acquired_task.task.job_id),
                     cache=cache
                 )
+                # Inject runtime context so handlers can use job/task IDs
+                # without them needing to be explicitly set in pipeline payloads.
+                resolved_payload.setdefault("job_id", str(acquired_task.task.job_id))
+                resolved_payload.setdefault("task_id", str(acquired_task.task.id))
                 if acquired_task.task.task_type.startswith("publish_"):
                     account_id = resolved_payload.get("account_id")
                     if account_id:

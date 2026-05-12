@@ -76,7 +76,7 @@ async def create_tiktok_pipeline(
     # NOTE: 'depends_on' uses task_key strings; the database layer resolves them
     # to task UUIDs within the same job creation transaction.
     tasks: list[dict[str, Any]] = [
-        # 1. Extract product info
+        # 1. Extract product info — no parent dependencies
         {
             "task_type": "tiktok.extract_product_info",
             "task_key": _KEY_EXTRACT,
@@ -85,19 +85,17 @@ async def create_tiktok_pipeline(
                 "product_image_path": request.product_image_path,
             },
             "metadata": {"pipeline": "tiktok", "step": 1},
-            "max_retries": 2,
+            "max_retries": 3,
             "depends_on": [],
         },
-        # 2. Search TikTok — keywords resolved at runtime from DB result
+        # 2. Search TikTok — keywords resolved via worker _resolve_payload
         {
             "task_type": "tiktok.search_tiktok",
             "task_key": _KEY_SEARCH,
             "payload": {
-                # Handler resolves keywords from parent result in DB
                 "max_results": int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50")),
-                # parent_result_key tells the handler where to look in parent result
-                "_parent_task_key": _KEY_EXTRACT,
-                "_parent_result_fields": ["keywords"],
+                # {"from_task": ..., "field": ...} → resolved by worker before handler runs
+                "keywords": {"from_task": _KEY_EXTRACT, "field": "keywords"},
             },
             "metadata": {"pipeline": "tiktok", "step": 2},
             "max_retries": 3,
@@ -113,11 +111,10 @@ async def create_tiktok_pipeline(
                 "min_duration": request.min_duration,
                 "max_duration": request.max_duration,
                 "top_n": top_n,
-                "_parent_task_key": _KEY_SEARCH,
-                "_parent_result_fields": ["videos"],
+                "videos": {"from_task": _KEY_SEARCH, "field": "videos"},
             },
             "metadata": {"pipeline": "tiktok", "step": 3},
-            "max_retries": 1,
+            "max_retries": 2,
             "depends_on": [_KEY_SEARCH],
         },
         # 4. Download videos
@@ -125,29 +122,25 @@ async def create_tiktok_pipeline(
             "task_type": "tiktok.download_videos",
             "task_key": _KEY_DOWNLOAD,
             "payload": {
-                "_parent_task_key": _KEY_SELECT,
-                "_parent_result_fields": ["selected_videos"],
-                # job_id injected post-creation — handler reads from payload or falls back
+                "selected_videos": {"from_task": _KEY_SELECT, "field": "selected_videos"},
+                # job_id injected automatically by worker runtime
             },
             "metadata": {"pipeline": "tiktok", "step": 4},
             "max_retries": 2,
             "depends_on": [_KEY_SELECT],
         },
-        # 5. Remake video (depends on download + extract for hook_text)
+        # 5. Remake video (depends on download + extract for title/hook)
         {
             "task_type": "tiktok.remake_video",
             "task_key": _KEY_REMAKE,
             "payload": {
                 "add_grain": request.add_grain,
                 "bgm_path": request.bgm_path,
-                "_parent_task_key": _KEY_DOWNLOAD,
-                "_parent_result_fields": ["video_paths"],
-                "_parent_task_key_2": _KEY_EXTRACT,
-                "_parent_result_fields_2": ["title"],
+                "video_paths": {"from_task": _KEY_DOWNLOAD, "field": "video_paths"},
+                "title": {"from_task": _KEY_EXTRACT, "field": "title"},
             },
             "metadata": {"pipeline": "tiktok", "step": 5},
             "max_retries": 1,
-            # Long timeout hint (picked up by worker if it checks metadata)
             "depends_on": [_KEY_DOWNLOAD, _KEY_EXTRACT],
         },
         # 6. Generate caption + hashtags
@@ -155,8 +148,9 @@ async def create_tiktok_pipeline(
             "task_type": "tiktok.generate_content",
             "task_key": _KEY_CONTENT,
             "payload": {
-                "_parent_task_key": _KEY_EXTRACT,
-                "_parent_result_fields": ["title", "description", "keywords"],
+                "title":       {"from_task": _KEY_EXTRACT, "field": "title"},
+                "description": {"from_task": _KEY_EXTRACT, "field": "description"},
+                "keywords":    {"from_task": _KEY_EXTRACT, "field": "keywords"},
             },
             "metadata": {"pipeline": "tiktok", "step": 6},
             "max_retries": 3,
@@ -167,11 +161,10 @@ async def create_tiktok_pipeline(
             "task_type": "tiktok.generate_comment",
             "task_key": _KEY_COMMENT,
             "payload": {
-                "count": request.comment_count,
-                "_parent_task_key": _KEY_CONTENT,
-                "_parent_result_fields": ["caption"],
-                "_parent_task_key_2": _KEY_EXTRACT,
-                "_parent_result_fields_2": ["title", "keywords"],
+                "count":    request.comment_count,
+                "caption":  {"from_task": _KEY_CONTENT, "field": "caption"},
+                "title":    {"from_task": _KEY_EXTRACT, "field": "title"},
+                "keywords": {"from_task": _KEY_EXTRACT, "field": "keywords"},
             },
             "metadata": {"pipeline": "tiktok", "step": 7},
             "max_retries": 3,

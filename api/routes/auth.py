@@ -185,6 +185,28 @@ async def _has_any_license_in_db(db) -> bool:
         return False
 
 
+async def _ensure_local_license_stub(
+    db,
+    key: str,
+    role: str = "operator",
+    max_accounts: int = 10,
+) -> None:
+    """
+    Upsert a minimal license row in local SQLite so the sessions→licenses
+    JOIN in lookup_session() always has a matching row when using Supabase.
+    Does NOT overwrite an existing row (INSERT OR IGNORE).
+    """
+    import uuid as _u
+    async with db.connection() as conn:
+        await conn.execute(
+            """INSERT OR IGNORE INTO licenses
+                   (id, license_key, label, role, max_accounts, is_active)
+               VALUES (?, ?, 'Supabase-managed', ?, ?, 1)""",
+            (str(_u.uuid4()), key, role, max_accounts),
+        )
+        await conn.commit()
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=LoginResponse)
@@ -192,6 +214,11 @@ async def login(req: LoginRequest, request: Request) -> LoginResponse:
     """
     Authenticate with license key.
     machine_id from client payload is IGNORED — fingerprint is computed server-side.
+
+    Validation priority:
+      1. Supabase (when SUPABASE_URL + SUPABASE_SERVICE_KEY are set)
+      2. Local SQLite licenses table
+      3. Debug mode (DEBUG=true, DB empty)
     """
     # Step 1: Rate limit
     await check_login_rate_limit(request)
@@ -208,26 +235,51 @@ async def login(req: LoginRequest, request: Request) -> LoginResponse:
     ip         = get_client_ip(request)
     machine_fp = compute_machine_fingerprint(request)
 
-    if await _has_any_license_in_db(db):
-        # Production: full DB validation + machine binding
+    from api.supabase_license import is_supabase_configured
+    role: str = "operator"
+
+    if is_supabase_configured():
+        # ── Supabase path (cloud-managed license store) ────────────────────────
+        from api.supabase_license import validate_and_bind as sb_validate
+        license_row = await sb_validate(key, machine_fp, ip)
+        role = str(license_row.get("role") or "operator")
+        max_accounts = int(license_row.get("max_accounts") or 10)
+        await audit_event(db, "login_ok", license_key=key, ip=ip, machine_fp=machine_fp,
+                          detail={"account": account, "via": "supabase"})
+        # Upsert a stub in local SQLite so sessions JOIN (license_key FK) works
+        await _ensure_local_license_stub(db, key, role, max_accounts)
+
+    elif await _has_any_license_in_db(db):
+        # ── Local SQLite path (production, DB-seeded licenses) ─────────────────
         await _validate_license_and_bind(db, key, machine_fp, ip)
         await audit_event(db, "login_ok", license_key=key, ip=ip, machine_fp=machine_fp,
                           detail={"account": account})
+        # Fetch role from local DB
+        try:
+            async with db.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT role FROM licenses WHERE license_key = ?", (key,)
+                )
+                row_r = await cur.fetchone()
+                if row_r and row_r["role"]:
+                    role = row_r["role"]
+        except Exception:
+            pass  # column may not exist on old DBs
+
     else:
-        # Dev mode: DB empty, accept any key >= 16 chars (harder to guess)
-        import os
-        if os.getenv("DEBUG", "false").lower() not in ("1", "true", "yes"):
+        # ── Dev mode: DB empty, no Supabase — accept any key >= 16 chars ───────
+        import os as _os
+        if _os.getenv("DEBUG", "false").lower() not in ("1", "true", "yes"):
             raise HTTPException(
                 503,
-                "No licenses configured. Run: python scripts/generate_license.py create --label 'Admin'"
+                "No licenses configured. "
+                "Either set SUPABASE_URL + SUPABASE_SERVICE_KEY in .env, "
+                "or run: python scripts/generate_license.py create --label 'Admin'"
             )
         if len(key) < 16:
             raise HTTPException(401, "License key không hợp lệ (debug mode: >= 16 ký tự).")
         LOGGER.warning("auth_debug_mode", extra={"event": "auth_debug_mode", "account": account})
 
-        # FIX: lookup_session() uses INNER JOIN sessions→licenses.
-        # In dev/debug mode the licenses table is empty → JOIN returns nothing → 401.
-        # Solution: upsert a dummy license row so the JOIN always finds a match.
         import uuid as _uuid_debug
         async with db.connection() as conn:
             await conn.execute(
@@ -238,26 +290,10 @@ async def login(req: LoginRequest, request: Request) -> LoginResponse:
             )
             await conn.commit()
 
-    # Fetch role from license (default operator if col not yet present)
-    role: str = "operator"
-    try:
-        async with db.connection() as conn:
-            cur = await conn.execute(
-                "SELECT role FROM licenses WHERE license_key = ?", (key,)
-            )
-            row_r = await cur.fetchone()
-            if row_r and row_r["role"]:
-                role = row_r["role"]
-    except Exception:
-        pass  # column may not exist on old DBs
-
-    # Pre-generate session_id so the FINAL token is issued once —
-    # no intermediate "pending" step that required a subsequent UPDATE.
+    # ── Issue token + create session ───────────────────────────────────────────
     import uuid as _uuid
     session_id = str(_uuid.uuid4())
     token, exp  = issue_token(key, machine_fp, session_id, role=role, account=account)
-
-    # Create session record with the final token hash (single atomic write).
     await create_session(db, key, machine_fp, ip, token, exp, account=account,
                          session_id=session_id)
 

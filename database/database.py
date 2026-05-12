@@ -442,6 +442,33 @@ class AutomationDatabase:
             )
             return [_job(row) for row in await result.fetchall()]
 
+    async def get_task_statuses_for_jobs(
+        self, job_ids: list[str]
+    ) -> dict[str, dict[str, str]]:
+        """Batch-fetch per-task statuses for multiple jobs.
+
+        Returns: {job_id: {task_key: status_string}}
+        task_key falls back to the suffix of task_type when task_key is NULL.
+        """
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" * len(job_ids))
+        async with self.connection() as conn:
+            result = await conn.execute(
+                f"SELECT job_id, task_key, task_type, status FROM tasks"
+                f" WHERE job_id IN ({placeholders})",
+                job_ids,
+            )
+            rows = await result.fetchall()
+        by_job: dict[str, dict[str, str]] = {}
+        for row in rows:
+            jid = str(row["job_id"])
+            # task_key may be NULL for ad-hoc tasks; fallback to last segment of task_type
+            key: str = row["task_key"] or str(row["task_type"]).rsplit(".", 1)[-1]
+            by_job.setdefault(jid, {})[key] = str(row["status"])
+        return by_job
+
+
     async def get_task(self, task_id: UUID) -> TaskRecord | None:
         async with self.connection() as conn:
             result = await conn.execute("SELECT * FROM tasks WHERE id = ?", (str(task_id),))
@@ -619,7 +646,7 @@ class AutomationDatabase:
                     """
                     SELECT * FROM tasks
                     WHERE id = ? AND status = 'READY'
-                      AND next_run_at <= CURRENT_TIMESTAMP
+                      AND datetime(next_run_at) <= datetime('now')
                       AND retry_count < max_retries
                       AND NOT EXISTS (
                           SELECT 1 FROM task_dependencies dep
@@ -643,12 +670,19 @@ class AutomationDatabase:
                     return None
 
                 _ensure_task_transition(TaskStatus(task_row["status"]), TaskStatus.RUNNING)
-                attempt_number = int(task_row["retry_count"]) + 1
+                # Use total execution count + 1 to guarantee uniqueness
+                # (retry_count+1 can collide when tasks are re-acquired after crashes)
+                exec_count_cur = await conn.execute(
+                    "SELECT COUNT(*) as cnt FROM task_executions WHERE task_id = ?",
+                    (str(task_id),)
+                )
+                exec_count_row = await exec_count_cur.fetchone()
+                attempt_number = (exec_count_row["cnt"] if exec_count_row else 0) + 1
                 lease_expires_at = (datetime.now(UTC) + timedelta(seconds=self._lease_seconds)).isoformat()
 
                 await conn.execute(
-                    "UPDATE tasks SET status = 'RUNNING', retry_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (attempt_number, str(task_id)),
+                    "UPDATE tasks SET status = 'RUNNING', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (str(task_id),),
                 )
                 
                 execution_id = _uuid()
@@ -687,7 +721,7 @@ class AutomationDatabase:
                     """
                     SELECT id FROM tasks t
                     WHERE t.status = 'READY'
-                      AND t.next_run_at <= CURRENT_TIMESTAMP
+                      AND datetime(t.next_run_at) <= datetime('now')
                       AND t.retry_count < t.max_retries
                       AND NOT EXISTS (
                           SELECT 1 FROM task_dependencies dep
@@ -710,12 +744,18 @@ class AutomationDatabase:
                     t_full = await t_result.fetchone()
                     
                     _ensure_task_transition(TaskStatus(t_full["status"]), TaskStatus.RUNNING)
-                    attempt_number = int(t_full["retry_count"]) + 1
+                    # Use total execution count + 1 to guarantee uniqueness
+                    exec_count_cur = await conn.execute(
+                        "SELECT COUNT(*) as cnt FROM task_executions WHERE task_id = ?",
+                        (task_id,)
+                    )
+                    exec_count_row = await exec_count_cur.fetchone()
+                    attempt_number = (exec_count_row["cnt"] if exec_count_row else 0) + 1
                     lease_expires_at = (datetime.now(UTC) + timedelta(seconds=self._lease_seconds)).isoformat()
 
                     await conn.execute(
-                        "UPDATE tasks SET status = 'RUNNING', retry_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (attempt_number, task_id),
+                        "UPDATE tasks SET status = 'RUNNING', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (task_id,),
                     )
                     
                     execution_id = _uuid()
@@ -748,7 +788,7 @@ class AutomationDatabase:
                 """
                 SELECT t.* FROM tasks t
                 WHERE t.status = 'READY'
-                  AND t.next_run_at <= CURRENT_TIMESTAMP
+                  AND datetime(t.next_run_at) <= datetime('now')
                   AND t.retry_count < t.max_retries
                   AND NOT EXISTS (
                       SELECT 1 FROM task_dependencies dep

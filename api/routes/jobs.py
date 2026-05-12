@@ -46,5 +46,10 @@ async def list_jobs(
     offset: int = Query(default=0, ge=0),
 ) -> list[JobSummaryResponse]:
     jobs = await database.list_jobs(limit=limit, offset=offset)
+    job_ids = [str(j.id) for j in jobs]
+    task_statuses_by_job = await database.get_task_statuses_for_jobs(job_ids)
     LOGGER.info("jobs_listed", extra={"event": "jobs_listed", "limit": limit, "offset": offset})
-    return [JobSummaryResponse.from_record(job) for job in jobs]
+    return [
+        JobSummaryResponse.from_record(job, task_statuses_by_job.get(str(job.id), {}))
+        for job in jobs
+    ]

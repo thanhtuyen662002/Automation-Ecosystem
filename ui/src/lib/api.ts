@@ -14,27 +14,27 @@ import { getElectronMachineId } from '@/lib/machine';
 // Set VITE_API_BASE in .env.local only if connecting to a remote server.
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
-// ── Token storage (sessionStorage > localStorage) ───────────────────────────
+// ── Token storage (localStorage — persists across tabs + browser restarts) ────
 const TOKEN_KEY = 'auth_token';
 const STORE_KEY = 'ae-auth'; // zustand persist key - fallback source
 export const tokenStore = {
   // Primary: direct fast path; Fallback: zustand persist state (guards
   // against race where tokenStore.clear() ran before handler was set).
   get: (): string | null => {
-    const direct = sessionStorage.getItem(TOKEN_KEY);
+    const direct = localStorage.getItem(TOKEN_KEY);
     if (direct) return direct;
     try {
-      const raw = sessionStorage.getItem(STORE_KEY);
+      const raw = localStorage.getItem(STORE_KEY);
       if (raw) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const t: string | null = (JSON.parse(raw) as any)?.state?.token ?? null;
-        if (t) { sessionStorage.setItem(TOKEN_KEY, t); return t; }
+        if (t) { localStorage.setItem(TOKEN_KEY, t); return t; }
       }
     } catch { /* ignore parse errors */ }
     return null;
   },
-  set: (t: string)  => { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); },
-  clear: ()         => { sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY); },
+  set: (t: string)  => { localStorage.setItem(TOKEN_KEY, t); },
+  clear: ()         => { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(STORE_KEY); },
 };
 
 // ── Auto-logout handler ────────────────────────────────────────────────────────────────

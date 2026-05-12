@@ -74,12 +74,21 @@ class JobSummaryResponse(BaseModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Per-task statuses: {task_key -> status_string}
+    # Populated by list endpoint for real-time step indicator in the UI.
+    task_statuses: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
-    def from_record(cls, job: JobRecord) -> "JobSummaryResponse":
-        return cls.model_validate(job)
+    def from_record(
+        cls, job: "JobRecord", task_statuses: dict[str, str] | None = None
+    ) -> "JobSummaryResponse":
+        obj = cls.model_validate(job)
+        if task_statuses:
+            obj.task_statuses = task_statuses
+        return obj
+
 
 
 class JobResponse(JobSummaryResponse):

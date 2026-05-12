@@ -56,8 +56,8 @@ class WorkflowManager:
                     SELECT t.id
                     FROM tasks t
                     WHERE (
-                          (t.status = 'PENDING' AND t.next_run_at <= CURRENT_TIMESTAMP)
-                          OR (t.status = 'RETRY' AND t.next_retry_at <= CURRENT_TIMESTAMP)
+                          (t.status = 'PENDING' AND datetime(t.next_run_at) <= datetime('now'))
+                          OR (t.status = 'RETRY' AND datetime(t.next_retry_at) <= datetime('now'))
                       )
                       AND NOT EXISTS (
                           SELECT 1

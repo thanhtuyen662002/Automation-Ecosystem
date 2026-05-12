@@ -30,12 +30,12 @@ def _env(key: str, default: str | None = None) -> str:
     return value
 
 
-def get_openai_api_key() -> str:
-    return _env("OPENAI_API_KEY")
+def get_gemini_api_key() -> str:
+    return _env("GEMINI_API_KEY")
 
 
-def get_openai_model() -> str:
-    return _env("OPENAI_MODEL", "gpt-4o")
+def get_gemini_model() -> str:
+    return _env("GEMINI_MODEL", "gemini-1.5-flash")
 
 
 def get_media_output_dir() -> Path:

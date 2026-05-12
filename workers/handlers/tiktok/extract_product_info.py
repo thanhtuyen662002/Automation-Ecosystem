@@ -11,13 +11,16 @@ Output result:
   description:  str
   keywords:     list[str]
   ok:           bool
+
+AI provider: Google Gemini (GEMINI_API_KEY + GEMINI_MODEL env vars).
+Vision supported: passes PIL.Image for product_image_path inputs.
+Runs Gemini SDK in thread executor to stay non-blocking.
 """
 
 from __future__ import annotations
 
-import base64
+import asyncio
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -25,12 +28,21 @@ from typing import Any
 from workers.handlers.tiktok._base import (
     check_already_processed,
     fetch_url_text,
-    get_openai_api_key,
-    get_openai_model,
+    get_gemini_api_key,
+    get_gemini_model,
     random_jitter,
 )
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.extract_product_info")
+
+_SYSTEM_PROMPT = (
+    "You are a product analyst. Extract key information from the product page or image provided. "
+    "Return ONLY a valid JSON object with exactly these keys:\n"
+    "  title        (string, ≤80 chars)\n"
+    "  description  (string, 2–4 sentences)\n"
+    "  keywords     (array of 5–10 short marketing keywords)\n"
+    "Do not include any other text outside the JSON object."
+)
 
 
 async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -55,42 +67,40 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
         },
     )
 
-    # ── Build OpenAI messages ─────────────────────────────────────────────────
-    from openai import AsyncOpenAI  # imported lazily to keep startup fast
+    # ── Lazy imports (keep startup fast) ─────────────────────────────────────
+    import google.generativeai as genai  # type: ignore[import]
 
-    client = AsyncOpenAI(api_key=get_openai_api_key())
-    model = get_openai_model()
+    api_key = get_gemini_api_key()
+    model_name = get_gemini_model()
 
-    system_prompt = (
-        "You are a product analyst. Extract key information from the product page or image provided. "
-        "Return ONLY a valid JSON object with exactly these keys:\n"
-        "  title        (string, ≤80 chars)\n"
-        "  description  (string, 2–4 sentences)\n"
-        "  keywords     (array of 5–10 short marketing keywords)\n"
-        "Do not include any other text outside the JSON object."
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=_SYSTEM_PROMPT,
     )
 
-    user_content: list[dict[str, Any]] = []
+    generation_config = genai.types.GenerationConfig(  # type: ignore[attr-defined]
+        temperature=0.3,
+        max_output_tokens=512,
+    )
 
+    # ── Build content list ────────────────────────────────────────────────────
+    content: list[Any] = []
+
+    # Vision: attach PIL image when a local file path is given
     if product_image_path:
+        from PIL import Image  # type: ignore[import]
+
         image_path = Path(product_image_path).expanduser().resolve()
         if not image_path.exists():
             raise FileNotFoundError(f"product_image_path does not exist: {image_path}")
-        image_bytes = image_path.read_bytes()
-        b64 = base64.standard_b64encode(image_bytes).decode()
-        suffix = image_path.suffix.lower().lstrip(".")
-        mime = f"image/{suffix if suffix in ('png', 'jpg', 'jpeg', 'webp', 'gif') else 'jpeg'}"
-        user_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
-            }
-        )
+        pil_img = Image.open(image_path)
+        content.append(pil_img)
 
+    # Text: scrape product URL (first 8 000 chars to stay within context window)
     if product_url:
         try:
             page_text = await fetch_url_text(product_url)
-            # Trim to first 8000 chars to stay within context window
             page_text = page_text[:8000]
         except Exception as exc:
             LOGGER.warning(
@@ -99,24 +109,19 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
             )
             page_text = f"Product URL: {product_url}"
 
-        user_content.append({"type": "text", "text": f"Product page content:\n\n{page_text}"})
+        content.append(f"Product page content:\n\n{page_text}")
 
-    if not user_content:
-        user_content.append({"type": "text", "text": "Analyze the product and return the JSON."})
+    if not content:
+        content.append("Analyze the product and return the JSON.")
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
-    ]
-
-    response = await client.chat.completions.create(
-        model=model,
-        messages=messages,  # type: ignore[arg-type]
-        temperature=0.3,
-        max_tokens=512,
+    # ── Call Gemini in thread executor (SDK is synchronous) ───────────────────
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: model.generate_content(content, generation_config=generation_config),
     )
 
-    raw_text = (response.choices[0].message.content or "").strip()
+    raw_text = (response.text or "").strip()
     parsed = _parse_json_response(raw_text)
 
     title: str = str(parsed.get("title", "")).strip() or "Unknown Product"
@@ -124,7 +129,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
     keywords: list[str] = [str(k).strip() for k in parsed.get("keywords", []) if k]
 
     if not keywords:
-        # Fallback: derive from title
+        # Fallback: derive from title words
         keywords = [w.lower() for w in title.split() if len(w) > 3][:8]
 
     result = {
@@ -146,7 +151,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
-    """Extract and parse the first JSON object found in text."""
+    """Extract and parse the first JSON object found in the model response."""
     import json
 
     # Strip markdown code fences if present
@@ -160,7 +165,7 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Last resort
+    # Last resort — attempt full parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:

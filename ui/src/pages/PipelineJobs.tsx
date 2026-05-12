@@ -8,21 +8,33 @@ import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 
 const DAG_STEPS = [
-  { key: 'extract_product_info', label: 'Extract Product', step: 1 },
-  { key: 'search_tiktok',        label: 'Search TikTok',  step: 2 },
-  { key: 'select_videos',        label: 'Select Videos',  step: 3 },
-  { key: 'download_videos',      label: 'Download',       step: 4 },
-  { key: 'remake_video',         label: 'Remake Video',   step: 5 },
-  { key: 'generate_content',     label: 'Gen Caption',    step: 6 },
-  { key: 'generate_comment',     label: 'Gen Comment',    step: 7 },
+  { key: 'tiktok_extract_product_info', label: 'Extract Product', step: 1 },
+  { key: 'tiktok_search',               label: 'Search TikTok',   step: 2 },
+  { key: 'tiktok_select',               label: 'Select Videos',   step: 3 },
+  { key: 'tiktok_download',             label: 'Download',        step: 4 },
+  { key: 'tiktok_remake',               label: 'Remake Video',    step: 5 },
+  { key: 'tiktok_content',              label: 'Gen Caption',     step: 6 },
+  { key: 'tiktok_comment',              label: 'Gen Comment',     step: 7 },
 ];
 
-function statusForStep(jobStatus: string, step: number): string {
-  if (jobStatus === 'completed') return 'SUCCESS';
-  if (jobStatus === 'failed')    return step <= 3 ? 'SUCCESS' : step === 4 ? 'FAILED' : 'CANCELED';
-  if (jobStatus === 'running')   return step <= 2 ? 'SUCCESS' : step === 3 ? 'RUNNING' : 'PENDING';
+// Real per-task status from API (task_key → status string from DB)
+// Falls back to job-level heuristic if task_statuses is not populated.
+function statusForStep(job: any, stepKey: string, stepIndex: number): string {
+  const ts: Record<string, string> = job.task_statuses ?? {};
+  if (Object.keys(ts).length > 0 && stepKey in ts) {
+    const raw = (ts[stepKey] ?? '').toUpperCase();
+    // RETRY means the step ran but is waiting to retry → show as PENDING in UX
+    if (raw === 'RETRY' || raw === 'READY') return 'PENDING';
+    return raw; // SUCCESS, RUNNING, FAILED, PENDING
+  }
+  // Fallback: derive from job-level status (pre-task_statuses compatibility)
+  const step = stepIndex + 1;
+  if (job.status === 'completed') return 'SUCCESS';
+  if (job.status === 'failed')    return step <= 3 ? 'SUCCESS' : step === 4 ? 'FAILED' : 'CANCELED';
+  if (job.status === 'running')   return step <= 2 ? 'SUCCESS' : step === 3 ? 'RUNNING' : 'PENDING';
   return 'PENDING';
 }
+
 
 // Mini step icon inside the DAG circle
 function StepDot({ status, step }: { status: string; step: number }) {
@@ -157,7 +169,7 @@ export function PipelineJobs() {
                     )}
                     <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center', flexWrap: 'wrap' }}>
                       {DAG_STEPS.map((s, i) => {
-                        const stepStatus = statusForStep(job.status, s.step);
+                        const stepStatus = statusForStep(job, s.key, i);
                         const lineColor = stepStatus === 'SUCCESS' ? 'var(--success)' : 'var(--border)';
                         return (
                           <React.Fragment key={s.key}>

@@ -227,6 +227,7 @@ def _dispatch_throttle_reason(
 
 
 def _task_from_row(row: dict) -> TaskRecord:
+    row = dict(row)  # sqlite3.Row -> dict (supports .get())
     return TaskRecord(
         id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
         job_id=UUID(row["job_id"]) if isinstance(row["job_id"], str) else row["job_id"],

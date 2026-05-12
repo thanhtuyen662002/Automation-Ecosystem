@@ -17,21 +17,21 @@ import { fmt, fmtCurrency, fmtPct, fmtScore, CHART_COLORS } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 
 export function ExecutiveDashboard() {
-  const strategy        = useStrategy();
-  const niches          = useNiches();
+  const strategy = useStrategy();
+  const niches = useNiches();
   const recommendations = useRecommendations();
-  const queue           = useQueue();
-  const analytics       = useAnalyticsOverview();
+  const queue = useQueue();
+  const analytics = useAnalyticsOverview();
   const { t } = useI18n();
 
-  const s             = strategy.data ?? null;
-  const nicheList     = niches.data ?? [];
-  const recs          = recommendations.data ?? [];
-  const queueItems    = queue.data ?? [];
+  const s = strategy.data ?? null;
+  const nicheList = niches.data ?? [];
+  const recs = recommendations.data ?? [];
+  const queueItems = queue.data ?? [];
   const analyticsData = analytics.data;
 
   const isLoading = strategy.isLoading || niches.isLoading || analytics.isLoading;
-  const hasError  = strategy.error || niches.error || analytics.error;
+  const hasError = strategy.error || niches.error || analytics.error;
 
   function refetchAll() {
     strategy.refetch(); niches.refetch();
@@ -42,7 +42,7 @@ export function ExecutiveDashboard() {
     <div>
       <PageHeader title={t('exec.title')} subtitle={t('exec.sub')} />
       <div className="grid-kpi" style={{ marginBottom: '1.25rem' }}>
-        {[1,2,3,4,5].map(i => <div key={i} className="card"><Skeleton height={72} /></div>)}
+        {[1, 2, 3, 4, 5].map(i => <div key={i} className="card"><Skeleton height={72} /></div>)}
       </div>
       <div className="grid-2" style={{ marginBottom: '1.25rem' }}>
         <div className="card"><Skeleton height={220} /></div>
@@ -66,16 +66,16 @@ export function ExecutiveDashboard() {
     </div>
   );
 
-  const ratio         = s?.performance_ratio ?? 0;
-  const viewsTrend    = analyticsData?.views_trend ?? [];
-  const funnelData    = analyticsData?.funnel ?? [];
-  const topContent    = analyticsData?.top_content ?? [];
+  const ratio = s?.performance_ratio ?? 0;
+  const viewsTrend = analyticsData?.views_trend ?? [];
+  const funnelData = analyticsData?.funnel ?? [];
+  const topContent = analyticsData?.top_content ?? [];
   const approvedCount = queueItems.filter((q: any) => q.status === 'approved').length;
-  const pendingCount  = queueItems.filter((q: any) => q.status === 'pending').length;
+  const pendingCount = queueItems.filter((q: any) => q.status === 'pending').length;
 
   return (
     <div>
-      <PageHeader title={t('exec.title')} subtitle={t('exec.sub')}
+      {/* <PageHeader title={t('exec.title')} subtitle={t('exec.sub')}
         action={
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             {s && <ModeBadge mode={s.growth_mode} />}
@@ -84,7 +84,7 @@ export function ExecutiveDashboard() {
             </button>
           </div>
         }
-      />
+      /> */}
 
       {/* ── KPI Row ─────────────────────────────────────────────────────────── */}
       <div className="grid-kpi" style={{ marginBottom: '1.25rem' }}>
@@ -138,11 +138,11 @@ export function ExecutiveDashboard() {
           ) : (
             <>
               {(() => {
-                const today    = viewsTrend[viewsTrend.length - 1];
+                const today = viewsTrend[viewsTrend.length - 1];
                 const yesterday = viewsTrend[viewsTrend.length - 2];
-                const velocity  = today && yesterday && yesterday.views > 0 ? (today.views / yesterday.views) : 1;
-                const eodViews  = today ? Math.round(today.views * velocity) : 0;
-                const onTrack   = s ? eodViews >= s.target_daily_views : false;
+                const velocity = today && yesterday && yesterday.views > 0 ? (today.views / yesterday.views) : 1;
+                const eodViews = today ? Math.round(today.views * velocity) : 0;
+                const onTrack = s ? eodViews >= s.target_daily_views : false;
                 return (
                   <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem', color: onTrack ? 'var(--success)' : 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                     <GlassIcon name={onTrack ? 'check-circle' : 'warning'} size={13} style={{ filter: `brightness(0) saturate(100%) ${onTrack ? 'invert(52%) sepia(70%) saturate(600%) hue-rotate(120deg)' : 'invert(70%) sepia(60%) saturate(900%) hue-rotate(15deg)'}` }} />
@@ -155,11 +155,11 @@ export function ExecutiveDashboard() {
                 <AreaChart data={viewsTrend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                   <defs>
                     <linearGradient id="gViews" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#8b5cf6" stopOpacity={0.45} />
+                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.45} />
                       <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#14b8a6" stopOpacity={0.35} />
+                      <stop offset="5%" stopColor="#14b8a6" stopOpacity={0.35} />
                       <stop offset="95%" stopColor="#14b8a6" stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
@@ -167,8 +167,8 @@ export function ExecutiveDashboard() {
                   <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, boxShadow: 'var(--shadow-card)' }} />
                   {s && <ReferenceLine y={s.target_daily_views} stroke="#8b5cf6" strokeDasharray="5 3" strokeOpacity={0.5} />}
-                  <Area type="monotoneX" dataKey="views"   stroke="#8b5cf6" fill="url(#gViews)" strokeWidth={2.5} name={t('exec.lbl_views')} dot={false} />
-                  <Area type="monotoneX" dataKey="revenue" stroke="#14b8a6" fill="url(#gRev)"   strokeWidth={2}   name={t('exec.lbl_rev')}   dot={false} />
+                  <Area type="monotoneX" dataKey="views" stroke="#8b5cf6" fill="url(#gViews)" strokeWidth={2.5} name={t('exec.lbl_views')} dot={false} />
+                  <Area type="monotoneX" dataKey="revenue" stroke="#14b8a6" fill="url(#gRev)" strokeWidth={2} name={t('exec.lbl_rev')} dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             </>

@@ -7,12 +7,23 @@
    Cards NEVER touch each other — always separated by gap
    ───────────────────────────────────────────────────────────────────────── */
 
-/* ── LIGHT THEME (default = Glassmorp pastel) ───────────────────────────── */
+/* ── LIGHT THEME (default = Glassmorp pastel) ──────────────────────────────── */
 :root,
 [data-theme="light"] {
-  /* Page background — vibrant pastel lavender-to-baby-blue gradient */
-  --bg:      linear-gradient(135deg, #e8d5f5 0%, #d4e8ff 50%, #c8f0f8 100%);
+  /* Page background — custom image, falls back to pastel gradient */
+  --bg-image:  url('/bg-light-01.png');
+  --bg-color:  #d4e8ff;
+  --bg:        linear-gradient(135deg, #e8d5f5 0%, #d4e8ff 50%, #c8f0f8 100%);
   --bg-soft: rgba(255, 255, 255, 0.60);
+
+  /* Glass surfaces — used by Sidebar, Topbar, BreadcrumbBar, cards */
+  --surface-glass:        rgba(255, 255, 255, 0.58);
+  --surface-glass-border: rgba(255, 255, 255, 0.65);
+  --surface-glass-hover:  rgba(124, 58, 237, 0.07);
+  --surface-glass-active: rgba(255, 255, 255, 0.92);
+  --surface-glass-active-shadow: rgba(124, 58, 237, 0.12);
+  --surface-glass-shadow: rgba(124, 58, 237, 0.06);
+  --badge-border: rgba(255, 255, 255, 0.90);
 
   /* Surfaces — frosted white glass — MORE TRANSPARENT to show gradient through */
   --surface:        rgba(255, 255, 255, 0.42);
@@ -69,56 +80,139 @@
   --radius-xl: 1.5rem;
 }
 
-/* ── DARK THEME ──────────────────────────────────────────────────────────── */
+/* ── DARK THEME — deep violet-purple/cobalt-blue space ────────────────────── */
 [data-theme="dark"] {
-  --bg:             #0f0e17;
-  --bg-soft:        #13111e;
-  --surface:        rgba(26, 23, 48, 0.92);
-  --surface-2:      rgba(34, 31, 56, 0.88);
-  --surface-header: rgba(26, 23, 48, 0.95);
-  --glass-border:   rgba(139, 92, 246, 0.20);
-  --border:         rgba(45, 40, 80, 0.90);
-  --border-subtle:  rgba(35, 31, 64, 0.90);
-  --border-input:   rgba(45, 40, 80, 0.90);
-  --primary:        #8b5cf6;
-  --primary-hover:  #7c3aed;
-  --primary-light:  #a78bfa;
-  --primary-glow:   #c4b5fd;
-  --primary-muted:  rgba(139, 92, 246, 0.12);
-  --primary-soft:   rgba(139, 92, 246, 0.06);
-  --primary-border: rgba(139, 92, 246, 0.25);
-  --text-primary:   #ede9fe;
-  --text-secondary: #a78bfa;
-  --text-muted:     #6d6490;
-  --shadow-card:       0 2px 8px rgba(0, 0, 0, 0.40), 0 0 0 1px rgba(139, 92, 246, 0.08);
-  --shadow-card-hover: 0 8px 32px rgba(139, 92, 246, 0.20);
-  --shadow-btn:        0 4px 14px rgba(139, 92, 246, 0.40);
-  --shadow-sidebar:    4px 0 24px rgba(0, 0, 0, 0.30);
-  --shadow-topbar:     0 2px 12px rgba(0, 0, 0, 0.30);
+  --bg-image:       url('/bg-dark-01.png');
+  --bg-color:       #080520;
+  --bg:             #080520;
+  --bg-soft:        rgba(10, 8, 40, 0.85);
+
+  /* Glass surfaces — dark blue-purple frosted glass */
+  --surface-glass:        rgba(18, 12, 55, 0.70);
+  --surface-glass-border: rgba(110, 130, 255, 0.22);
+  --surface-glass-hover:  rgba(100, 120, 255, 0.12);
+  --surface-glass-active: rgba(50, 45, 110, 0.88);
+  --surface-glass-active-shadow: rgba(110, 130, 255, 0.22);
+  --surface-glass-shadow: rgba(0, 0, 80, 0.30);
+  --badge-border: rgba(18, 12, 55, 0.90);
+
+  --surface:        rgba(18, 14, 55, 0.78);
+  --surface-2:      rgba(25, 20, 65, 0.72);
+  --surface-header: rgba(15, 10, 48, 0.88);
+  --glass-border:   rgba(110, 130, 255, 0.22);
+  --border:         rgba(80, 90, 180, 0.30);
+  --border-subtle:  rgba(60, 70, 150, 0.20);
+  --border-input:   rgba(80, 90, 180, 0.30);
+
+  /* Primary — electric blue-violet matching the glow in bg */
+  --primary:        #7b8fff;
+  --primary-hover:  #6070f0;
+  --primary-light:  #a0aaff;
+  --primary-glow:   #c5caff;
+  --primary-muted:  rgba(123, 143, 255, 0.14);
+  --primary-soft:   rgba(123, 143, 255, 0.07);
+  --primary-border: rgba(123, 143, 255, 0.28);
+
+  /* Semantic */
+  --success:       #34d399;
+  --success-muted: rgba(52, 211, 153, 0.12);
+  --warning:       #fbbf24;
+  --warning-muted: rgba(251, 191, 36, 0.12);
+  --danger:        #f87171;
+  --danger-muted:  rgba(248, 113, 113, 0.12);
+  --info:          #60a5fa;
+  --info-muted:    rgba(96, 165, 250, 0.12);
+  --pink:          #c084fc;
+  --pink-muted:  rgba(192, 132, 252, 0.12);
+  --teal:          #2dd4bf;
+
+  /* Text — cool white with blue-violet tint */
+  --text-primary:   #dde3ff;
+  --text-secondary: rgba(190, 200, 255, 0.80);
+  --text-muted:     rgba(130, 145, 200, 0.60);
+
+  /* Shadows */
+  --shadow-card:       0 2px 12px rgba(0, 0, 80, 0.40), 0 0 0 1px rgba(110, 130, 255, 0.10);
+  --shadow-card-hover: 0 8px 32px rgba(80, 100, 255, 0.22);
+  --shadow-btn:        0 4px 14px rgba(123, 143, 255, 0.40);
+  --shadow-sidebar:    4px 0 28px rgba(0, 0, 60, 0.40);
+  --shadow-topbar:     0 2px 16px rgba(0, 0, 60, 0.35);
+  --glass-blur:  blur(22px);
+
+  /* Shape */
+  --radius:    0.875rem;
+  --radius-sm: 0.5rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.5rem;
 }
 
-/* ── NEON THEME ──────────────────────────────────────────────────────────── */
+/* ── NEON THEME — cyberpunk magenta/cyan on near-black ──────────────────────── */
 [data-theme="neon"] {
-  --bg:          #000000;
-  --bg-soft:     #050505;
-  --surface:     rgba(10, 10, 10, 0.95);
-  --surface-2:   rgba(17, 17, 17, 0.90);
-  --glass-border: rgba(0, 255, 136, 0.18);
-  --border:      rgba(0, 255, 136, 0.15);
-  --border-subtle: rgba(0, 255, 136, 0.08);
-  --primary:     #00ff88;
-  --primary-hover: #00e077;
-  --primary-light: #00ffaa;
-  --primary-glow:  #00ff88;
-  --primary-muted: rgba(0, 255, 136, 0.10);
-  --text-primary:  #e0ffe8;
-  --text-secondary: #88ccaa;
-  --text-muted:  #446644;
-  --shadow-card: 0 0 0 1px rgba(0, 255, 136, 0.12);
-  --shadow-card-hover: 0 0 20px rgba(0, 255, 136, 0.15);
-  --shadow-btn:  0 0 12px rgba(0, 255, 136, 0.40);
-  --shadow-sidebar: 4px 0 24px rgba(0, 255, 136, 0.08);
-  --shadow-topbar: 0 2px 12px rgba(0, 255, 136, 0.06);
+  --bg-image:    url('/bg-neon-01.png');
+  --bg-color:    #04020f;
+  --bg:          #04020f;
+  --bg-soft:     rgba(4, 2, 20, 0.90);
+
+  /* Glass surfaces — near-black glass with cyan/pink neon border */
+  --surface-glass:        rgba(6, 3, 28, 0.75);
+  --surface-glass-border: rgba(0, 210, 255, 0.22);
+  --surface-glass-hover:  rgba(0, 210, 255, 0.10);
+  --surface-glass-active: rgba(0, 180, 255, 0.16);
+  --surface-glass-active-shadow: rgba(0, 210, 255, 0.28);
+  --surface-glass-shadow: rgba(0, 0, 50, 0.50);
+  --badge-border: rgba(6, 3, 28, 0.90);
+
+  --surface:     rgba(6, 3, 28, 0.82);
+  --surface-2:   rgba(10, 5, 38, 0.78);
+  --glass-border: rgba(0, 210, 255, 0.20);
+  --border:       rgba(0, 210, 255, 0.18);
+  --border-subtle: rgba(0, 210, 255, 0.10);
+  --border-input:  rgba(0, 210, 255, 0.18);
+
+  /* Primary — electric cyan */
+  --primary:        #00d4ff;
+  --primary-hover:  #00b8e0;
+  --primary-light:  #40e0ff;
+  --primary-glow:   #80eeff;
+  --primary-muted:  rgba(0, 212, 255, 0.12);
+  --primary-soft:   rgba(0, 212, 255, 0.06);
+  --primary-border: rgba(0, 212, 255, 0.28);
+
+  /* Secondary accent — magenta */
+  --neon-accent:      #ff10f0;
+  --neon-accent-glow: rgba(255, 16, 240, 0.30);
+
+  /* Semantic */
+  --success:       #00ff88;
+  --success-muted: rgba(0, 255, 136, 0.12);
+  --warning:       #ffcc00;
+  --warning-muted: rgba(255, 204, 0, 0.12);
+  --danger:        #ff4466;
+  --danger-muted:  rgba(255, 68, 102, 0.12);
+  --info:          #00aaff;
+  --info-muted:    rgba(0, 170, 255, 0.12);
+  --pink:          #ff10f0;
+  --pink-muted:    rgba(255, 16, 240, 0.12);
+  --teal:          #00ffcc;
+
+  /* Text — cool white with cyan tint */
+  --text-primary:   #e0f8ff;
+  --text-secondary: rgba(180, 240, 255, 0.80);
+  --text-muted:     rgba(0, 210, 255, 0.45);
+
+  /* Shadows */
+  --shadow-card:       0 0 0 1px rgba(0, 210, 255, 0.14), 0 4px 20px rgba(0, 0, 50, 0.50);
+  --shadow-card-hover: 0 0 28px rgba(0, 210, 255, 0.20), 0 0 8px rgba(255, 16, 240, 0.10);
+  --shadow-btn:        0 0 16px rgba(0, 210, 255, 0.50), 0 0 6px rgba(255, 16, 240, 0.20);
+  --shadow-sidebar:    4px 0 28px rgba(0, 0, 50, 0.50);
+  --shadow-topbar:     0 2px 20px rgba(0, 0, 50, 0.40);
+  --glass-blur:  blur(24px);
+
+  /* Shape */
+  --radius:    0.875rem;
+  --radius-sm: 0.5rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.5rem;
 }
 
 /* ── Base ────────────────────────────────────────────────────────────────── */
@@ -128,8 +222,12 @@ html { font-size: 14px; }
 
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background: var(--bg);
+  background-color: var(--bg-color, #d4e8ff);
+  background-image: var(--bg-image);
+  background-size: cover;
+  background-position: center;
   background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--text-primary);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -141,8 +239,20 @@ body {
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(124, 58, 237, 0.18); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(124, 58, 237, 0.38); }
+::-webkit-scrollbar-thumb { background: var(--primary-border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--primary-light); }
+
+/* ── Theme transition — smooth color changes when data-theme attribute changes ── */
+/* Only applies to non-animation properties; does NOT override component transitions */
+body,
+.card, .card-elevated,
+.data-table th, .data-table td {
+  transition:
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.2s ease,
+    box-shadow 0.25s ease;
+}
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -153,17 +263,22 @@ body {
   box-shadow: var(--shadow-card);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  transition: box-shadow 0.22s ease, transform 0.22s ease, border-color 0.22s ease, background 0.22s ease;
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    transform 0.22s ease,
+    color 0.2s ease;
 }
 .card:hover {
-  background: rgba(255, 255, 255, 0.52);
+  background: var(--surface-glass, rgba(255, 255, 255, 0.52));
   box-shadow: var(--shadow-card-hover);
-  border-color: rgba(124, 58, 237, 0.22);
+  border-color: var(--primary-border);
   transform: translateY(-1px);
 }
 .card-elevated {
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid var(--glass-border);
+  background: var(--surface-glass, rgba(255, 255, 255, 0.55));
+  border: 1px solid var(--surface-glass-border, var(--glass-border));
   border-radius: var(--radius);
   padding: 1rem;
   box-shadow: var(--shadow-card);
@@ -495,7 +610,7 @@ body {
 .section-title { font-size: 0.9rem; font-weight: 700; margin-bottom: 0.875rem; color: var(--text-primary); }
 
 /* ── Grid system — cards NEVER touch: gap: 20px minimum ─────────────────── */
-.grid-kpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }
+.grid-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }
 .grid-2   { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
 .grid-3   { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; }
 .grid-4   { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
@@ -531,35 +646,9 @@ body {
   -webkit-backdrop-filter: blur(12px) !important;
 }
 
-/* ── Mesh background blobs — injected via AppLayout ──────────────────────── */
-.mesh-blob {
-  position: fixed;
-  border-radius: 50%;
-  pointer-events: none;
-  z-index: 0;
-  will-change: transform;
-}
-.mesh-blob-1 {
-  width: 600px; height: 600px;
-  top: -200px; left: -150px;
-  background: radial-gradient(circle, rgba(192, 132, 252, 0.45) 0%, transparent 65%);
-  filter: blur(80px);
-}
-.mesh-blob-2 {
-  width: 500px; height: 500px;
-  top: 30%; right: -120px;
-  background: radial-gradient(circle, rgba(147, 197, 253, 0.40) 0%, transparent 65%);
-  filter: blur(70px);
-}
-.mesh-blob-3 {
-  width: 450px; height: 450px;
-  bottom: -100px; left: 20%;
-  background: radial-gradient(circle, rgba(249, 168, 212, 0.38) 0%, transparent 65%);
-  filter: blur(75px);
-}
-.mesh-blob-4 {
-  width: 350px; height: 350px;
-  bottom: 10%; right: 25%;
-  background: radial-gradient(circle, rgba(167, 243, 208, 0.30) 0%, transparent 65%);
-  filter: blur(65px);
+
+/* ── Nav Tooltip (portal) ────────────────────────────────────────────────── */
+@keyframes tooltipFadeIn {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
 }

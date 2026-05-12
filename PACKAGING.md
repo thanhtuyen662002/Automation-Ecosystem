@@ -11,40 +11,43 @@ This package produces a one-click Windows desktop application:
 ## Runtime Flow
 
 1. User opens `Automation Ecosystem.exe`.
-2. Electron shows a splash screen: `Starting system...`.
+2. Electron shows a splash screen while the backend starts.
 3. Electron finds a free local port, or uses `APP_PORT`.
-4. Electron creates `.env.production` in the app user-data directory if missing.
-5. Electron starts `backend.exe`.
-6. Electron waits for `GET /health`.
-7. Electron loads the dashboard window.
-8. On app quit, Electron stops the backend process.
+4. The backend creates a local `.env.production` in the user-data directory if missing.
+5. The generated `.env.production` contains only non-secret local runtime values.
+6. Electron starts `backend.exe`.
+7. Electron waits for `GET /health`.
+8. Electron loads the dashboard window.
+9. On app quit, Electron stops the backend process.
 
-## Database Modes
+## License And Secrets
 
-### Mode 1: External PostgreSQL
+Packaged builds must not include `.env.production`, `SUPABASE_SERVICE_KEY`,
+`ADMIN_SECRET`, `LICENSE_SECRET`, or provider API keys.
 
-This is the default production mode. Set `DATABASE_URL` in `.env.production`:
+License activation is handled by the Supabase Edge Function at
+`supabase/functions/license-auth`:
+
+- The desktop app ships only public values such as `LICENSE_AUTHORITY_URL` and
+  `SUPABASE_PUBLISHABLE_KEY`.
+- The Edge Function keeps service-role access in Supabase secrets.
+- The user enters username + license key once.
+- The backend stores the returned refresh token through Windows DPAPI, not in
+  `.env`, SQLite, localStorage, or sessionStorage.
+- On later launches the UI calls `/api/v1/auth/bootstrap`; the backend refreshes
+  silently or allows the cached license for `LICENSE_OFFLINE_GRACE_DAYS`.
+
+## Local Database
+
+The packaged app defaults to local SQLite:
 
 ```env
-DATABASE_URL=postgresql://user:password@host:5432/automation
+DATABASE_URL=sqlite+aiosqlite:///{APP_DATA_DIR}/data/app.db
 ```
 
-The app auto-creates a default `.env.production` file on first run. Non-technical installs can be shipped with a prefilled `.env.production` in the installer resources.
-
-### Mode 2: Bundled PostgreSQL
-
-The architecture supports this mode by extending `electron/main.js` to spawn a bundled Postgres binary before `backend.exe`, then setting `DATABASE_URL` to the local bundled instance.
-
-Recommended layout:
-
-```text
-resources/
-  postgres/
-    bin/
-    data/
-```
-
-This repository does not commit Postgres binaries. Add them during release assembly if you choose the fully offline mode.
+This value is non-secret and is generated under the user's AppData directory.
+External PostgreSQL is not recommended for user-distributed packages unless each
+customer owns the database credentials.
 
 ## Build Commands
 
@@ -54,47 +57,45 @@ Install Python desktop tooling:
 python -m pip install -e ".[desktop]"
 ```
 
-Install frontend and Electron dependencies:
+Install frontend dependencies:
 
 ```powershell
+cd ui
 npm install
 ```
 
 Build backend:
 
 ```powershell
-npm run build:backend
+pyinstaller backend.spec --distpath backend_dist
 ```
 
 Build frontend:
 
 ```powershell
-npm run build:frontend
+cd ui
+npm run build
 ```
 
-Build installer and portable EXE:
+## Supabase Setup
 
-```powershell
-npm run electron:build
-```
+Apply the SQL in `supabase/migrations/202605120001_license_authority.sql`, then
+deploy `supabase/functions/license-auth` with JWT verification disabled as shown
+in `supabase/config.toml`.
 
-Outputs:
+Set these Edge Function secrets in Supabase:
 
 ```text
-backend_dist/
-  backend.exe
-dist/
-  index.html
-  assets/
-release/
-  Automation-Ecosystem-Setup-0.1.0.exe
-  Automation-Ecosystem-Portable-0.1.0.exe
+SUPABASE_URL
+SUPABASE_SECRET_KEYS or SUPABASE_SERVICE_ROLE_KEY
+LICENSE_OFFLINE_GRACE_DAYS=7
+LICENSE_REFRESH_TOKEN_DAYS=365
 ```
 
 ## Environment Variables
 
 - `APP_PORT`: preferred local API port. If unavailable, Electron finds a free port.
-- `AE_ENV_FILE`: path to `.env.production`.
+- `AE_ENV_FILE`: path to the local non-secret runtime env file.
 - `AE_LOG_FILE`: path to `logs/app.log`.
 - `AE_BACKEND_COMMAND`: override backend executable.
 - `AE_BACKEND_ARGS`: override backend arguments.

@@ -169,7 +169,16 @@ async def _run_migrations(database: AutomationDatabase) -> None:
             extra={"event": "migration_apply", "file": migration_file.name},
         )
         sql = migration_file.read_text(encoding="utf-8")
-        statements = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+        statements: list[str] = []
+        for raw_stmt in sql.split(";"):
+            lines = [
+                line
+                for line in raw_stmt.splitlines()
+                if line.strip() and not line.strip().startswith("--")
+            ]
+            stmt = "\n".join(lines).strip()
+            if stmt:
+                statements.append(stmt)
         async with database.connection() as conn:
             for stmt in statements:
                 try:

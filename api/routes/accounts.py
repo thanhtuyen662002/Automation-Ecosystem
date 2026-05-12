@@ -202,6 +202,12 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         },
     )
 
+    # Pre-initialize so outer scope is safe even if browser block exits early
+    profile: dict = {"avatar_url": "", "display_name": ""}
+    cookies: list = []
+    fingerprint: dict = {"width": 1280, "height": 720, "timezone": "America/New_York", "locale": "en-US"}
+    user_agent: str = ""
+
     try:
         from core.browser_context import create_connect_context, get_browser_data_dir
 
@@ -220,7 +226,15 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 deadline = asyncio.get_event_loop().time() + _LOGIN_TIMEOUT_SECONDS
                 logged_in = False
                 while asyncio.get_event_loop().time() < deadline:
-                    if cfg.success_url_fragment in page.url:
+                    try:
+                        current_url = page.url
+                    except Exception:
+                        # Browser window was closed by the user before login
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Browser was closed before login completed. Please try again.",
+                        )
+                    if cfg.success_url_fragment in current_url:
                         logged_in = True
                         break
                     await asyncio.sleep(1)
@@ -230,6 +244,63 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                         status_code=408,
                         detail=f"Login timed out after {_LOGIN_TIMEOUT_SECONDS}s. Please try again.",
                     )
+
+                # Extract profile info (avatar + display name) from the logged-in page
+                _JS_PROFILE: dict[str, str] = {
+                    "tiktok": """
+                        () => {
+                            // TikTok: profile in nav header
+                            const avatarEl =
+                                document.querySelector('[data-e2e="header-avatar"] img') ||
+                                document.querySelector('img[class*="ImgAvatar"]') ||
+                                document.querySelector('[data-e2e="nav-avatar"] img');
+                            const nameEl =
+                                document.querySelector('[data-e2e="user-title"]') ||
+                                document.querySelector('p[class*="UserTitle"]') ||
+                                document.querySelector('[data-e2e="nav-header-user-info"] span') ||
+                                document.querySelector('span[class*="UserName"]');
+                            return {
+                                avatar_url: avatarEl ? avatarEl.src : '',
+                                display_name: nameEl ? nameEl.textContent.trim() : ''
+                            };
+                        }
+                    """,
+                    "facebook": """
+                        () => {
+                            const avatarEl =
+                                document.querySelector('[data-testid="user-avatar"] img') ||
+                                document.querySelector('image[href]') ||
+                                document.querySelector('img[class*="ProfilePhoto"]') ||
+                                document.querySelector('[aria-label] img');
+                            const nameEl =
+                                document.querySelector('[data-testid="profile_name_in_profile_page"]') ||
+                                document.querySelector('h1[class*="title"]') ||
+                                document.querySelector('.profileName');
+                            return {
+                                avatar_url: avatarEl ? (avatarEl.src || avatarEl.getAttribute('href') || '') : '',
+                                display_name: nameEl ? nameEl.textContent.trim() : ''
+                            };
+                        }
+                    """,
+                }
+
+                profile = {"avatar_url": "", "display_name": ""}
+                js_script = _JS_PROFILE.get(platform, "")
+                if js_script:
+                    try:
+                        profile = await page.evaluate(js_script)
+                    except Exception as _exc:
+                        LOGGER.debug("profile_extract_skipped error=%s", _exc)
+
+                LOGGER.info(
+                    "account_profile_extracted",
+                    extra={
+                        "event": "account_profile_extracted",
+                        "account_id": account_id,
+                        "display_name": profile.get("display_name"),
+                        "has_avatar": bool(profile.get("avatar_url")),
+                    },
+                )
 
                 # Extract cookies + fingerprint from live browser
                 cookies = await context.cookies()
@@ -260,6 +331,18 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
 
         # Persist browser_data_dir
         await database.set_browser_data_dir(account_id, data_dir)
+
+        # Persist profile info (avatar + display_name)
+        if profile.get("avatar_url") or profile.get("display_name"):
+            await database.update_account_profile(
+                account_id,
+                avatar_url=profile.get("avatar_url") or None,
+                display_name=profile.get("display_name") or None,
+            )
+            # Re-fetch updated row
+            fresh = await database.get_account(account_id)
+            if fresh:
+                updated = fresh
 
         LOGGER.info(
             "account_connect_success",

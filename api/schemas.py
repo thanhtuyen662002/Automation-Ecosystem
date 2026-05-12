@@ -231,6 +231,15 @@ class AccountResponse(BaseModel):
     session_valid: bool
     last_login_at: str | None
     user_agent: str | None
+    # Profile (fetched after browser login)
+    avatar_url: str | None
+    display_name: str | None
+    # Risk tracking
+    risk_score: float
+    soft_ban_detected: bool
+    warmup_sessions_completed: int
+    failed_publish_count: int
+    captcha_hit_count: int
     created_at: str | None
     updated_at: str | None
 
@@ -248,6 +257,13 @@ class AccountResponse(BaseModel):
             session_valid=bool(row.get("session_valid", 0)),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
             user_agent=row.get("user_agent"),
+            avatar_url=row.get("avatar_url") or None,
+            display_name=row.get("display_name") or None,
+            risk_score=float(row.get("risk_score") or 0.0),
+            soft_ban_detected=bool(row.get("soft_ban_detected", 0)),
+            warmup_sessions_completed=int(row.get("warmup_sessions_completed") or 0),
+            failed_publish_count=int(row.get("failed_publish_count") or 0),
+            captcha_hit_count=int(row.get("captcha_hit_count") or 0),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
             updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
         )

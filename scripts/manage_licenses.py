@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import secrets
 import sys
@@ -42,13 +43,17 @@ def _get_client():
 def cmd_create(args: argparse.Namespace) -> None:
     sb = _get_client()
     key = "AE-" + secrets.token_hex(16).upper()
+    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     row: dict = {
         "license_key":  key,
+        "license_key_hash": key_hash,
+        "license_key_preview": key[:10] + "...",
         "label":        args.label,
         "role":         args.role,
         "max_accounts": args.max_accounts,
         "is_active":    True,
+        "status":       "active",
     }
     if args.days:
         row["expires_at"] = (datetime.now(UTC) + timedelta(days=args.days)).isoformat()
@@ -88,18 +93,41 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 def cmd_revoke(args: argparse.Namespace) -> None:
     sb = _get_client()
-    sb.table("licenses").update({"is_active": False}).eq("license_key", args.key).execute()
+    sb.table("licenses").update({"is_active": False, "status": "revoked"}).eq("license_key", args.key).execute()
+    sb.table("license_sessions").update({
+        "revoked_at": datetime.now(UTC).isoformat(),
+        "revoke_reason": "admin_revoked",
+    }).eq("license_id", _license_id(sb, args.key)).execute()
     print(f"[OK] License revoked: {args.key}")
 
 
 def cmd_reset_machine(args: argparse.Namespace) -> None:
     sb = _get_client()
+    license_id = _license_id(sb, args.key)
     sb.table("licenses").update({
         "machine_id":   None,
+        "machine_id_hash": None,
         "activated_at": None,
     }).eq("license_key", args.key).execute()
+    sb.table("license_devices").update({
+        "status": "revoked",
+        "revoked_at": datetime.now(UTC).isoformat(),
+        "revoke_reason": "admin_reset_machine",
+    }).eq("license_id", license_id).eq("status", "active").execute()
+    sb.table("license_sessions").update({
+        "revoked_at": datetime.now(UTC).isoformat(),
+        "revoke_reason": "admin_reset_machine",
+    }).eq("license_id", license_id).execute()
     print(f"[OK] Machine binding reset for: {args.key}")
     print("   User can now activate on a new machine.")
+
+
+def _license_id(sb, key: str) -> str:
+    result = sb.table("licenses").select("id").eq("license_key", key).maybe_single().execute()
+    if not result.data:
+        print(f"ERROR: license not found: {key}")
+        sys.exit(1)
+    return result.data["id"]
 
 
 def main() -> None:

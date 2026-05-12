@@ -3,14 +3,14 @@ api/security.py — Core security primitives.
 
 Responsibilities:
   - Server-side machine fingerprint (hash of IP + UA + AcceptLang)
-  - Signed session token (HMAC-SHA256, 60-min expiry)
+  - Signed local access token (HMAC-SHA256, short expiry)
   - Token verification + DB session lookup
   - Client IP extraction (X-Forwarded-For aware)
   - Session creation + revocation helpers
 
 SECURITY DESIGN:
   - machine_id is NEVER trusted from client; always re-computed from request headers
-  - Tokens are short-lived (60 min); each token is tracked in DB
+  - Tokens are short-lived; each token is tracked in DB
   - Revoking a license immediately invalidates all DB sessions (checked on every request)
   - No secrets are embedded in the frontend bundle
 """
@@ -31,10 +31,34 @@ from fastapi import Request
 LOGGER = logging.getLogger("api.security")
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
-_TOKEN_SECRET = os.getenv("LICENSE_SECRET", "automationecosystem-dev-secret-2025").encode()
+_LOCAL_TOKEN_SECRET_NAME = "local_access_token_secret"
+_TOKEN_SECRET_CACHE: bytes | None = None
 
-# Token lifetime: 60 minutes. Adjust via SESSION_TTL_MINUTES env var.
-_TOKEN_TTL_SECONDS = int(os.getenv("SESSION_TTL_MINUTES", "60")) * 60
+
+def _get_token_secret() -> bytes:
+    """
+    Return the local access-token signing secret.
+
+    Packaged builds must not ship LICENSE_SECRET in an env file. When it is
+    absent, generate a per-install secret and persist it through secure_store
+    (DPAPI on Windows).
+    """
+    global _TOKEN_SECRET_CACHE
+    if _TOKEN_SECRET_CACHE is not None:
+        return _TOKEN_SECRET_CACHE
+    explicit = os.getenv("LICENSE_SECRET", "").strip()
+    if explicit:
+        _TOKEN_SECRET_CACHE = explicit.encode()
+        return _TOKEN_SECRET_CACHE
+    from api.secure_store import get_or_create_secret
+
+    _TOKEN_SECRET_CACHE = get_or_create_secret(_LOCAL_TOKEN_SECRET_NAME, nbytes=48).encode()
+    return _TOKEN_SECRET_CACHE
+
+
+def _token_ttl_seconds() -> int:
+    raw = os.getenv("ACCESS_TOKEN_TTL_MINUTES", os.getenv("SESSION_TTL_MINUTES", "60"))
+    return max(1, int(raw)) * 60
 
 
 # ── Client IP ─────────────────────────────────────────────────────────────────
@@ -78,8 +102,8 @@ def compute_machine_fingerprint(request: Request) -> str:
     hw_id     = request.headers.get("X-Machine-ID", "")
 
     raw = f"{ip}|{ua}|{lang}|{hw_id}"
-    # HMAC-salt with token secret so clients cannot pre-compute fingerprints
-    fp = hmac.new(_TOKEN_SECRET, raw.encode(), hashlib.sha256).hexdigest()[:32]
+    # HMAC-salt with a per-install secret so clients cannot pre-compute fingerprints
+    fp = hmac.new(_get_token_secret(), raw.encode(), hashlib.sha256).hexdigest()[:32]
     LOGGER.debug("machine_fingerprint_computed", extra={"ip": ip, "fp": fp[:8] + "…"})
     return fp
 
@@ -102,7 +126,7 @@ def issue_token(
     Returns: (token_string, expires_at_unix_ts)
     """
     now = int(time.time())
-    exp = now + _TOKEN_TTL_SECONDS
+    exp = now + _token_ttl_seconds()
     payload = {
         "lid": license_key,
         "fp":  machine_fp,
@@ -113,7 +137,7 @@ def issue_token(
         "exp": exp,
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    sig = hmac.new(_TOKEN_SECRET, raw.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(_get_token_secret(), raw.encode(), hashlib.sha256).hexdigest()
     token_bytes = (raw + "." + sig).encode()
     return base64.urlsafe_b64encode(token_bytes).decode(), exp
 
@@ -128,7 +152,7 @@ def verify_token(token: str) -> dict | None:
     try:
         decoded = base64.urlsafe_b64decode(token.encode()).decode()
         raw, sig = decoded.rsplit(".", 1)
-        expected = hmac.new(_TOKEN_SECRET, raw.encode(), hashlib.sha256).hexdigest()
+        expected = hmac.new(_get_token_secret(), raw.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected):
             return None
         payload = json.loads(raw)

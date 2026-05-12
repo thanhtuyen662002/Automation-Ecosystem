@@ -7,6 +7,7 @@ import { useQueue, useApproveContent, useRejectContent } from '@/lib/hooks';
 import { useUIStore } from '@/lib/store';
 import { fmtCurrency } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { PlatformBadge } from '@/lib/platforms';
 
 type QueueItem = {
   content_id: string; platform: string; niche: string; mode: string;
@@ -149,7 +150,10 @@ export function ContentQueue() {
               <StatusChip status={item.status} />
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', flex: 1 }}>{item.hook.slice(0, 70)}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--success)', fontWeight: 600 }}>${item.expected_value.toFixed(2)}</span>
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{item.platform} · {item.niche}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                <PlatformBadge platform={item.platform} />
+                {item.niche}
+              </span>
             </div>
           ))}
         </div>
@@ -166,7 +170,10 @@ export function ContentQueue() {
             <div key={item.content_id} style={{ padding: '0.75rem 1rem', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: '4px solid var(--danger)', borderRadius: 'var(--radius)', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', opacity: 0.7 }}>
               <StatusChip status="rejected" />
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', flex: 1 }}>{item.hook.slice(0, 70)}</span>
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{item.platform} · {item.niche}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                <PlatformBadge platform={item.platform} />
+                {item.niche}
+              </span>
             </div>
           ))}
         </div>

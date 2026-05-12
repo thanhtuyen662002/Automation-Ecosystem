@@ -59,6 +59,16 @@ export function useClearSoftBan() {
   });
 }
 
+// Opens a real browser for manual login (long-running — up to 5 min).
+// Invalidates accounts list on success so avatar/display_name appears immediately.
+export function useConnectAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.connectAccount(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
+}
+
 // ── Fleet Health ──────────────────────────────────────────────────────────────
 export function useFleet() {
   return useQuery({

@@ -1096,7 +1096,11 @@ class AutomationDatabase:
         async with self.connection() as conn:
             result = await conn.execute(
                 "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                "session_valid, last_login_at, user_agent, created_at, updated_at "
+                "session_valid, last_login_at, user_agent, "
+                "avatar_url, display_name, "
+                "risk_score, soft_ban_detected, warmup_sessions_completed, "
+                "failed_publish_count, captcha_hit_count, "
+                "created_at, updated_at "
                 "FROM accounts ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             )
@@ -1134,7 +1138,11 @@ class AutomationDatabase:
         async with self.connection() as conn:
             result = await conn.execute(
                 "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                "session_valid, last_login_at, user_agent, created_at, updated_at "
+                "session_valid, last_login_at, user_agent, "
+                "avatar_url, display_name, "
+                "risk_score, soft_ban_detected, warmup_sessions_completed, "
+                "failed_publish_count, captcha_hit_count, "
+                "created_at, updated_at "
                 "FROM accounts WHERE id = ?",
                 (account_id,),
             )
@@ -1151,7 +1159,11 @@ class AutomationDatabase:
                 )
                 row = await (await conn.execute(
                     "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                    "session_valid, last_login_at, user_agent, created_at, updated_at "
+                    "session_valid, last_login_at, user_agent, "
+                    "avatar_url, display_name, "
+                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
+                    "failed_publish_count, captcha_hit_count, "
+                    "created_at, updated_at "
                     "FROM accounts WHERE id = ?",
                     (account_id,),
                 )).fetchone()
@@ -1220,7 +1232,46 @@ class AutomationDatabase:
                 row = await (await conn.execute(
                     "SELECT id, platform, account_handle, status, proxy_url, metadata, "
                     "session_valid, last_login_at, user_agent, "
+                    "avatar_url, display_name, "
+                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
+                    "failed_publish_count, captcha_hit_count, "
                     "viewport_width, viewport_height, timezone, locale, "
+                    "created_at, updated_at "
+                    "FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                await conn.execute("COMMIT")
+                return dict(row) if row else None
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
+    async def update_account_profile(
+        self,
+        account_id: str,
+        avatar_url: str | None = None,
+        display_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Save avatar URL and display name extracted after successful browser login."""
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await conn.execute(
+                    """
+                    UPDATE accounts
+                    SET avatar_url = COALESCE(?, avatar_url),
+                        display_name = COALESCE(?, display_name),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (avatar_url or None, display_name or None, account_id),
+                )
+                row = await (await conn.execute(
+                    "SELECT id, platform, account_handle, status, proxy_url, metadata, "
+                    "session_valid, last_login_at, user_agent, "
+                    "avatar_url, display_name, "
+                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
+                    "failed_publish_count, captcha_hit_count, "
                     "created_at, updated_at "
                     "FROM accounts WHERE id = ?",
                     (account_id,),

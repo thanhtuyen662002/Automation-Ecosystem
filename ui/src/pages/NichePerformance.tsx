@@ -7,6 +7,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import { useI18n } from '@/lib/i18n';
 import { useNiches, useUpsertNiche } from '@/lib/hooks';
 import { fmtCurrency, fmtPct, fmtScore, scoreColor, CHART_COLORS } from '@/lib/utils';
+import { PlatformBadge, PlatformSelect } from '@/lib/platforms';
 
 const DEFAULT_FORM = { niche: '', platform: 'tiktok', win_rate: 0.5, avg_views: 10000, avg_revenue: 10, posts_count: 0, growth_potential: 0.5 };
 
@@ -100,7 +101,7 @@ export function NichePerformance() {
                     <GlassIcon name="compass" size={18} />
                   </div>
                   <div style={{ fontWeight: 700, fontSize: '0.9375rem', textTransform: 'capitalize', flex: 1 }}>{n.niche}</div>
-                  <Badge status="info">{n.platform}</Badge>
+                  <PlatformBadge platform={n.platform} />
                   <span className="badge badge-primary">{fmtPct(n.budget_share ?? 0)}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -153,7 +154,7 @@ export function NichePerformance() {
                 {field === 'platform' ? t('niche.lbl_platform') : t('niche.lbl_niche')}
               </label>
               {field === 'platform'
-                ? <select className="select" value={form.platform} onChange={e => setForm(f => ({ ...f, platform: e.target.value }))}><option value="tiktok">TikTok</option><option value="facebook">Facebook</option></select>
+                ? <PlatformSelect value={form.platform} onChange={v => setForm(f => ({ ...f, platform: v }))} />
                 : <input className="input" value={form[field]} onChange={e => setForm(f => ({ ...f, [field]: e.target.value }))} />
               }
             </div>

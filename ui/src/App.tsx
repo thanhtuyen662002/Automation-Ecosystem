@@ -7,7 +7,7 @@ import { AppLayout }  from '@/components/AppLayout';
 import { Login }      from '@/pages/Login';
 import { useAuthStore } from '@/lib/store';
 import { I18nProvider } from '@/lib/i18n';
-import { setUnauthorizedHandler } from '@/lib/api';
+import { api, setUnauthorizedHandler, tokenStore } from '@/lib/api';
 
 // Pages
 import { ExecutiveDashboard } from '@/pages/ExecutiveDashboard';
@@ -57,9 +57,53 @@ function AuthSync() {
   return null;
 }
 
-// Auth gate — redirects to /login if not authenticated
+// AuthBootstrap — restores session on app startup via /auth/bootstrap.
+//
+// BUG FIX: Previously this re-ran whenever `isAuthenticated` changed, which
+// caused a race condition:
+//   1. User presses Login → POST /auth/login → Session A created, Token A returned
+//   2. Bootstrap (still in-flight) resolves → POST /auth/bootstrap → Session B
+//      created, Session A REVOKED
+//   3. Frontend sends Token A → 401 "Session expired"
+//
+// Fix: Run ONCE on mount (empty dep array). If the user is already
+// authenticated at mount time, mark bootstrap complete immediately.
+// If the user logs in manually while bootstrap is in-flight, the
+// `cancelled` flag discards the bootstrap result.
+function AuthBootstrap() {
+  const { isAuthenticated, login, setBootstrapComplete } = useAuthStore();
+
+  useEffect(() => {
+    // Already authenticated (persisted session rehydrated by zustand) — done.
+    if (isAuthenticated) {
+      setBootstrapComplete(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    api.bootstrap()
+      .then((res) => {
+        // Guard: user may have logged in manually while bootstrap was in-flight.
+        // Discard bootstrap result so we don't revoke their fresh session.
+        if (cancelled) return;
+        tokenStore.set(res.token);
+        login(res.token, res.user);
+      })
+      .catch(() => {
+        if (!cancelled) setBootstrapComplete(true);
+      });
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // ← intentionally empty: run ONCE on mount only
+
+  return null;
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, bootstrapComplete } = useAuthStore();
+  if (!bootstrapComplete) return null;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -71,6 +115,7 @@ export function App() {
         <BrowserRouter>
           {/* Register global 401 handler before any route renders */}
           <AuthSync />
+          <AuthBootstrap />
           <Routes>
             {/* Public */}
             <Route path="/login" element={<Login />} />

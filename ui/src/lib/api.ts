@@ -3,8 +3,9 @@
 // NO mock data. NO fallback. If API fails → throw → UI shows error state.
 //
 // SECURITY:
-//   - Tokens stored in sessionStorage (cleared on tab/window close)
-//   - Auto-logout on any 401 response (revoked session / expired token)
+//   - Only the short-lived local access token is stored in sessionStorage.
+//   - The remote license refresh token is owned by the local backend secure store.
+//   - On 401, the client asks the backend to refresh once before logging out.
 //   - machine_id NOT sent in request body — computed server-side
 //   - X-Machine-ID header passes Electron hardware UUID as a hint only
 
@@ -21,42 +22,88 @@ export const tokenStore = {
   // Primary: direct fast path; Fallback: zustand persist state (guards
   // against race where tokenStore.clear() ran before handler was set).
   get: (): string | null => {
-    const direct = localStorage.getItem(TOKEN_KEY);
+    const direct = sessionStorage.getItem(TOKEN_KEY);
     if (direct) return direct;
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      const raw = sessionStorage.getItem(STORE_KEY);
       if (raw) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const t: string | null = (JSON.parse(raw) as any)?.state?.token ?? null;
-        if (t) { localStorage.setItem(TOKEN_KEY, t); return t; }
+        if (t) { sessionStorage.setItem(TOKEN_KEY, t); return t; }
       }
     } catch { /* ignore parse errors */ }
     return null;
   },
-  set: (t: string)  => { localStorage.setItem(TOKEN_KEY, t); },
-  clear: ()         => { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(STORE_KEY); },
+  set: (t: string)  => { sessionStorage.setItem(TOKEN_KEY, t); },
+  clear: ()         => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(STORE_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(STORE_KEY);
+  },
 };
 
 // ── Auto-logout handler ────────────────────────────────────────────────────────────────
 let _onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) { _onUnauthorized = fn; }
 
-async function request<T>(path: string, opts?: RequestInit, adminSecret?: string): Promise<T> {
+let _refreshPromise: Promise<string | null> | null = null;
+let _bootstrapPromise: Promise<{ token: string; expires_in: number; user: any }> | null = null;
+
+function buildHeaders(adminSecret?: string): HeadersInit {
   const token = tokenStore.get();
   const machineId = getElectronMachineId();
+  return {
+    'Content-Type': 'application/json',
+    ...(token      ? { Authorization: `Bearer ${token}` } : {}),
+    ...(adminSecret ? { 'X-Admin-Secret': adminSecret }  : {}),
+    ...(machineId  ? { 'X-Machine-ID': machineId }       : {}),
+  };
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (!_refreshPromise) {
+    _refreshPromise = fetch(`${BASE}/api/v1/auth/refresh`, {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: '{}',
+    })
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data?.token) return null;
+        tokenStore.set(data.token);
+        return data.token as string;
+      })
+      .catch(() => null)
+      .finally(() => { _refreshPromise = null; });
+  }
+  return _refreshPromise;
+}
+
+async function request<T>(
+  path: string,
+  opts?: RequestInit,
+  adminSecret?: string,
+  retryAuth = true,
+): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token      ? { Authorization: `Bearer ${token}` } : {}),
-      ...(adminSecret ? { 'X-Admin-Secret': adminSecret }  : {}),
-      // Hint to backend for stronger machine binding (Electron only)
-      ...(machineId  ? { 'X-Machine-ID': machineId }       : {}),
-    },
     ...opts,
+    headers: {
+      ...buildHeaders(adminSecret),
+      ...(opts?.headers ?? {}),
+    },
   });
 
   // Auto-logout on 401 — token expired or session revoked
+  const isAuthEndpoint = path.startsWith('/api/v1/auth/');
   if (res.status === 401) {
+    if (retryAuth && !adminSecret && !isAuthEndpoint) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        return request<T>(path, opts, adminSecret, false);
+      }
+    }
     tokenStore.clear();
     _onUnauthorized?.();
     const body = await res.json().catch(() => ({}));
@@ -65,7 +112,7 @@ async function request<T>(path: string, opts?: RequestInit, adminSecret?: string
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.message ?? `API ${res.status}: ${path}`);
+    throw new Error(body?.message ?? body?.detail ?? `API ${res.status}: ${path}`);
   }
   return res.json();
 }
@@ -103,6 +150,10 @@ export const api = {
 
   clearSoftBan: (id: string) =>
     request<any>(`/api/v1/accounts/${id}/clear-soft-ban`, { method: 'POST', body: '{}' }),
+
+  // Opens a real browser window for manual login. Blocks until login complete (max 5 min).
+  connectAccount: (id: string) =>
+    request<any>(`/api/v1/accounts/${id}/connect`, { method: 'POST', body: '{}' }),
 
   // ── Content Queue ──────────────────────────────────────────────────────────
   // status=all → returns all (pending + approved + rejected)
@@ -187,8 +238,25 @@ export const api = {
       body: JSON.stringify({ account, license_key: licenseKey }),
     }),
 
+  bootstrap: () => {
+    if (!_bootstrapPromise) {
+      _bootstrapPromise = request<{ token: string; expires_in: number; user: any }>(
+        '/api/v1/auth/bootstrap',
+        { method: 'POST', body: '{}' },
+        undefined,
+        false,
+      ).finally(() => { _bootstrapPromise = null; });
+    }
+    return _bootstrapPromise;
+  },
+
   refresh: () =>
-    request<{ token: string; expires_in: number }>('/api/v1/auth/refresh', { method: 'POST', body: '{}' }),
+    request<{ token: string; expires_in: number }>(
+      '/api/v1/auth/refresh',
+      { method: 'POST', body: '{}' },
+      undefined,
+      false,
+    ),
 
   logout: () =>
     request<{ logged_out: boolean }>('/api/v1/auth/logout', { method: 'POST', body: '{}' }).catch(() => ({ logged_out: true })),

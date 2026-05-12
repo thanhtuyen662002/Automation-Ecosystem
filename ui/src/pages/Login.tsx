@@ -2,11 +2,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/lib/store';
-import { tokenStore } from '@/lib/api';
+import { api, tokenStore } from '@/lib/api';
 import { Shield, LogIn } from 'lucide-react';
-
-// Empty string = relative URL → goes through Vite proxy → no CORS
-const API = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_API_BASE ?? '';
 
 const TESTIMONIALS = [
   {
@@ -35,8 +32,12 @@ export function Login() {
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState('');
   const [activeTest, setActiveTest] = useState(0);
-  const { login } = useAuthStore();
+  const { login, isAuthenticated } = useAuthStore();
   const navigate  = useNavigate();
+
+  React.useEffect(() => {
+    if (isAuthenticated) navigate('/dashboard/command', { replace: true });
+  }, [isAuthenticated, navigate]);
 
   // Rotate testimonials
   React.useEffect(() => {
@@ -53,21 +54,9 @@ export function Login() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API}/api/v1/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account:     account.replace(/^@/, '').trim(),
-          license_key: licenseKey.trim(),
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail ?? `Lỗi ${res.status}`);
-      }
-      const data = await res.json();
+      const data = await api.login(account.replace(/^@/, '').trim(), licenseKey.trim());
       // Backend returns { token, user } — NOT access_token
-      const token = data.token ?? data.access_token;
+      const token = data.token;
       if (!token) throw new Error('Server không trả về token. Kiểm tra lại thông tin đăng nhập.');
       // Synchronously write to sessionStorage BEFORE navigate so React Query
       // requests fired on mount already have the Authorization header.

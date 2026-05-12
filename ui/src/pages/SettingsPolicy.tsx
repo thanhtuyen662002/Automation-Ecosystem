@@ -4,6 +4,7 @@ import { PageHeader, Badge, SlideOver, EmptyState, ConfirmDialog } from '@/compo
 import { GlassIcon } from '@/components/Icons';
 import { useI18n } from '@/lib/i18n';
 import { usePolicyRules, useCreatePolicyRule, useTogglePolicyRule, useDeletePolicyRule } from '@/lib/hooks';
+import { PlatformBadge, PlatformSelect } from '@/lib/platforms';
 
 interface Rule {
   id: string; account_id: string | null; platform: string | null;
@@ -103,7 +104,7 @@ export function SettingsPolicy() {
                           </div>
                         </div>
                       </td>
-                      <td><Badge status="info">{r.platform ?? '—'}</Badge></td>
+                      <td>{r.platform ? <PlatformBadge platform={r.platform} /> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                       <td><span className="mono" style={{ fontSize: '0.75rem' }}>{r.action_type}</span></td>
                       <td style={{ textAlign: 'center', fontWeight: 600 }}>{r.max_actions ?? '—'}</td>
                       <td style={{ color: 'var(--text-secondary)' }}>{fmtWindow(r.window_seconds)}</td>
@@ -132,10 +133,7 @@ export function SettingsPolicy() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_platform')}</label>
-            <select className="select" value={form.platform} onChange={e => setForm(f => ({ ...f, platform: e.target.value }))}>
-              <option value="tiktok">TikTok</option>
-              <option value="facebook">Facebook</option>
-            </select>
+            <PlatformSelect value={form.platform} onChange={v => setForm(f => ({ ...f, platform: v }))} />
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('policy.col_action')}</label>

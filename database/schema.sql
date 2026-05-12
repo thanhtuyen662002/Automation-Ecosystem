@@ -294,6 +294,25 @@ CREATE TABLE license_events (
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Local desktop auth cache. The refresh token itself is stored via DPAPI/keyring,
+-- not in this table. This table only keeps non-secret session metadata and the
+-- offline grace deadline.
+CREATE TABLE local_auth_cache (
+    id TEXT PRIMARY KEY CHECK (id = 'default'),
+    license_key TEXT NOT NULL,
+    activation_id TEXT,
+    account TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'operator',
+    max_accounts INTEGER NOT NULL DEFAULT 10,
+    expires_at DATETIME,
+    last_validated_at DATETIME NOT NULL,
+    offline_grace_until DATETIME NOT NULL,
+    refresh_token_key TEXT NOT NULL DEFAULT 'license_refresh_token',
+    app_config TEXT NOT NULL DEFAULT '{}',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Indexes
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -441,3 +460,6 @@ CREATE INDEX license_events_key_idx
 
 CREATE INDEX license_events_type_idx
     ON license_events (event_type, created_at DESC);
+
+CREATE INDEX local_auth_cache_grace_idx
+    ON local_auth_cache (offline_grace_until);

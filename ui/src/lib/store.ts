@@ -91,8 +91,10 @@ interface AuthStore {
   token: string | null;
   user: AuthUser | null;
   isAuthenticated: boolean;
+  bootstrapComplete: boolean;
   login: (token: string, user: AuthUser) => void;
   logout: () => void;
+  setBootstrapComplete: (value: boolean) => void;
 }
 
 import { createJSONStorage } from 'zustand/middleware';
@@ -103,16 +105,20 @@ export const useAuthStore = create<AuthStore>()(
       token: null,
       user: null,
       isAuthenticated: false,
+      bootstrapComplete: false,
       login: (token, user) => {
         // Save token to dedicated key so tokenStore.get() always works
         sessionStorage.setItem('auth_token', token);
-        set({ token, user, isAuthenticated: true });
+        set({ token, user, isAuthenticated: true, bootstrapComplete: true });
       },
       logout: () => {
         sessionStorage.removeItem('auth_token');
         localStorage.removeItem('auth_token');
-        set({ token: null, user: null, isAuthenticated: false });
+        sessionStorage.removeItem('ae-auth');
+        localStorage.removeItem('ae-auth');
+        set({ token: null, user: null, isAuthenticated: false, bootstrapComplete: true });
       },
+      setBootstrapComplete: (bootstrapComplete) => set({ bootstrapComplete }),
     }),
     {
       name: 'ae-auth',

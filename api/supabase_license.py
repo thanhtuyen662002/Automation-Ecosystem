@@ -1,162 +1,195 @@
 """
-api/supabase_license.py
-────────────────────────────────────────────────────────────────────────────
-License validation via Supabase (cloud-managed key store).
+Supabase license authority client.
 
-Active when SUPABASE_URL + SUPABASE_SERVICE_KEY are set in environment.
-Falls back silently to local SQLite when these vars are missing.
-
-Required Supabase table (create in dashboard → SQL Editor):
-
-    CREATE TABLE licenses (
-      id               uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
-      license_key      text        UNIQUE NOT NULL,
-      label            text,
-      role             text        DEFAULT 'operator',
-      max_accounts     integer     DEFAULT 10,
-      is_active        boolean     DEFAULT true,
-      expires_at       timestamptz,
-      machine_id       text,
-      last_ip          text,
-      last_seen_at     timestamptz,
-      activated_at     timestamptz,
-      flagged          boolean     DEFAULT false,
-      flagged_reason   text,
-      created_at       timestamptz DEFAULT now()
-    );
+Packaged desktop builds must not use SUPABASE_SERVICE_KEY locally. This module
+talks to a Supabase Edge Function that owns service-role access and returns a
+rotating refresh token. The local FastAPI backend then issues its own short
+local access token for requests on 127.0.0.1.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
+
 
 LOGGER = logging.getLogger("api.supabase_license")
 
-# ── Lazy singleton ─────────────────────────────────────────────────────────────
-_client: Any = None
+
+class LicenseAuthorityUnavailable(RuntimeError):
+    pass
 
 
-def _get_supabase() -> Any:
-    """Return (and lazily create) the synchronous Supabase client."""
-    global _client
-    if _client is not None:
-        return _client
+@dataclass(frozen=True)
+class LicenseAuthorityResult:
+    license_key: str
+    account: str
+    role: str
+    max_accounts: int
+    activation_id: str | None
+    refresh_token: str | None
+    refresh_expires_at: str | None
+    expires_at: str | None
+    offline_grace_until: str | None
+    app_config: dict[str, Any]
 
-    try:
-        from supabase import create_client  # type: ignore[import]
-    except ImportError as exc:
-        raise RuntimeError(
-            "supabase package not installed. Run: pip install 'supabase>=2.3.0'"
-        ) from exc
+    @classmethod
+    def from_response(cls, data: dict[str, Any], *, fallback_account: str = "") -> "LicenseAuthorityResult":
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        return cls(
+            license_key=str(data.get("license_key") or user.get("license_key") or ""),
+            account=str(data.get("account") or user.get("account") or fallback_account),
+            role=str(data.get("role") or user.get("role") or "operator"),
+            max_accounts=int(data.get("max_accounts") or user.get("max_accounts") or 10),
+            activation_id=data.get("activation_id"),
+            refresh_token=data.get("refresh_token"),
+            refresh_expires_at=data.get("refresh_expires_at"),
+            expires_at=data.get("expires_at"),
+            offline_grace_until=data.get("offline_grace_until"),
+            app_config=data.get("app_config") if isinstance(data.get("app_config"), dict) else {},
+        )
 
-    url = os.environ.get("SUPABASE_URL", "").strip()
-    key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
-    if not url or not key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
 
-    _client = create_client(url, key)
-    return _client
+def _authority_url() -> str:
+    explicit = os.getenv("LICENSE_AUTHORITY_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    if not supabase_url:
+        return ""
+    function_name = os.getenv("LICENSE_AUTH_FUNCTION", "license-auth").strip() or "license-auth"
+    return f"{supabase_url}/functions/v1/{function_name}"
 
 
-def is_supabase_configured() -> bool:
-    """Return True if both Supabase env vars are present and non-empty."""
-    return bool(
-        os.environ.get("SUPABASE_URL", "").strip()
-        and os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+def _public_key() -> str:
+    return (
+        os.getenv("LICENSE_AUTHORITY_PUBLIC_KEY", "").strip()
+        or os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+        or os.getenv("SUPABASE_ANON_KEY", "").strip()
+        or os.getenv("SUPABASE_KEY", "").strip()
+        # Prefer the anon key above. Service key is used as last-resort fallback
+        # because this backend runs server-side (never exposed to the browser).
+        or os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     )
 
 
-# ── Public async interface ─────────────────────────────────────────────────────
-
-async def validate_and_bind(key: str, machine_fp: str, ip: str) -> dict[str, Any]:
-    """
-    Validate a license key against Supabase and bind the machine fingerprint
-    on first activation. Subsequent logins verify the fingerprint matches.
-
-    Returns the full license row dict on success.
-    Raises HTTPException on any validation failure.
-    """
-    loop = asyncio.get_event_loop()
-
-    # All Supabase calls are synchronous; run in thread pool to stay async
-    row = await loop.run_in_executor(None, _fetch_license, key)
-
-    if row is None:
-        raise HTTPException(401, "License key không hợp lệ.")
-
-    if not row.get("is_active", False):
-        raise HTTPException(403, "License key đã bị thu hồi.")
-
-    expires_at = row.get("expires_at")
-    if expires_at:
-        try:
-            # Supabase returns ISO-8601 with trailing 'Z' or '+00:00'
-            expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if datetime.now(UTC) > expires:
-                raise HTTPException(403, "License key đã hết hạn.")
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # malformed date — skip expiry check
-
-    if row.get("flagged"):
-        reason = row.get("flagged_reason") or "hoạt động bất thường"
-        raise HTTPException(403, f"License bị khóa: {reason}.")
-
-    bound_fp = row.get("machine_id")
-    if not bound_fp:
-        # First activation — bind this machine's fingerprint
-        await loop.run_in_executor(None, _bind_machine, key, machine_fp, ip)
-        LOGGER.info(
-            "license_activated_supabase",
-            extra={"event": "license_activated_supabase", "key": key[:8], "fp": machine_fp[:8]},
-        )
-    else:
-        if bound_fp != machine_fp:
-            LOGGER.warning(
-                "license_machine_mismatch_supabase",
-                extra={"event": "license_machine_mismatch_supabase", "key": key[:8]},
-            )
-            raise HTTPException(
-                401,
-                "License key này đã được kích hoạt trên một thiết bị khác. "
-                "Liên hệ quản trị viên để reset machine_id nếu cần.",
-            )
-        # Update last_seen metadata
-        await loop.run_in_executor(None, _update_last_seen, key, ip)
-
-    return row
+def is_supabase_configured() -> bool:
+    """Return True when a remote license authority endpoint is configured."""
+    flag = os.getenv("LICENSE_AUTHORITY_ENABLED", "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if os.getenv("LICENSE_AUTHORITY_URL", "").strip():
+        return True
+    return bool(os.getenv("SUPABASE_URL", "").strip() and _public_key())
 
 
-# ── Synchronous DB helpers (executed in thread pool) ──────────────────────────
-
-def _fetch_license(key: str) -> dict[str, Any] | None:
-    sb = _get_supabase()
-    result = sb.table("licenses").select("*").eq("license_key", key).execute()
-    if result.data:
-        return result.data[0]
-    return None
-
-
-def _bind_machine(key: str, machine_fp: str, ip: str) -> None:
-    sb = _get_supabase()
-    now_iso = datetime.now(UTC).isoformat()
-    sb.table("licenses").update({
-        "machine_id":    machine_fp,
-        "activated_at":  now_iso,
-        "last_ip":       ip,
-        "last_seen_at":  now_iso,
-    }).eq("license_key", key).execute()
+def _headers() -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Automation-Ecosystem-Desktop",
+    }
+    public_key = _public_key()
+    if public_key:
+        headers["apikey"] = public_key
+        headers["Authorization"] = f"Bearer {public_key}"
+    return headers
 
 
-def _update_last_seen(key: str, ip: str) -> None:
-    sb = _get_supabase()
-    sb.table("licenses").update({
-        "last_ip":      ip,
-        "last_seen_at": datetime.now(UTC).isoformat(),
-    }).eq("license_key", key).execute()
+async def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    base = _authority_url()
+    if not base:
+        raise LicenseAuthorityUnavailable("License authority is not configured")
+    url = f"{base}/{path.lstrip('/')}"
+    timeout = httpx.Timeout(float(os.getenv("LICENSE_AUTHORITY_TIMEOUT_SECONDS", "15")))
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=_headers(), json=payload)
+    except httpx.RequestError as exc:
+        raise LicenseAuthorityUnavailable(str(exc)) from exc
+
+    try:
+        body = response.json() if response.content else {}
+    except ValueError:
+        body = {}
+    if 500 <= response.status_code <= 599:
+        message = body.get("message") if isinstance(body, dict) else None
+        raise LicenseAuthorityUnavailable(message or f"License authority HTTP {response.status_code}")
+    if response.status_code >= 400:
+        message = (body.get("message") or body.get("error")) if isinstance(body, dict) else None
+        raise HTTPException(response.status_code, message or "License authority rejected the request")
+    if not isinstance(body, dict):
+        raise LicenseAuthorityUnavailable("License authority returned an invalid response")
+    return body
+
+
+async def activate(
+    *,
+    account: str,
+    license_key: str,
+    machine_fp: str,
+    ip: str,
+) -> LicenseAuthorityResult:
+    data = await _post(
+        "activate",
+        {
+            "account": account,
+            "license_key": license_key,
+            "machine_id": machine_fp,
+            "ip": ip,
+            "app_version": os.getenv("APP_VERSION", "0.1.0"),
+        },
+    )
+    result = LicenseAuthorityResult.from_response(data, fallback_account=account)
+    if not result.license_key or not result.refresh_token:
+        raise LicenseAuthorityUnavailable("License authority activation response is missing required fields")
+    return result
+
+
+async def refresh(
+    *,
+    refresh_token: str,
+    machine_fp: str,
+    activation_id: str | None = None,
+) -> LicenseAuthorityResult:
+    data = await _post(
+        "refresh",
+        {
+            "refresh_token": refresh_token,
+            "activation_id": activation_id,
+            "machine_id": machine_fp,
+            "app_version": os.getenv("APP_VERSION", "0.1.0"),
+        },
+    )
+    result = LicenseAuthorityResult.from_response(data)
+    if not result.license_key:
+        raise LicenseAuthorityUnavailable("License authority refresh response is missing license_key")
+    return result
+
+
+async def heartbeat(
+    *,
+    refresh_token: str,
+    machine_fp: str,
+    activation_id: str | None = None,
+) -> None:
+    await _post(
+        "heartbeat",
+        {
+            "refresh_token": refresh_token,
+            "activation_id": activation_id,
+            "machine_id": machine_fp,
+            "app_version": os.getenv("APP_VERSION", "0.1.0"),
+        },
+    )
+
+
+async def logout(refresh_token: str) -> None:
+    try:
+        await _post("logout", {"refresh_token": refresh_token})
+    except LicenseAuthorityUnavailable as exc:
+        LOGGER.info("license_authority_logout_skipped", extra={"event": "license_authority_logout_skipped", "error": str(exc)})

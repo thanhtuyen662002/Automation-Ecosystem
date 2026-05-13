@@ -23,6 +23,7 @@ from typing import Any
 
 from workers.handlers.tiktok._base import (
     check_already_processed,
+    get_ytdlp_path,
     random_jitter,
     resolve_parent_result,
     run_subprocess,
@@ -33,7 +34,9 @@ LOGGER = logging.getLogger("workers.handlers.tiktok.search_tiktok")
 _DEFAULT_MAX_RESULTS = int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50"))
 
 # yt-dlp extractor targets
-_SEARCH_PREFIXES = ["ttsearch", "ytsearch"]  # try TikTok search first, fall back to YouTube
+# NOTE: ttsearch (TikTok native search) is no longer supported by yt-dlp.
+# Fall back to ytsearch (YouTube) which reliably returns video metadata.
+_SEARCH_PREFIXES = ["ytsearch"]
 
 
 async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -102,8 +105,10 @@ async def _search_keyword(keyword: str, max_results: int) -> list[dict[str, Any]
     for prefix in _SEARCH_PREFIXES:
         query = f"{prefix}{max_results}:{keyword}"
         try:
+            ytdlp = get_ytdlp_path()
             stdout, _ = await run_subprocess(
-                "yt-dlp",
+                ytdlp,
+                "--flat-playlist",
                 "--dump-json",
                 "--no-playlist",
                 "--skip-download",

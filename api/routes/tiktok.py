@@ -31,7 +31,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 
 from api.dependencies import DatabaseDependency
-from api.schemas import JobResponse, TikTokPipelineRequest
+from api.schemas import AccountResponse, JobResponse, TikTokPipelineRequest
 
 LOGGER = logging.getLogger("api.tiktok")
 
@@ -45,6 +45,7 @@ _KEY_DOWNLOAD = "tiktok_download"
 _KEY_REMAKE = "tiktok_remake"
 _KEY_CONTENT = "tiktok_content"
 _KEY_COMMENT = "tiktok_comment"
+_KEY_PUBLISH = "tiktok_publish"
 
 
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
@@ -172,6 +173,40 @@ async def create_tiktok_pipeline(
         },
     ]
 
+    if request.auto_publish:
+        if request.account_id is None:
+            raise HTTPException(status_code=422, detail="account_id is required when auto_publish is enabled")
+        account = await database.get_account(str(request.account_id))
+        if account is None:
+            raise HTTPException(status_code=404, detail="Publish account not found")
+        account_response = AccountResponse.from_row(account)
+        if account_response.platform.lower() != "tiktok":
+            raise HTTPException(status_code=422, detail="Publish account must be a TikTok account")
+        if not account_response.can_publish:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Publish account is not ready",
+                    "readiness_errors": account_response.readiness_errors,
+                },
+            )
+        tasks.append(
+            {
+                "task_type": "publish_tiktok",
+                "task_key": _KEY_PUBLISH,
+                "account_id": str(request.account_id),
+                "action_type": "publish_tiktok",
+                "payload": {
+                    "account_id": str(request.account_id),
+                    "video_path": {"from_task": _KEY_REMAKE, "field": "output_path"},
+                    "caption": {"from_task": _KEY_CONTENT, "field": "caption"},
+                },
+                "metadata": {"pipeline": "tiktok", "step": 8, "requires_artifact_approval": True},
+                "max_retries": 5,
+                "depends_on": [_KEY_REMAKE, _KEY_CONTENT],
+            }
+        )
+
     try:
         detail = await database.create_job(
             workflow_name="tiktok_content_pipeline",
@@ -181,12 +216,16 @@ async def create_tiktok_pipeline(
             input_data={
                 "product_url": request.product_url,
                 "product_image_path": request.product_image_path,
+                "account_id": str(request.account_id) if request.account_id else None,
+                "auto_publish": request.auto_publish,
             },
             metadata={
                 "pipeline": "tiktok",
                 "top_n": top_n,
                 "min_views": min_views,
                 "min_likes": min_likes,
+                "auto_publish": request.auto_publish,
+                "account_id": str(request.account_id) if request.account_id else None,
             },
         )
     except Exception as exc:

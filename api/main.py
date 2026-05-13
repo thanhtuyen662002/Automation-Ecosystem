@@ -35,6 +35,10 @@ LOGGER = logging.getLogger("api")
 # Only ALTER TABLE is issued if the column is missing — safe on every startup.
 _PENDING_MIGRATIONS: list[tuple[str, str, str]] = [
     ("tasks", "task_key", "TEXT NOT NULL DEFAULT ''"),
+    ("accounts", "avatar_url", "TEXT"),
+    ("accounts", "display_name", "TEXT"),
+    ("accounts", "profile_url", "TEXT"),
+    ("accounts", "external_user_id", "TEXT"),
 ]
 
 
@@ -63,6 +67,18 @@ async def _run_auto_migrations(database: "AutomationDatabase") -> None:
                 LOGGER.info(
                     "auto_migration_done",
                     extra={"event": "auto_migration_done", "table": table, "column": column},
+                )
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS accounts_profile_url_idx ON accounts (profile_url) WHERE profile_url IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS artifacts_storage_uri_uidx ON artifacts (storage_uri)",
+        ):
+            try:
+                await conn.execute(stmt)
+                await conn.commit()
+            except Exception as exc:
+                LOGGER.warning(
+                    "auto_migration_index_failed",
+                    extra={"event": "auto_migration_index_failed", "statement": stmt, "error": str(exc)},
                 )
 
 

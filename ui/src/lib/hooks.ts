@@ -29,8 +29,17 @@ export function useAccounts() {
 export function useCreateAccount() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { platform: string; account_handle: string; proxy_url?: string }) =>
+    mutationFn: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string }) =>
       api.createAccount(payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
+}
+
+export function useUpdateAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null } }) =>
+      api.updateAccount(id, payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
   });
 }
@@ -292,7 +301,7 @@ export function useJobs() {
 export function useLaunchPipeline() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { product_url: string; top_n?: number; priority?: number }) =>
+    mutationFn: (payload: { product_url: string; top_n?: number; priority?: number; account_id?: string; auto_publish?: boolean }) =>
       api.launchPipeline(payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
   });

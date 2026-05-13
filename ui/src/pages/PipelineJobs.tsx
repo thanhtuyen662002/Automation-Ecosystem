@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import { PageHeader, Badge, SlideOver, EmptyState, Skeleton } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useJobs, useLaunchPipeline } from '@/lib/hooks';
+import { useAccounts, useJobs, useLaunchPipeline } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 
@@ -15,6 +15,7 @@ const DAG_STEPS = [
   { key: 'tiktok_remake',               label: 'Remake Video',    step: 5 },
   { key: 'tiktok_content',              label: 'Gen Caption',     step: 6 },
   { key: 'tiktok_comment',              label: 'Gen Comment',     step: 7 },
+  { key: 'tiktok_publish',              label: 'Publish',         step: 8 },
 ];
 
 // Real per-task status from API (task_key → status string from DB)
@@ -54,12 +55,16 @@ function StepDot({ status, step }: { status: string; step: number }) {
 export function PipelineJobs() {
   const { t } = useI18n();
   const { data: jobs = [], isLoading, error, refetch } = useJobs();
+  const { data: accounts = [] } = useAccounts();
   const launch = useLaunchPipeline();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showLaunch, setShowLaunch] = useState(false);
   const [productUrl, setProductUrl] = useState('');
   const [topN, setTopN] = useState(5);
+  const [autoPublish, setAutoPublish] = useState(false);
+  const [accountId, setAccountId] = useState('');
   const [launchError, setLaunchError] = useState('');
+  const publishAccounts = accounts.filter((account: any) => account.platform === 'tiktok');
 
   function toggle(id: string) {
     setExpanded(prev => {
@@ -71,10 +76,21 @@ export function PipelineJobs() {
 
   async function handleLaunch() {
     setLaunchError('');
+    if (autoPublish && !accountId) {
+      setLaunchError(t('job.select_account_error'));
+      return;
+    }
     try {
-      await launch.mutateAsync({ product_url: productUrl, top_n: topN });
+      await launch.mutateAsync({
+        product_url: productUrl,
+        top_n: topN,
+        auto_publish: autoPublish,
+        account_id: autoPublish ? accountId : undefined,
+      });
       setShowLaunch(false);
       setProductUrl('');
+      setAutoPublish(false);
+      setAccountId('');
     } catch (e: any) {
       setLaunchError(e.message ?? 'Failed to launch pipeline');
     }
@@ -116,6 +132,11 @@ export function PipelineJobs() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {jobs.map((job: any) => {
             const isExpanded = expanded.has(job.id);
+            const taskStatuses: Record<string, string> = job.task_statuses ?? {};
+            const hasTaskStatuses = Object.keys(taskStatuses).length > 0;
+            const visibleSteps = hasTaskStatuses
+              ? DAG_STEPS.filter(step => step.key in taskStatuses)
+              : DAG_STEPS.filter(step => step.key !== 'tiktok_publish' || job.metadata?.auto_publish);
             return (
               <div key={job.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {/* Job Header */}
@@ -168,7 +189,7 @@ export function PipelineJobs() {
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      {DAG_STEPS.map((s, i) => {
+                      {visibleSteps.map((s, i) => {
                         const stepStatus = statusForStep(job, s.key, i);
                         const lineColor = stepStatus === 'SUCCESS' ? 'var(--success)' : 'var(--border)';
                         return (
@@ -177,7 +198,7 @@ export function PipelineJobs() {
                               <StepDot status={stepStatus} step={s.step} />
                               <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '0.2rem', maxWidth: 50 }}>{s.label}</div>
                             </div>
-                            {i < DAG_STEPS.length - 1 && (
+                            {i < visibleSteps.length - 1 && (
                               <div style={{ flex: 1, height: 2, background: lineColor, minWidth: 12, maxWidth: 40, marginBottom: '1rem' }} />
                             )}
                           </React.Fragment>
@@ -188,6 +209,7 @@ export function PipelineJobs() {
                       {job.input?.product_url && <span>{t('job.lbl_url')} {job.input.product_url}</span>}
                       {job.metadata?.top_n !== undefined && <span>{t('job.lbl_topn')} {job.metadata.top_n}</span>}
                       {job.metadata?.min_views !== undefined && <span>{t('job.lbl_min_views')} {(job.metadata.min_views / 1000).toFixed(0)}K</span>}
+                      {job.metadata?.auto_publish && <span>{t('job.lbl_publish_account')} {job.metadata.account_id ?? '—'}</span>}
                       {job.started_at && <span>{t('job.lbl_started')} {fmtRelative(new Date(job.started_at).getTime() / 1000)}</span>}
                       {job.completed_at && <span>{t('job.lbl_done')} {fmtRelative(new Date(job.completed_at).getTime() / 1000)}</span>}
                     </div>
@@ -216,6 +238,25 @@ export function PipelineJobs() {
             </label>
             <input type="range" min={1} max={20} step={1} value={topN} onChange={e => setTopN(+e.target.value)} style={{ width: '100%', accentColor: 'var(--primary)' }} />
           </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+            <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
+            {t('job.auto_publish')}
+          </label>
+          {autoPublish && (
+            <div>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
+                {t('job.lbl_account')}
+              </label>
+              <select className="input" value={accountId} onChange={e => setAccountId(e.target.value)}>
+                <option value="">{t('job.select_account')}</option>
+                {publishAccounts.map((account: any) => (
+                  <option key={account.id} value={account.id} disabled={!account.can_publish}>
+                    {account.display_name || account.account_handle} {account.can_publish ? '' : `(${t('job.account_not_ready')})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {launchError && (
             <div style={{ padding: '0.5rem 0.75rem', background: 'var(--danger-muted)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <GlassIcon name="warning" size={13} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />

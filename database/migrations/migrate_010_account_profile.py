@@ -1,5 +1,5 @@
 """
-Migration 010 — Add avatar_url and display_name to accounts table.
+Migration 010 — Add account profile fields to accounts table.
 
 Run from the project root:
     python database/migrations/migrate_010_account_profile.py
@@ -39,17 +39,20 @@ async def migrate() -> None:
         cur = await conn.execute("PRAGMA table_info(accounts)")
         cols = {row[1] for row in await cur.fetchall()}
 
-        if "avatar_url" not in cols:
-            await conn.execute("ALTER TABLE accounts ADD COLUMN avatar_url TEXT")
-            print("  + avatar_url column added")
-        else:
-            print("  ~ avatar_url already exists")
+        for column in ("avatar_url", "display_name", "profile_url", "external_user_id"):
+            if column not in cols:
+                await conn.execute(f"ALTER TABLE accounts ADD COLUMN {column} TEXT")
+                print(f"  + {column} column added")
+            else:
+                print(f"  ~ {column} already exists")
 
-        if "display_name" not in cols:
-            await conn.execute("ALTER TABLE accounts ADD COLUMN display_name TEXT")
-            print("  + display_name column added")
-        else:
-            print("  ~ display_name already exists")
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS accounts_profile_url_idx
+                ON accounts (profile_url)
+                WHERE profile_url IS NOT NULL
+            """
+        )
 
         await conn.commit()
         print("Migration 010 complete.")

@@ -1,19 +1,20 @@
 // ── Accounts Page ────────────────────────────────────────────────────────────
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { PageHeader, Badge, SlideOver, StatRow, ConfirmDialog, EmptyState } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useAccounts, useCreateAccount, useDeleteAccount, useMarkSoftBan, useClearSoftBan, useConnectAccount } from '@/lib/hooks';
+import { useAccounts, useCreateAccount, useDeleteAccount, useMarkSoftBan, useClearSoftBan, useConnectAccount, useUpdateAccount } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { PLATFORMS, PlatformBadge, PlatformSelect } from '@/lib/platforms';
 
 interface Account {
   id: string; platform: string; account_handle: string;
+  profile_url?: string | null; external_user_id?: string | null;
   status: string; proxy_url: string | null; session_valid: boolean;
   last_login_at: string | null; avatar_url: string | null; display_name: string | null;
   risk_score?: number; soft_ban_detected?: boolean;
   warmup_sessions_completed?: number; failed_publish_count?: number;
-  captcha_hit_count?: number; created_at?: string;
+  captcha_hit_count?: number; can_publish?: boolean; readiness_errors?: string[]; created_at?: string;
 }
 
 
@@ -89,6 +90,7 @@ export function Accounts() {
   const { t } = useI18n();
   const { data: accounts = [], isLoading, error } = useAccounts();
   const createAccount  = useCreateAccount();
+  const updateAccount  = useUpdateAccount();
   const deleteAccount  = useDeleteAccount();
   const markSoftBan    = useMarkSoftBan();
   const clearSoftBan   = useClearSoftBan();
@@ -99,9 +101,18 @@ export function Accounts() {
   const [showAdd,       setShowAdd]       = useState(false);
   const [newHandle,     setNewHandle]     = useState('');
   const [newPlatform,   setNewPlatform]   = useState('tiktok');
+  const [newProfileUrl, setNewProfileUrl] = useState('');
   const [newProxy,      setNewProxy]      = useState('');
+  const [editProfileUrl, setEditProfileUrl] = useState('');
+  const [editProxy, setEditProxy] = useState('');
   const [connectingId,  setConnectingId]  = useState<string | null>(null);
   const [connectError,  setConnectError]  = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    setEditProfileUrl(selected.profile_url ?? '');
+    setEditProxy(selected.proxy_url ?? '');
+  }, [selected]);
 
   async function handleAddAndConnect() {
     if (!newHandle.trim()) return;
@@ -109,11 +120,29 @@ export function Accounts() {
       const created = await createAccount.mutateAsync({
         platform: newPlatform,
         account_handle: newHandle.trim(),
+        profile_url: newProfileUrl.trim() || undefined,
         proxy_url: newProxy.trim() || undefined,
       });
-      setShowAdd(false); setNewHandle(''); setNewProxy('');
+      setShowAdd(false); setNewHandle(''); setNewProfileUrl(''); setNewProxy('');
       await handleConnect(created.id, created.platform);
     } catch { /* shown via createAccount.isError */ }
+  }
+
+  async function handleSaveAccount() {
+    if (!selected) return;
+    setConnectError(null);
+    try {
+      const updated = await updateAccount.mutateAsync({
+        id: selected.id,
+        payload: {
+          profile_url: editProfileUrl.trim() || null,
+          proxy_url: editProxy.trim() || null,
+        },
+      });
+      setSelected(updated);
+    } catch (e: unknown) {
+      setConnectError((e as Error)?.message ?? t('acc.connect_failed'));
+    }
   }
 
   async function handleConnect(id: string, platform: string) {
@@ -275,6 +304,9 @@ export function Accounts() {
 
             <div className="card-elevated" style={{ marginBottom: '1rem' }}>
               <StatRow label={t('acc.detail_id')} value={<span className="mono" style={{ fontSize: '0.7rem' }}>{selected.id}</span>} mono />
+              <StatRow label={t('acc.detail_profile')} value={selected.profile_url
+                ? <a href={selected.profile_url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>{selected.profile_url}</a>
+                : '—'} />
               <StatRow label={t('acc.detail_proxy')} value={selected.proxy_url ?? '—'} />
               <StatRow label={t('acc.detail_risk')} value={`${Math.round((selected.risk_score ?? 0) * 100)}%`} />
               <StatRow label={t('acc.detail_warmup')} value={selected.warmup_sessions_completed ?? 0} />
@@ -286,6 +318,24 @@ export function Accounts() {
               <StatRow label={t('acc.detail_captcha')} value={selected.captcha_hit_count ?? 0} />
               <StatRow label={t('acc.detail_last_login')} value={selected.last_login_at ? fmtRelative(new Date(selected.last_login_at).getTime() / 1000) : '—'} />
               <StatRow label={t('acc.detail_created')} value={selected.created_at ? new Date(selected.created_at).toLocaleDateString() : '—'} />
+            </div>
+
+            <div className="card-elevated" style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+                  {t('acc.lbl_profile_url')}
+                </label>
+                <input className="input" value={editProfileUrl} placeholder="https://www.tiktok.com/@username" onChange={e => setEditProfileUrl(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+                  {t('acc.lbl_proxy')}
+                </label>
+                <input className="input" value={editProxy} placeholder={t('acc.ph_proxy')} onChange={e => setEditProxy(e.target.value)} />
+              </div>
+              <button className="btn btn-secondary" onClick={handleSaveAccount} disabled={updateAccount.isPending}>
+                <GlassIcon name="save" size={14} /> {updateAccount.isPending ? t('acc.saving') : t('acc.save_account')}
+              </button>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
@@ -349,6 +399,14 @@ export function Accounts() {
 
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+              {t('acc.lbl_profile_url')} <span style={{ fontWeight: 400 }}>{t('acc.lbl_profile_hint')}</span>
+            </label>
+            <input className="input" placeholder="https://www.tiktok.com/@username" value={newProfileUrl}
+              onChange={e => setNewProfileUrl(e.target.value)} />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
               {t('acc.lbl_proxy')} <span style={{ fontWeight: 400 }}>{t('acc.lbl_proxy_hint')}</span>
             </label>
             <input className="input" placeholder={t('acc.ph_proxy')} value={newProxy}
@@ -371,7 +429,7 @@ export function Accounts() {
 
           <button className="btn btn-primary" style={{ width: '100%', padding: '0.75rem' }}
             onClick={handleAddAndConnect}
-            disabled={(!newHandle.trim() && !newPlatform) || createAccount.isPending}>
+            disabled={!newHandle.trim() || createAccount.isPending}>
             {createAccount.isPending ? t('acc.creating') : t('acc.connect_login')}
           </button>
 

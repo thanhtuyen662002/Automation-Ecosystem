@@ -27,6 +27,8 @@ CREATE TABLE accounts (
     id          TEXT PRIMARY KEY,
     platform    TEXT NOT NULL,
     account_handle TEXT NOT NULL,
+    profile_url TEXT,
+    external_user_id TEXT,
     status      TEXT NOT NULL DEFAULT 'healthy'
         CHECK (status IN ('healthy', 'limited', 'banned', 'disabled')),
     proxy_url   TEXT,
@@ -59,6 +61,8 @@ CREATE TABLE accounts (
     proxy_validated_at         DATETIME,                -- When proxy was last validated
     warmup_sessions_completed  INTEGER NOT NULL DEFAULT 0,  -- View sessions before first publish
     soft_ban_detected          INTEGER NOT NULL DEFAULT 0,  -- 1 = shadow-ban signals detected
+    avatar_url                 TEXT,
+    display_name               TEXT,
 
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -372,6 +376,10 @@ CREATE INDEX accounts_platform_status_idx
 CREATE INDEX accounts_last_used_idx
     ON accounts (platform, last_used_at);
 
+CREATE INDEX accounts_profile_url_idx
+    ON accounts (profile_url)
+    WHERE profile_url IS NOT NULL;
+
 -- policy_rules
 CREATE INDEX policy_rules_lookup_idx
     ON policy_rules (account_id, platform, action_type, enabled);
@@ -392,6 +400,9 @@ CREATE INDEX artifacts_job_idx
 
 CREATE INDEX artifacts_task_idx
     ON artifacts (task_id, created_at DESC);
+
+CREATE UNIQUE INDEX artifacts_storage_uri_uidx
+    ON artifacts (storage_uri);
 
 CREATE INDEX artifacts_execution_idx
     ON artifacts (execution_id, created_at DESC);

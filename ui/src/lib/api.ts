@@ -18,18 +18,59 @@ const BASE = import.meta.env.VITE_API_BASE ?? '';
 // ── Token storage (localStorage — persists across tabs + browser restarts) ────
 const TOKEN_KEY = 'auth_token';
 const STORE_KEY = 'ae-auth'; // zustand persist key - fallback source
+
+function decodeTokenPayload(token: string): { exp?: number } | null {
+  try {
+    const normalized = token.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = atob(padded);
+    const rawPayload = decoded.slice(0, decoded.lastIndexOf('.'));
+    return JSON.parse(rawPayload);
+  } catch {
+    return null;
+  }
+}
+
+function isExpiredToken(token: string): boolean {
+  const payload = decodeTokenPayload(token);
+  if (!payload?.exp) return false;
+  return Math.floor(Date.now() / 1000) >= payload.exp - 10;
+}
+
 export const tokenStore = {
+  hasStoredToken: (): boolean => {
+    if (sessionStorage.getItem(TOKEN_KEY)) return true;
+    try {
+      const raw = sessionStorage.getItem(STORE_KEY);
+      return Boolean(raw && (JSON.parse(raw) as any)?.state?.token);
+    } catch {
+      return false;
+    }
+  },
   // Primary: direct fast path; Fallback: zustand persist state (guards
   // against race where tokenStore.clear() ran before handler was set).
   get: (): string | null => {
     const direct = sessionStorage.getItem(TOKEN_KEY);
-    if (direct) return direct;
+    if (direct) {
+      if (isExpiredToken(direct)) {
+        tokenStore.clear();
+        return null;
+      }
+      return direct;
+    }
     try {
       const raw = sessionStorage.getItem(STORE_KEY);
       if (raw) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const t: string | null = (JSON.parse(raw) as any)?.state?.token ?? null;
-        if (t) { sessionStorage.setItem(TOKEN_KEY, t); return t; }
+        if (t) {
+          if (isExpiredToken(t)) {
+            tokenStore.clear();
+            return null;
+          }
+          sessionStorage.setItem(TOKEN_KEY, t);
+          return t;
+        }
       }
     } catch { /* ignore parse errors */ }
     return null;
@@ -87,6 +128,8 @@ async function request<T>(
   adminSecret?: string,
   retryAuth = true,
 ): Promise<T> {
+  const requestToken = tokenStore.get();
+  const hadStoredToken = tokenStore.hasStoredToken();
   const res = await fetch(`${BASE}${path}`, {
     ...opts,
     headers: {
@@ -98,21 +141,31 @@ async function request<T>(
   // Auto-logout on 401 — token expired or session revoked
   const isAuthEndpoint = path.startsWith('/api/v1/auth/');
   if (res.status === 401) {
-    if (retryAuth && !adminSecret && !isAuthEndpoint) {
+    const currentToken = tokenStore.get();
+    const isStaleRequest = Boolean(requestToken && currentToken && currentToken !== requestToken);
+    if (retryAuth && !adminSecret && !isAuthEndpoint && hadStoredToken && requestToken && !isStaleRequest) {
       const refreshed = await refreshAccessToken();
       if (refreshed) {
         return request<T>(path, opts, adminSecret, false);
       }
     }
-    tokenStore.clear();
-    _onUnauthorized?.();
     const body = await res.json().catch(() => ({}));
+    if (!isAuthEndpoint && !isStaleRequest) {
+      tokenStore.clear();
+      _onUnauthorized?.();
+    }
     throw new Error(body?.message ?? 'Session expired. Please log in again.');
   }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.message ?? body?.detail ?? `API ${res.status}: ${path}`);
+    const detail = body?.message ?? body?.detail ?? body?.error;
+    const message = typeof detail === 'string'
+      ? detail
+      : detail
+        ? JSON.stringify(detail)
+        : `API ${res.status}: ${path}`;
+    throw new Error(message);
   }
   return res.json();
 }
@@ -139,8 +192,11 @@ export const api = {
   accounts: () =>
     request<{ items: any[] }>('/api/v1/accounts').then(r => r.items),
 
-  createAccount: (payload: { platform: string; account_handle: string; proxy_url?: string }) =>
+  createAccount: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string }) =>
     request<any>('/api/v1/accounts', { method: 'POST', body: JSON.stringify(payload) }),
+
+  updateAccount: (id: string, payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null }) =>
+    request<any>(`/api/v1/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
   deleteAccount: (id: string) =>
     request<void>(`/api/v1/accounts/${id}`, { method: 'DELETE' }),
@@ -296,7 +352,7 @@ export const api = {
 
   // POST /jobs — launch TikTok pipeline via tiktok.router (POST /pipelines/tiktok)
   // The tiktok router provides the high-level pipeline endpoint.
-  launchPipeline: (payload: { product_url: string; top_n?: number; priority?: number }) =>
+  launchPipeline: (payload: { product_url: string; top_n?: number; priority?: number; account_id?: string; auto_publish?: boolean }) =>
     request<any>('/pipelines/tiktok', { method: 'POST', body: JSON.stringify(payload) }),
 
   // ── Artifacts ─────────────────────────────────────────────────────────────

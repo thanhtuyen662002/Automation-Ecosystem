@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import signal
 import sys
@@ -291,25 +292,35 @@ class WorkerRuntime:
                             )
                         artifact = await self.database.get_artifact_by_storage_uri(str(video_path))
                         if artifact is None:
-                            raise FatalDependencyError(
+                            raise RetryableDependencyError(
                                 json.dumps({
                                     "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
                                     "video_path": str(video_path),
                                     "artifact_status": "not_found",
-                                    "message": f"Artifact '{video_path}' not found in database; cannot publish.",
+                                    "message": f"Artifact '{video_path}' is not registered yet; publish will retry.",
                                 })
                             )
-                        if artifact["status"] != "approved":
+                        if artifact["status"] == "rejected":
                             raise FatalDependencyError(
                                 json.dumps({
                                     "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
                                     "video_path": str(video_path),
                                     "artifact_status": artifact["status"],
-                                    "message": f"Artifact '{video_path}' is not approved (status: {artifact['status']}).",
+                                    "message": f"Artifact '{video_path}' was rejected and cannot be published.",
+                                })
+                            )
+                        if artifact["status"] != "approved":
+                            raise RetryableDependencyError(
+                                json.dumps({
+                                    "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
+                                    "video_path": str(video_path),
+                                    "artifact_status": artifact["status"],
+                                    "message": f"Artifact '{video_path}' is waiting for approval.",
                                 })
                             )
                 result = await _call_handler(handler, resolved_payload)
             safe_result = _ensure_json_object(result)
+            await self._register_result_artifacts(acquired_task, safe_result)
             await self.database.mark_task_success(
                 acquired_task.task.id,
                 acquired_task.execution.id,
@@ -369,6 +380,40 @@ class WorkerRuntime:
         finally:
             heartbeat_stop.set()
             await _await_safely(heartbeat_task)
+
+    async def _register_result_artifacts(self, acquired_task: AcquiredTask, result: dict[str, Any]) -> None:
+        output_path = result.get("output_path")
+        if not output_path or acquired_task.task.task_type not in {"tiktok.remake_video", "media"}:
+            return
+        storage_uri = str(output_path)
+        file_path = Path(storage_uri)
+        size_bytes = file_path.stat().st_size if file_path.exists() else None
+        mime_type = mimetypes.guess_type(storage_uri)[0] or "video/mp4"
+        artifact = await self.database.create_artifact(
+            artifact_type="video",
+            storage_uri=storage_uri,
+            job_id=str(acquired_task.task.job_id),
+            task_id=str(acquired_task.task.id),
+            execution_id=str(acquired_task.execution.id),
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            metadata={
+                "task_type": acquired_task.task.task_type,
+                "source": "worker_runtime",
+                "requires_approval": True,
+            },
+            status="pending",
+        )
+        log_event(
+            "artifact_registered",
+            self.settings.worker_id,
+            task_id=acquired_task.task.id,
+            execution_id=acquired_task.execution.id,
+            task_type=acquired_task.task.task_type,
+            artifact_id=artifact["id"],
+            status=artifact["status"],
+            storage_uri=storage_uri,
+        )
 
     async def _resolve_payload(self, payload: Any, job_id: str, cache: dict) -> dict:
         needed_keys = set()

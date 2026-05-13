@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback as _traceback
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
 from api.dependencies import DatabaseDependency
-from api.schemas import AccountCreateRequest, AccountHealthRequest, AccountResponse, SessionStatusResponse
+from api.schemas import (
+    AccountCreateRequest,
+    AccountHealthRequest,
+    AccountResponse,
+    AccountUpdateRequest,
+    SessionStatusResponse,
+)
 
 
 LOGGER = logging.getLogger("api.accounts")
@@ -39,9 +46,12 @@ async def create_account(
     request: AccountCreateRequest,
     database: DatabaseDependency,
 ) -> AccountResponse:
+    profile_url = request.profile_url or _derive_profile_url(request.platform, request.account_handle)
     row = await database.create_account(
         platform=request.platform,
         account_handle=request.account_handle,
+        profile_url=profile_url,
+        external_user_id=request.external_user_id,
         proxy_url=request.proxy_url,
         metadata=request.metadata,
     )
@@ -50,6 +60,41 @@ async def create_account(
         extra={"event": "account_created", "account_id": row["id"], "platform": row["platform"]},
     )
     return AccountResponse.from_row(row)
+
+
+@router.patch("/{account_id}", response_model=AccountResponse)
+async def update_account(
+    account_id: str,
+    request: AccountUpdateRequest,
+    database: DatabaseDependency,
+) -> AccountResponse:
+    existing = await database.get_account(account_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    update_fields = request.model_dump(exclude_unset=True)
+    if "profile_url" not in update_fields and "account_handle" in update_fields:
+        update_fields["profile_url"] = _derive_profile_url(
+            existing["platform"],
+            str(update_fields["account_handle"]),
+        )
+    updated = await database.update_account_fields(account_id, update_fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    LOGGER.info(
+        "account_updated",
+        extra={"event": "account_updated", "account_id": account_id, "fields": sorted(update_fields)},
+    )
+    return AccountResponse.from_row(updated)
+
+
+@router.put("/{account_id}", response_model=AccountResponse)
+async def replace_account(
+    account_id: str,
+    request: AccountUpdateRequest,
+    database: DatabaseDependency,
+) -> AccountResponse:
+    return await update_account(account_id, request, database)
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -191,6 +236,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         raise HTTPException(status_code=422, detail=str(exc))
 
     proxy_url: str | None = row.get("proxy_url") or None
+    configured_profile_url: str | None = row.get("profile_url") or _derive_profile_url(platform, row["account_handle"])
 
     LOGGER.info(
         "account_connect_start",
@@ -215,17 +261,18 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             async with create_connect_context(pw, account_id, proxy_url=proxy_url) as (context, page):
 
                 user_agent = await page.evaluate("navigator.userAgent")
-                await page.goto(cfg.login_url)
+                await page.goto(cfg.login_url, wait_until="domcontentloaded", timeout=60000)
 
                 LOGGER.info(
                     "account_connect_browser_open",
                     extra={"event": "account_connect_browser_open", "url": cfg.login_url},
                 )
 
-                # Poll for successful login (max 5 minutes)
-                deadline = asyncio.get_event_loop().time() + _LOGIN_TIMEOUT_SECONDS
+                # Poll for successful login (max 5 minutes). Do not rely on a single
+                # redirect URL; platforms frequently vary post-login destinations.
+                deadline = asyncio.get_running_loop().time() + _LOGIN_TIMEOUT_SECONDS
                 logged_in = False
-                while asyncio.get_event_loop().time() < deadline:
+                while asyncio.get_running_loop().time() < deadline:
                     try:
                         current_url = page.url
                     except Exception:
@@ -234,7 +281,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                             status_code=400,
                             detail="Browser was closed before login completed. Please try again.",
                         )
-                    if cfg.success_url_fragment in current_url:
+                    if await _looks_logged_in(page, context, platform, cfg.success_url_fragment):
                         logged_in = True
                         break
                     await asyncio.sleep(1)
@@ -245,7 +292,21 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                         detail=f"Login timed out after {_LOGIN_TIMEOUT_SECONDS}s. Please try again.",
                     )
 
-                # Extract profile info (avatar + display name) from the logged-in page
+                if configured_profile_url:
+                    try:
+                        await page.goto(configured_profile_url, wait_until="domcontentloaded", timeout=30000)
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "account_profile_navigation_failed",
+                            extra={
+                                "event": "account_profile_navigation_failed",
+                                "account_id": account_id,
+                                "profile_url": configured_profile_url,
+                                "error": str(exc),
+                            },
+                        )
+
+                # Extract profile info from the logged-in page.
                 _JS_PROFILE: dict[str, str] = {
                     "tiktok": """
                         () => {
@@ -261,7 +322,9 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                                 document.querySelector('span[class*="UserName"]');
                             return {
                                 avatar_url: avatarEl ? avatarEl.src : '',
-                                display_name: nameEl ? nameEl.textContent.trim() : ''
+                                display_name: nameEl ? nameEl.textContent.trim() : '',
+                                profile_url: location.href.includes('/@') ? location.href.split('?')[0] : '',
+                                account_handle: (location.pathname.match(/@([^/?]+)/) || [])[1] || ''
                             };
                         }
                     """,
@@ -278,7 +341,9 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                                 document.querySelector('.profileName');
                             return {
                                 avatar_url: avatarEl ? (avatarEl.src || avatarEl.getAttribute('href') || '') : '',
-                                display_name: nameEl ? nameEl.textContent.trim() : ''
+                                display_name: nameEl ? nameEl.textContent.trim() : '',
+                                profile_url: location.href.split('?')[0],
+                                account_handle: ''
                             };
                         }
                     """,
@@ -333,11 +398,13 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         await database.set_browser_data_dir(account_id, data_dir)
 
         # Persist profile info (avatar + display_name)
-        if profile.get("avatar_url") or profile.get("display_name"):
+        if profile.get("avatar_url") or profile.get("display_name") or profile.get("profile_url") or configured_profile_url:
             await database.update_account_profile(
                 account_id,
                 avatar_url=profile.get("avatar_url") or None,
                 display_name=profile.get("display_name") or None,
+                profile_url=profile.get("profile_url") or configured_profile_url,
+                account_handle=profile.get("account_handle") or None,
             )
             # Re-fetch updated row
             fresh = await database.get_account(account_id)
@@ -360,9 +427,90 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
     except HTTPException:
         raise
     except Exception as exc:
-        LOGGER.exception(
-            "account_connect_error",
+        tb = _traceback.format_exc()
+        LOGGER.error(
+            "account_connect_error: type=%s str=%r\n%s",
+            type(exc).__name__, str(exc), tb,
             extra={"event": "account_connect_error", "account_id": account_id, "error": str(exc)},
         )
-        raise HTTPException(status_code=500, detail=f"Browser session failed: {exc}")
+        raise _connect_error_to_http(exc) from exc
+
+
+def _derive_profile_url(platform: str, account_handle: str | None) -> str | None:
+    handle = (account_handle or "").strip()
+    if not handle:
+        return None
+    if handle.startswith("http://") or handle.startswith("https://"):
+        return handle
+    handle = handle.lstrip("@").strip("/")
+    if not handle:
+        return None
+    platform_key = platform.lower()
+    if platform_key == "tiktok":
+        return f"https://www.tiktok.com/@{handle}"
+    if platform_key == "youtube":
+        return f"https://www.youtube.com/@{handle}"
+    if platform_key == "facebook":
+        return f"https://www.facebook.com/{handle}"
+    return None
+
+
+async def _looks_logged_in(page, context, platform: str, success_url_fragment: str) -> bool:
+    from core.platform_config import is_login_page
+
+    current_url = page.url or ""
+    if success_url_fragment and success_url_fragment in current_url and not is_login_page(current_url, platform):
+        return True
+    cookies = await context.cookies()
+    cookie_names = {str(cookie.get("name", "")).lower() for cookie in cookies}
+    platform_key = platform.lower()
+    auth_cookie_names = {
+        "tiktok": {"sessionid", "sid_guard", "uid_tt", "passport_csrf_token"},
+        "facebook": {"c_user", "xs", "fr"},
+        "youtube": {"sid", "hsid", "ssid", "sapisisid", "apisid"},
+    }
+    has_auth_cookie = bool(cookie_names & auth_cookie_names.get(platform_key, set()))
+    if has_auth_cookie and not is_login_page(current_url, platform):
+        return True
+    if platform_key == "tiktok":
+        try:
+            avatar = page.locator('[data-e2e="header-avatar"], [data-e2e="nav-avatar"]').first
+            return await avatar.is_visible(timeout=500)
+        except Exception:
+            return False
+    return False
+
+
+def _connect_error_to_http(exc: Exception) -> HTTPException:
+    message = str(exc)
+    exc_type = type(exc).__name__
+    lowered = message.lower()
+    if "executable doesn't exist" in lowered or "playwright install" in lowered:
+        return HTTPException(
+            status_code=503,
+            detail="Chromium browser runtime is not installed. Run: python -m playwright install chromium",
+        )
+    if "target page, context or browser has been closed" in lowered or "browser has been closed" in lowered:
+        return HTTPException(
+            status_code=400,
+            detail="Browser was closed before login completed. Please try again.",
+        )
+    if "timeout" in lowered:
+        return HTTPException(
+            status_code=408,
+            detail="Browser login page did not load before timeout. Check network/proxy and try again.",
+        )
+    if "err_proxy" in lowered or "proxy" in lowered:
+        return HTTPException(
+            status_code=502,
+            detail=f"Proxy connection failed while opening the login browser: {message}",
+        )
+    if "err_internet_disconnected" in lowered or "err_name_not_resolved" in lowered or "err_connection" in lowered:
+        return HTTPException(
+            status_code=502,
+            detail=f"Network error while opening the login browser: {message}",
+        )
+    # Fallback: include exception type in response for easier debugging
+    detail = f"Browser session failed [{exc_type}]: {message}" if message else f"Browser session failed [{exc_type}] — check backend logs for traceback"
+    return HTTPException(status_code=500, detail=detail)
 

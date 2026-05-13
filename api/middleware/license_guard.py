@@ -57,6 +57,10 @@ class LicenseGuard(BaseHTTPMiddleware):
         # Extract Bearer token
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
+            LOGGER.warning(
+                "auth_rejected",
+                extra={"event": "auth_rejected", "reason": "missing_bearer", "path": path},
+            )
             return JSONResponse(
                 status_code=401,
                 content={"error": "Unauthorized", "message": "Authentication required."},
@@ -67,6 +71,10 @@ class LicenseGuard(BaseHTTPMiddleware):
         # Step 1: Verify token signature + expiry (no DB hit)
         payload = verify_token(token)
         if payload is None:
+            LOGGER.warning(
+                "auth_rejected",
+                extra={"event": "auth_rejected", "reason": "invalid_or_expired_token", "path": path},
+            )
             return JSONResponse(
                 status_code=401,
                 content={"error": "Unauthorized", "message": "Token invalid or expired."},
@@ -82,6 +90,16 @@ class LicenseGuard(BaseHTTPMiddleware):
 
         session = await lookup_session(db, token)
         if session is None:
+            LOGGER.warning(
+                "auth_rejected",
+                extra={
+                    "event": "auth_rejected",
+                    "reason": "session_not_found_or_revoked",
+                    "path": path,
+                    "license_key": payload.get("lid"),
+                    "session_id": payload.get("sid"),
+                },
+            )
             return JSONResponse(
                 status_code=401,
                 content={"error": "Unauthorized", "message": "Session expired or revoked. Please log in again."},

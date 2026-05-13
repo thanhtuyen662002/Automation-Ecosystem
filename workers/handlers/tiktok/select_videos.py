@@ -149,7 +149,10 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         if not v.get("url", ""):
             continue
-        if er < min_engagement_rate:
+        # Only apply ER filter when we have actual likes data.
+        # When likes=0 the source (e.g. yt-dlp --flat-playlist) may not return
+        # like_count, so we treat the ER as unknown and let the video pass.
+        if likes > 0 and er < min_engagement_rate:
             continue
 
         days_old = _calculate_days_old(v.get("upload_date", ""))

@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import random
+import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,32 @@ def random_seed() -> int:
     seed = ts_ms ^ rand_part
     LOGGER.debug("random_seed_generated", extra={"event": "random_seed_generated", "seed": seed})
     return seed
+
+
+# ── yt-dlp binary resolution ─────────────────────────────────────────────────
+
+def get_ytdlp_path() -> str:
+    """
+    Resolve the absolute path to the yt-dlp binary.
+
+    Search order:
+    1. Same directory as the running Python executable (venv Scripts/bin).
+    2. System PATH via shutil.which.
+
+    Raises FileNotFoundError if yt-dlp cannot be located.
+    """
+    scripts_dir = Path(sys.executable).parent
+    for name in ("yt-dlp.exe", "yt-dlp"):
+        candidate = scripts_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which("yt-dlp")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "yt-dlp not found. Install with: pip install yt-dlp  "
+        f"(looked in {scripts_dir} and PATH)"
+    )
 
 
 # ── Subprocess helpers ────────────────────────────────────────────────────────

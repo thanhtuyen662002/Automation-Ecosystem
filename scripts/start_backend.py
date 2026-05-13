@@ -8,8 +8,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# NOTE: WindowsSelectorEventLoopPolicy intentionally NOT set here.
+# Playwright on Windows requires ProactorEventLoop (the asyncio default on Windows)
+# for browser subprocess IPC. Setting WindowsSelectorEventLoopPolicy causes
+# Playwright's launch_persistent_context to fail silently with an empty exception.
 
 import uvicorn
 from pythonjsonlogger import jsonlogger
@@ -74,6 +76,7 @@ class BackendSettings:
 
 async def main() -> None:
     settings = BackendSettings.load()
+    _configure_playwright_runtime()
     print(f"DEBUG: DATABASE_URL={os.environ.get('DATABASE_URL')}")
     configure_logging(settings.log_path)
     os.environ["API_HOST"] = settings.host
@@ -219,6 +222,14 @@ def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
+
+
+def _configure_playwright_runtime() -> None:
+    if not getattr(sys, "frozen", False) or not hasattr(sys, "_MEIPASS"):
+        return
+    bundled_browsers = Path(sys._MEIPASS) / "ms-playwright"
+    if bundled_browsers.exists():
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(bundled_browsers))
 
 
 def _get_appdata_dir() -> Path:

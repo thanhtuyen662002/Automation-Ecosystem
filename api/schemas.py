@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -185,6 +186,14 @@ class TikTokPipelineRequest(BaseModel):
 
     # Content generation
     comment_count: int = Field(default=3, ge=2, le=5, description="Number of comments to generate.")
+    account_id: UUID | None = Field(
+        default=None,
+        description="Account used by the optional publish_tiktok task.",
+    )
+    auto_publish: bool = Field(
+        default=False,
+        description="Append a publish_tiktok task after video and caption generation.",
+    )
 
     # Job metadata
     job_key: str | None = Field(
@@ -198,6 +207,8 @@ class TikTokPipelineRequest(BaseModel):
     def _require_product_source(self) -> "TikTokPipelineRequest":
         if not self.product_url and not self.product_image_path:
             raise ValueError("At least one of 'product_url' or 'product_image_path' must be provided.")
+        if self.auto_publish and self.account_id is None:
+            raise ValueError("'account_id' is required when 'auto_publish' is true.")
         return self
 
 
@@ -206,8 +217,25 @@ class TikTokPipelineRequest(BaseModel):
 class AccountCreateRequest(BaseModel):
     platform: str = Field(min_length=1)
     account_handle: str = Field(min_length=1)
+    profile_url: str | None = None
+    external_user_id: str | None = None
     proxy_url: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountUpdateRequest(BaseModel):
+    account_handle: str | None = Field(default=None, min_length=1)
+    profile_url: str | None = None
+    external_user_id: str | None = None
+    proxy_url: str | None = None
+    metadata: dict[str, Any] | None = None
+    status: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_status(self) -> "AccountUpdateRequest":
+        if self.status is not None and self.status not in {"healthy", "limited", "banned", "disabled"}:
+            raise ValueError("status must be one of: healthy, limited, banned, disabled")
+        return self
 
 
 class AccountHealthRequest(BaseModel):
@@ -224,6 +252,8 @@ class AccountResponse(BaseModel):
     id: str
     platform: str
     account_handle: str
+    profile_url: str | None
+    external_user_id: str | None
     status: str
     proxy_url: str | None
     metadata: dict[str, Any]
@@ -240,6 +270,8 @@ class AccountResponse(BaseModel):
     warmup_sessions_completed: int
     failed_publish_count: int
     captcha_hit_count: int
+    can_publish: bool = False
+    readiness_errors: list[str] = Field(default_factory=list)
     created_at: str | None
     updated_at: str | None
 
@@ -247,13 +279,32 @@ class AccountResponse(BaseModel):
 
     @classmethod
     def from_row(cls, row: dict) -> "AccountResponse":
+        metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        readiness_errors: list[str] = []
+        if row.get("status") != "healthy":
+            readiness_errors.append("account_not_healthy")
+        if not bool(row.get("session_valid", 0)):
+            readiness_errors.append("session_not_connected")
+        if not row.get("proxy_url"):
+            readiness_errors.append("proxy_missing")
+        if bool(row.get("soft_ban_detected", 0)):
+            readiness_errors.append("soft_ban_detected")
         return cls(
             id=row["id"],
             platform=row["platform"],
             account_handle=row["account_handle"],
+            profile_url=row.get("profile_url") or None,
+            external_user_id=row.get("external_user_id") or None,
             status=row["status"],
             proxy_url=row.get("proxy_url"),
-            metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+            metadata=metadata,
             session_valid=bool(row.get("session_valid", 0)),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
             user_agent=row.get("user_agent"),
@@ -264,6 +315,8 @@ class AccountResponse(BaseModel):
             warmup_sessions_completed=int(row.get("warmup_sessions_completed") or 0),
             failed_publish_count=int(row.get("failed_publish_count") or 0),
             captcha_hit_count=int(row.get("captcha_hit_count") or 0),
+            can_publish=len(readiness_errors) == 0,
+            readiness_errors=readiness_errors,
             created_at=str(row["created_at"]) if row.get("created_at") else None,
             updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
         )

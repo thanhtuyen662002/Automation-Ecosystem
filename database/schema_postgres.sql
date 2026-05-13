@@ -32,12 +32,16 @@ CREATE TABLE IF NOT EXISTS accounts (
     id              TEXT PRIMARY KEY,
     platform        TEXT NOT NULL,
     account_handle  TEXT NOT NULL,
+    profile_url     TEXT,
+    external_user_id TEXT,
     status          TEXT NOT NULL DEFAULT 'healthy'
                         CHECK (status IN ('healthy', 'limited', 'banned', 'disabled')),
     proxy_url       TEXT,
     rate_limit_config JSONB NOT NULL DEFAULT '{}',
     metadata        JSONB NOT NULL DEFAULT '{}',
     last_used_at    TIMESTAMPTZ,
+    avatar_url      TEXT,
+    display_name    TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (platform, account_handle)
@@ -222,6 +226,10 @@ CREATE INDEX IF NOT EXISTS accounts_platform_status_idx
 CREATE INDEX IF NOT EXISTS accounts_last_used_idx
     ON accounts (platform, last_used_at);
 
+CREATE INDEX IF NOT EXISTS accounts_profile_url_idx
+    ON accounts (profile_url)
+    WHERE profile_url IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS policy_rules_lookup_idx
     ON policy_rules (account_id, platform, action_type, enabled);
 
@@ -239,6 +247,9 @@ CREATE INDEX IF NOT EXISTS artifacts_job_idx
 
 CREATE INDEX IF NOT EXISTS artifacts_task_idx
     ON artifacts (task_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS artifacts_storage_uri_uidx
+    ON artifacts (storage_uri);
 
 CREATE INDEX IF NOT EXISTS artifacts_execution_idx
     ON artifacts (execution_id, created_at DESC);

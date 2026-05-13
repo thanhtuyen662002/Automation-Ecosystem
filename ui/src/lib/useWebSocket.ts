@@ -6,8 +6,16 @@ import { useWSStore, type LiveEvent } from './store';
 //   dev  → wss?://localhost:5173/api/v1/ws/brain  (proxied by Vite → 8000)
 //   prod → wss?://<real-host>/api/v1/ws/brain
 const WS_URL = (() => {
+  const configured = import.meta.env.VITE_WS_BASE || import.meta.env.VITE_API_BASE || '';
+  if (configured) {
+    const url = new URL(configured, window.location.origin);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = '/api/v1/ws/brain';
+    url.search = '';
+    return url.toString();
+  }
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host  = window.location.host;                // e.g. localhost:5173
+  const host  = window.location.host;
   return `${proto}://${host}/api/v1/ws/brain`;
 })();
 

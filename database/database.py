@@ -209,6 +209,16 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+_ACCOUNT_SELECT_COLUMNS = (
+    "id, platform, account_handle, profile_url, external_user_id, status, proxy_url, "
+    "rate_limit_config, metadata, last_used_at, cookies, user_agent, last_login_at, "
+    "session_valid, viewport_width, viewport_height, timezone, locale, browser_data_dir, "
+    "risk_score, failed_publish_count, captcha_hit_count, login_redirect_count, "
+    "proxy_country, proxy_latency_ms, proxy_validated_at, warmup_sessions_completed, "
+    "soft_ban_detected, avatar_url, display_name, created_at, updated_at"
+)
+
+
 class AutomationDatabase:
     def __init__(
         self,
@@ -371,6 +381,9 @@ class AutomationDatabase:
                     task_id = _uuid()
                     parent_task_id = str(task.get("parent_task_id")) if task.get("parent_task_id") else None
                     account_id = str(task.get("account_id")) if task.get("account_id") else None
+                    if account_id is None and task_type.startswith("publish_"):
+                        payload_account_id = (task.get("payload") or {}).get("account_id")
+                        account_id = str(payload_account_id) if payload_account_id else None
                     action_type = str(task.get("action_type")) if task.get("action_type") else None
                     idempotency_key = str(task.get("idempotency_key")) if task.get("idempotency_key") else None
                     next_run_at = task.get("next_run_at") or datetime.now(UTC).isoformat()
@@ -1095,12 +1108,7 @@ class AutomationDatabase:
     async def list_accounts(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         async with self.connection() as conn:
             result = await conn.execute(
-                "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                "session_valid, last_login_at, user_agent, "
-                "avatar_url, display_name, "
-                "risk_score, soft_ban_detected, warmup_sessions_completed, "
-                "failed_publish_count, captcha_hit_count, "
-                "created_at, updated_at "
+                f"SELECT {_ACCOUNT_SELECT_COLUMNS} "
                 "FROM accounts ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             )
@@ -1111,6 +1119,8 @@ class AutomationDatabase:
         platform: str,
         account_handle: str,
         proxy_url: str | None = None,
+        profile_url: str | None = None,
+        external_user_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         account_id = _uuid()
@@ -1119,13 +1129,24 @@ class AutomationDatabase:
             try:
                 await conn.execute(
                     """
-                    INSERT INTO accounts (id, platform, account_handle, status, proxy_url, metadata)
-                    VALUES (?, ?, ?, 'healthy', ?, ?)
+                    INSERT INTO accounts (
+                        id, platform, account_handle, profile_url, external_user_id,
+                        status, proxy_url, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'healthy', ?, ?)
                     """,
-                    (account_id, platform, account_handle, proxy_url, _to_json(metadata or {})),
+                    (
+                        account_id,
+                        platform,
+                        account_handle,
+                        profile_url,
+                        external_user_id,
+                        proxy_url,
+                        _to_json(metadata or {}),
+                    ),
                 )
                 row = await (await conn.execute(
-                    "SELECT id, platform, account_handle, status, proxy_url, metadata, created_at, updated_at FROM accounts WHERE id = ?",
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
                     (account_id,),
                 )).fetchone()
                 await conn.execute("COMMIT")
@@ -1137,13 +1158,7 @@ class AutomationDatabase:
     async def get_account(self, account_id: str) -> dict[str, Any] | None:
         async with self.connection() as conn:
             result = await conn.execute(
-                "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                "session_valid, last_login_at, user_agent, "
-                "avatar_url, display_name, "
-                "risk_score, soft_ban_detected, warmup_sessions_completed, "
-                "failed_publish_count, captcha_hit_count, "
-                "created_at, updated_at "
-                "FROM accounts WHERE id = ?",
+                f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
                 (account_id,),
             )
             row = await result.fetchone()
@@ -1158,13 +1173,54 @@ class AutomationDatabase:
                     (status, account_id),
                 )
                 row = await (await conn.execute(
-                    "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                    "session_valid, last_login_at, user_agent, "
-                    "avatar_url, display_name, "
-                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
-                    "failed_publish_count, captcha_hit_count, "
-                    "created_at, updated_at "
-                    "FROM accounts WHERE id = ?",
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                await conn.execute("COMMIT")
+                return dict(row) if row else None
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
+    async def update_account_fields(self, account_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+        allowed_fields = {
+            "platform",
+            "account_handle",
+            "profile_url",
+            "external_user_id",
+            "proxy_url",
+            "metadata",
+            "status",
+        }
+        unknown = set(fields) - allowed_fields
+        if unknown:
+            raise ValidationError(f"Unsupported account fields: {sorted(unknown)}")
+        if not fields:
+            return await self.get_account(account_id)
+
+        assignments: list[str] = []
+        params: list[Any] = []
+        for key, value in fields.items():
+            assignments.append(f"{key} = ?")
+            params.append(_to_json(value) if key == "metadata" else value)
+        params.append(account_id)
+
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = await conn.execute(
+                    f"""
+                    UPDATE accounts
+                    SET {', '.join(assignments)}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    tuple(params),
+                )
+                if result.rowcount == 0:
+                    await conn.execute("ROLLBACK")
+                    return None
+                row = await (await conn.execute(
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
                     (account_id,),
                 )).fetchone()
                 await conn.execute("COMMIT")
@@ -1230,14 +1286,7 @@ class AutomationDatabase:
                         (cookies_encrypted, user_agent, account_id),
                     )
                 row = await (await conn.execute(
-                    "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                    "session_valid, last_login_at, user_agent, "
-                    "avatar_url, display_name, "
-                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
-                    "failed_publish_count, captcha_hit_count, "
-                    "viewport_width, viewport_height, timezone, locale, "
-                    "created_at, updated_at "
-                    "FROM accounts WHERE id = ?",
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
                     (account_id,),
                 )).fetchone()
                 await conn.execute("COMMIT")
@@ -1251,6 +1300,9 @@ class AutomationDatabase:
         account_id: str,
         avatar_url: str | None = None,
         display_name: str | None = None,
+        profile_url: str | None = None,
+        external_user_id: str | None = None,
+        account_handle: str | None = None,
     ) -> dict[str, Any] | None:
         """Save avatar URL and display name extracted after successful browser login."""
         async with self.connection() as conn:
@@ -1261,19 +1313,23 @@ class AutomationDatabase:
                     UPDATE accounts
                     SET avatar_url = COALESCE(?, avatar_url),
                         display_name = COALESCE(?, display_name),
+                        profile_url = COALESCE(?, profile_url),
+                        external_user_id = COALESCE(?, external_user_id),
+                        account_handle = COALESCE(?, account_handle),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (avatar_url or None, display_name or None, account_id),
+                    (
+                        avatar_url or None,
+                        display_name or None,
+                        profile_url or None,
+                        external_user_id or None,
+                        account_handle or None,
+                        account_id,
+                    ),
                 )
                 row = await (await conn.execute(
-                    "SELECT id, platform, account_handle, status, proxy_url, metadata, "
-                    "session_valid, last_login_at, user_agent, "
-                    "avatar_url, display_name, "
-                    "risk_score, soft_ban_detected, warmup_sessions_completed, "
-                    "failed_publish_count, captcha_hit_count, "
-                    "created_at, updated_at "
-                    "FROM accounts WHERE id = ?",
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
                     (account_id,),
                 )).fetchone()
                 await conn.execute("COMMIT")
@@ -1291,9 +1347,10 @@ class AutomationDatabase:
         """
         async with self.connection() as conn:
             result = await conn.execute(
-                "SELECT id, platform, status, proxy_url, cookies, user_agent, session_valid, "
-                "last_login_at, last_used_at, "
-                "viewport_width, viewport_height, timezone, locale "
+                "SELECT id, platform, account_handle, profile_url, external_user_id, status, "
+                "proxy_url, proxy_country, cookies, user_agent, session_valid, "
+                "last_login_at, last_used_at, browser_data_dir, "
+                "viewport_width, viewport_height, timezone, locale, soft_ban_detected "
                 "FROM accounts WHERE id = ?",
                 (account_id,),
             )
@@ -1587,6 +1644,65 @@ class AutomationDatabase:
 
     # ── Artifacts CRUD ───────────────────────────────────────────────────────────
 
+
+    async def create_artifact(
+        self,
+        artifact_type: str,
+        storage_uri: str,
+        job_id: str | None = None,
+        task_id: str | None = None,
+        execution_id: str | None = None,
+        mime_type: str | None = None,
+        size_bytes: int | None = None,
+        checksum: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        status: str = "pending",
+    ) -> dict[str, Any]:
+        if not storage_uri.strip():
+            raise ValidationError("storage_uri cannot be empty")
+        if artifact_type not in {"video", "image", "audio", "metadata", "file", "log"}:
+            raise ValidationError(f"Unsupported artifact_type: {artifact_type}")
+        if status not in {"pending", "approved", "rejected"}:
+            raise ValidationError(f"Unsupported artifact status: {status}")
+        artifact_id = _uuid()
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await conn.execute(
+                    """
+                    INSERT OR IGNORE INTO artifacts (
+                        id, job_id, task_id, execution_id, artifact_type, status,
+                        storage_uri, mime_type, size_bytes, checksum, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        artifact_id,
+                        job_id,
+                        task_id,
+                        execution_id,
+                        artifact_type,
+                        status,
+                        storage_uri,
+                        mime_type,
+                        size_bytes,
+                        checksum,
+                        _to_json(metadata or {}),
+                    ),
+                )
+                row = await (await conn.execute(
+                    "SELECT id, job_id, task_id, artifact_type, status, storage_uri, "
+                    "mime_type, size_bytes, checksum, metadata, created_at "
+                    "FROM artifacts WHERE storage_uri = ?",
+                    (storage_uri,),
+                )).fetchone()
+                await conn.execute("COMMIT")
+                if row is None:
+                    raise DatabaseError(f"Artifact was not persisted: {storage_uri}")
+                return dict(row)
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
 
     async def list_artifacts(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         async with self.connection() as conn:

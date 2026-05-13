@@ -51,6 +51,7 @@ function AuthSync() {
   // Register synchronously on first render — before any useEffect or query fires
   setUnauthorizedHandler(() => {
     logoutRef.current();
+    queryClient.clear();
     navRef.current('/login', { replace: true });
   });
 
@@ -71,27 +72,35 @@ function AuthSync() {
 // If the user logs in manually while bootstrap is in-flight, the
 // `cancelled` flag discards the bootstrap result.
 function AuthBootstrap() {
-  const { isAuthenticated, login, setBootstrapComplete } = useAuthStore();
+  const { isAuthenticated, login, logout, setBootstrapComplete } = useAuthStore();
 
   useEffect(() => {
-    // Already authenticated (persisted session rehydrated by zustand) — done.
-    if (isAuthenticated) {
+    // Already authenticated with a still-usable local token — done.
+    // If the persisted token is expired/malformed, try secure bootstrap below.
+    const existingToken = tokenStore.get();
+    if (existingToken) {
       setBootstrapComplete(true);
       return;
+    }
+    if (isAuthenticated) {
+      logout();
     }
 
     let cancelled = false;
 
     api.bootstrap()
       .then((res) => {
-        // Guard: user may have logged in manually while bootstrap was in-flight.
-        // Discard bootstrap result so we don't revoke their fresh session.
         if (cancelled) return;
+        // Guard: user may have logged in manually while bootstrap was in-flight.
+        // Discard bootstrap result so we don't overwrite their fresh session.
+        if (useAuthStore.getState().isAuthenticated && tokenStore.get()) return;
         tokenStore.set(res.token);
         login(res.token, res.user);
       })
       .catch(() => {
-        if (!cancelled) setBootstrapComplete(true);
+        if (cancelled) return;
+        if (isAuthenticated) logout();
+        setBootstrapComplete(true);
       });
 
     return () => { cancelled = true; };

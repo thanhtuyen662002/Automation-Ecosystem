@@ -22,20 +22,24 @@ This package produces a one-click Windows desktop application:
 
 ## License And Secrets
 
-Packaged builds must not include `.env.production`, `SUPABASE_SERVICE_KEY`,
-`ADMIN_SECRET`, `LICENSE_SECRET`, or provider API keys.
+Packaged builds must not include `.env.production`, `SUPABASE_SERVICE_ROLE_KEY`,
+`LICENSE_KEY_PEPPER`, `MACHINE_HASH_PEPPER`, direct database URLs, admin scripts,
+or provider API keys.
 
-License activation is handled by the Supabase Edge Function at
-`supabase/functions/license-auth`:
+License activation is handled by the trusted Supabase Edge Function at
+`supabase/functions/license-api`:
 
-- The desktop app ships only public values such as `LICENSE_AUTHORITY_URL` and
-  `SUPABASE_PUBLISHABLE_KEY`.
-- The Edge Function keeps service-role access in Supabase secrets.
-- The user enters username + license key once.
-- The backend stores the returned refresh token through Windows DPAPI, not in
-  `.env`, SQLite, localStorage, or sessionStorage.
-- On later launches the UI calls `/api/v1/auth/bootstrap`; the backend refreshes
-  silently or allows the cached license for `LICENSE_OFFLINE_GRACE_DAYS`.
+- The desktop app ships only public values: `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+  and `LICENSE_API_URL`.
+- The Edge Function keeps service-role access and hash peppers in Supabase
+  secrets.
+- The user enters only a license key; no username or browser session is part of
+  license validation.
+- The local backend stores a non-secret activation state file with license/device
+  ids and offline grace timestamps. It never stores raw license keys, Supabase
+  Auth tokens, service-role keys, or peppers.
+- On later launches the UI calls `/api/license/status`; the local backend asks
+  the Edge Function to verify or uses the local offline grace period.
 
 ## Local Database
 
@@ -79,18 +83,29 @@ npm run build
 
 ## Supabase Setup
 
-Apply the SQL in `supabase/migrations/202605120001_license_authority.sql`, then
-deploy `supabase/functions/license-auth` with JWT verification disabled as shown
-in `supabase/config.toml`.
+Apply the existing license schema migrations, then apply
+`supabase/migrations/202605140001_add_transaction_safe_license_activation_rpc.sql`
+to add the transaction-safe activation RPC. Deploy
+`supabase/functions/license-api` with JWT verification enabled or disabled as
+appropriate for server-to-server local app calls; the function still receives the
+public anon key and uses only server-side secrets for privileged work.
 
 Set these Edge Function secrets in Supabase:
 
 ```text
 SUPABASE_URL
-SUPABASE_SECRET_KEYS or SUPABASE_SERVICE_ROLE_KEY
-LICENSE_OFFLINE_GRACE_DAYS=7
-LICENSE_REFRESH_TOKEN_DAYS=365
+SUPABASE_SERVICE_ROLE_KEY
+LICENSE_KEY_PEPPER
+MACHINE_HASH_PEPPER
 ```
+
+Verify release artifacts do not contain strong secret names:
+
+```powershell
+rg "SUPABASE_SERVICE_ROLE_KEY|LICENSE_KEY_PEPPER|MACHINE_HASH_PEPPER|SUPABASE_DB_URL" dist backend_dist release
+```
+
+The command should return no matches.
 
 ## Environment Variables
 

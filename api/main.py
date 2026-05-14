@@ -13,8 +13,10 @@ import sqlite3
 from pythonjsonlogger import jsonlogger
 
 from api.dependencies import ApiSettings
-from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifacts, policy_rules, account_brain, identity, fleet_health, content_brain, ws, strategy, auth, decisions, licenses
+from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifacts, policy_rules, account_brain, identity, fleet_health, content_brain, ws, strategy, auth, decisions
+from api.routes import license as license_routes
 from api.middleware.license_guard import LicenseGuard
+from api.services.license_service import LicenseService
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import (
@@ -111,6 +113,7 @@ async def lifespan(app: FastAPI):
         scheduler.start()
     app.state.settings = settings
     app.state.database = database
+    app.state.license_service = LicenseService.from_env()
     if scheduler is not None:
         app.state.scheduler = scheduler
     LOGGER.info("api_started", extra={"event": "api_started"})
@@ -125,24 +128,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Automation Ecosystem API", version="0.1.0", lifespan=lifespan)
 
-# License guard: validates token + DB session on every protected request
+# License guard: validates local activation state through trusted license-api.
 app.add_middleware(LicenseGuard)
 
 # CORS: restrict to known local origins only.
 # In production (Electron), renderer talks to 127.0.0.1 on a fixed port.
 # Wildcard regex removed — it allowed ANY localhost port.
 _ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Admin-Secret", "X-Machine-ID"],
+    allow_headers=["Content-Type", "X-Admin-Secret"],
     expose_headers=["Retry-After"],
 )
 app.include_router(jobs.router)
@@ -161,7 +164,7 @@ app.include_router(ws.router, prefix="/api/v1")
 app.include_router(strategy.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(decisions.router, prefix="/api/v1")
-app.include_router(licenses.router, prefix="/api/v1")
+app.include_router(license_routes.router)
 
 
 @app.middleware("http")

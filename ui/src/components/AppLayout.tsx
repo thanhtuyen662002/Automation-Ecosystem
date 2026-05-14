@@ -8,7 +8,7 @@ import React, { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from '@/components/Sidebar';
 import { useWebSocket } from '@/lib/useWebSocket';
-import { useUIStore, useAuthStore } from '@/lib/store';
+import { useUIStore } from '@/lib/store';
 import { Search, Bell, Sun, MessageSquare, User, ChevronRight, Home } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 
@@ -76,7 +76,6 @@ function BreadcrumbBar() {
 
 // ── Topbar ────────────────────────────────────────────────────────────────────
 function Topbar() {
-  const { user } = useAuthStore();
   const { toggleSidebar, sidebarCollapsed } = useUIStore();
   const [search, setSearch] = useState('');
 
@@ -210,7 +209,7 @@ function Topbar() {
 
         {/* Avatar */}
         <div
-          title={user?.account ?? 'User'}
+          title="Licensed device"
           style={{
             width: 36, height: 36, borderRadius: '50%',
             background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)',
@@ -225,7 +224,7 @@ function Topbar() {
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1.07)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 5px 18px rgba(124,58,237,0.50)'; }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 3px 10px rgba(124,58,237,0.38)'; }}
         >
-          {user?.account ? user.account.slice(0, 2).toUpperCase() : <User size={14} />}
+          <User size={14} />
         </div>
       </div>
     </div>

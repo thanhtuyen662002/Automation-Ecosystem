@@ -2,7 +2,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import { NavLink } from 'react-router-dom';
-import { useUIStore, useWSStore, useAuthStore } from '@/lib/store';
+import { useUIStore, useWSStore } from '@/lib/store';
 import { useI18n } from '@/lib/i18n';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { GlassIcon } from '@/components/Icons';
@@ -88,9 +88,7 @@ function GlassmorphLogo() {
 export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
   const { connected } = useWSStore();
-  const { user } = useAuthStore();
   const { t } = useI18n();
-  const isAdmin = user?.account?.toLowerCase() === 'admin';
 
   const sections: NavSection[] = [
     {
@@ -132,10 +130,6 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         { to: '/settings/policy', iconAsset: 'shield', label: t('nav.settings_pol') },
       ],
     },
-    ...(isAdmin ? [{
-      title: t('section.admin'),
-      items: [{ to: '/admin/licenses', iconAsset: 'badge', label: t('nav.licenses') }],
-    }] : []),
   ];
 
   const W = sidebarCollapsed ? 62 : 210;

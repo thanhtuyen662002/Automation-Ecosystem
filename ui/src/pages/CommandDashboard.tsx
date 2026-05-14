@@ -5,7 +5,7 @@ import { ShieldOff, Power, RefreshCw } from 'lucide-react';
 import { DecisionBlock, ConfirmDialog, StatusDot, GlassKpiCard } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
 import { useDecisions, useSystemStats, useFleetAccounts, useApproveContent, useRejectContent, useFreezeAccount, useSetBrainConfig } from '@/lib/hooks';
-import { useUIStore, useWSStore, useAuthStore } from '@/lib/store';
+import { useUIStore, useWSStore } from '@/lib/store';
 import { useI18n } from '@/lib/i18n';
 
 type Decision = {
@@ -28,7 +28,6 @@ function SectionLabel({ icon, label, color }: { icon: string; label: string; col
 export function CommandDashboard() {
   const { executionEnabled, setExecutionEnabled, autoApprove } = useUIStore();
   const { connected } = useWSStore();
-  const { user, logout } = useAuthStore();
   const { t } = useI18n();
   const [confirmSafe, setConfirmSafe] = useState(false);
 
@@ -232,7 +231,7 @@ export function CommandDashboard() {
           { label: t('cmd.tasks_run'),  val: stats?.running ?? '—', icon: 'play-circle' },
           { label: t('cmd.tasks_pend'), val: stats?.pending ?? '—', icon: 'clock' },
           { label: t('cmd.tasks_fail'), val: stats?.failed  ?? '—', warn: (stats?.failed ?? 0) > 5, icon: 'cross-circle' },
-          { label: t('cmd.operator'),   val: user?.account  ?? '—', icon: 'user' },
+          { label: t('cmd.operator'),   val: 'Licensed device', icon: 'user' },
         ].map(({ label, val, warn, icon }) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <GlassIcon name={icon as any} size={14} style={{ opacity: 0.5 }} />
@@ -242,9 +241,6 @@ export function CommandDashboard() {
             </div>
           </div>
         ))}
-        <div style={{ marginLeft: 'auto' }}>
-          <button className="btn btn-ghost btn-sm" onClick={logout} style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{t('cmd.logout')}</button>
-        </div>
       </div>
 
       <ConfirmDialog

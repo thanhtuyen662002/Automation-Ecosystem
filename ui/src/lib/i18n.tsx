@@ -63,11 +63,11 @@ export const translations: Record<Lang, Record<string, string>> = {
     'status.pending':       'chờ duyệt',
 
     // Auth
-    'auth.title':       'Đăng Nhập Hệ Thống',
-    'auth.account':     'Tên Tài Khoản',
+    'auth.title':       'Kích Hoạt License',
+    'auth.account':     'Tên Thiết Bị',
     'auth.license':     'License Key',
-    'auth.login':       'Đăng Nhập',
-    'auth.error':       'Tài khoản hoặc license key không đúng',
+    'auth.login':       'Kích Hoạt',
+    'auth.error':       'License key không hợp lệ',
 
     // Settings
     'settings.language':    'Ngôn Ngữ',

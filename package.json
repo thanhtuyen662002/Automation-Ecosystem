@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "check:release-secrets": "python scripts/check_release_secrets.py"
+  },
   "dependencies": {
     "supabase": "^2.98.2"
   }

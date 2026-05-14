@@ -1,5 +1,11 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// DEPRECATED_LICENSE_AUTH_EDGE_FUNCTION
+// This function belongs to the old username + refresh-token license flow.
+// The production app must not call or deploy it for license activation.
+// New flow: local Python backend calls supabase/functions/license-api over HTTPS.
+// Only license-api holds service-role credentials and calls public.activate_license_device.
+
 type Json = Record<string, unknown>;
 
 const CORS_HEADERS = {

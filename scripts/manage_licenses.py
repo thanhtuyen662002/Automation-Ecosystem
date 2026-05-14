@@ -1,163 +1,23 @@
-"""
-scripts/manage_licenses.py
-──────────────────────────────────────────────────────────────────────────────
-CLI tool to manage license keys stored in Supabase.
-
-Usage:
-  python scripts/manage_licenses.py create --label "Admin" --role admin
-  python scripts/manage_licenses.py create --label "User 1" --days 365
-  python scripts/manage_licenses.py list
-  python scripts/manage_licenses.py revoke <license_key>
-  python scripts/manage_licenses.py reset-machine <license_key>
-"""
 from __future__ import annotations
 
-import argparse
-import hashlib
-import os
-import secrets
-import sys
-from datetime import UTC, datetime, timedelta
 
-from dotenv import load_dotenv
+DEPRECATED_MESSAGE = """
+scripts/manage_licenses.py is deprecated and disabled.
 
-load_dotenv()
+It belonged to the old username/session license flow and wrote raw license keys
+plus legacy license_sessions data. Use the new admin scripts instead:
 
-
-def _get_client():
-    try:
-        from supabase import create_client  # type: ignore[import]
-    except ImportError:
-        print("ERROR: pip install supabase")
-        sys.exit(1)
-
-    url = os.environ.get("SUPABASE_URL", "").strip()
-    key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
-    if not url or not key:
-        print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
-        sys.exit(1)
-
-    return create_client(url, key)
-
-
-def cmd_create(args: argparse.Namespace) -> None:
-    sb = _get_client()
-    key = "AE-" + secrets.token_hex(16).upper()
-    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-    row: dict = {
-        "license_key":  key,
-        "license_key_hash": key_hash,
-        "license_key_preview": key[:10] + "...",
-        "label":        args.label,
-        "role":         args.role,
-        "max_accounts": args.max_accounts,
-        "is_active":    True,
-        "status":       "active",
-    }
-    if args.days:
-        row["expires_at"] = (datetime.now(UTC) + timedelta(days=args.days)).isoformat()
-
-    result = sb.table("licenses").insert(row).execute()
-    if result.data:
-        rec = result.data[0]
-        print("\n[OK] License created")
-        print(f"   Key:          {rec['license_key']}")
-        print(f"   Label:        {rec['label']}")
-        print(f"   Role:         {rec['role']}")
-        print(f"   Max accounts: {rec['max_accounts']}")
-        print(f"   Expires:      {rec.get('expires_at', 'never')}")
-    else:
-        print("ERROR: failed to create license", result)
-
-
-def cmd_list(args: argparse.Namespace) -> None:
-    sb = _get_client()
-    result = sb.table("licenses").select("*").order("created_at", desc=True).execute()
-    rows = result.data or []
-    if not rows:
-        print("No licenses found.")
-        return
-
-    print(f"\n{'Key':<42} {'Label':<20} {'Role':<10} {'Active':<7} {'Expires':<25} {'Machine'}")
-    print("-" * 115)
-    for r in rows:
-        key     = r["license_key"]
-        label   = (r.get("label") or "")[:19]
-        role    = (r.get("role") or "operator")[:9]
-        active  = "YES" if r.get("is_active") else "NO"
-        expires = (r.get("expires_at") or "never")[:24]
-        machine = "bound" if r.get("machine_id") else "unbound"
-        print(f"{key:<42} {label:<20} {role:<10} {active:<7} {expires:<25} {machine}")
-
-
-def cmd_revoke(args: argparse.Namespace) -> None:
-    sb = _get_client()
-    sb.table("licenses").update({"is_active": False, "status": "revoked"}).eq("license_key", args.key).execute()
-    sb.table("license_sessions").update({
-        "revoked_at": datetime.now(UTC).isoformat(),
-        "revoke_reason": "admin_revoked",
-    }).eq("license_id", _license_id(sb, args.key)).execute()
-    print(f"[OK] License revoked: {args.key}")
-
-
-def cmd_reset_machine(args: argparse.Namespace) -> None:
-    sb = _get_client()
-    license_id = _license_id(sb, args.key)
-    sb.table("licenses").update({
-        "machine_id":   None,
-        "machine_id_hash": None,
-        "activated_at": None,
-    }).eq("license_key", args.key).execute()
-    sb.table("license_devices").update({
-        "status": "revoked",
-        "revoked_at": datetime.now(UTC).isoformat(),
-        "revoke_reason": "admin_reset_machine",
-    }).eq("license_id", license_id).eq("status", "active").execute()
-    sb.table("license_sessions").update({
-        "revoked_at": datetime.now(UTC).isoformat(),
-        "revoke_reason": "admin_reset_machine",
-    }).eq("license_id", license_id).execute()
-    print(f"[OK] Machine binding reset for: {args.key}")
-    print("   User can now activate on a new machine.")
-
-
-def _license_id(sb, key: str) -> str:
-    result = sb.table("licenses").select("id").eq("license_key", key).maybe_single().execute()
-    if not result.data:
-        print(f"ERROR: license not found: {key}")
-        sys.exit(1)
-    return result.data["id"]
+  python scripts/create_license.py --label "Customer A" --plan standard
+  python scripts/list_licenses.py
+  python scripts/list_license_devices.py --license-id <uuid>
+  python scripts/reset_license_devices.py --license-id <uuid> --revoke-all-devices --reason "customer changed machine"
+  python scripts/renew_license.py --license-id <uuid> --expires-at lifetime
+  python scripts/revoke_license.py --license-id <uuid> --reason "policy violation"
+"""
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage Supabase license keys")
-    sub = parser.add_subparsers(dest="command")
-
-    # create
-    p_create = sub.add_parser("create", help="Create a new license key")
-    p_create.add_argument("--label", required=True, help="Human-readable label")
-    p_create.add_argument("--role", default="operator", choices=["operator", "admin"])
-    p_create.add_argument("--max-accounts", type=int, default=10)
-    p_create.add_argument("--days", type=int, default=0, help="Expiry in days (0 = never)")
-
-    # list
-    sub.add_parser("list", help="List all license keys")
-
-    # revoke
-    p_revoke = sub.add_parser("revoke", help="Revoke a license key")
-    p_revoke.add_argument("key", help="License key to revoke")
-
-    # reset-machine
-    p_reset = sub.add_parser("reset-machine", help="Clear machine binding (allow new device)")
-    p_reset.add_argument("key", help="License key to reset")
-
-    args = parser.parse_args()
-    if not args.command:
-        parser.print_help()
-        return
-
-    {"create": cmd_create, "list": cmd_list, "revoke": cmd_revoke, "reset-machine": cmd_reset_machine}[args.command](args)
+    raise SystemExit(DEPRECATED_MESSAGE.strip())
 
 
 if __name__ == "__main__":

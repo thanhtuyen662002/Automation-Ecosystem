@@ -1,2 +1,6 @@
+# DEPRECATED_LICENSE_AUTH_EDGE_FUNCTION: do not deploy for the new license flow.
 [functions.license-auth]
 verify_jwt = false
+
+[functions.license-api]
+verify_jwt = true

@@ -1,22 +1,3 @@
-"""
-api/middleware/license_guard.py — Per-request license validation middleware.
-
-Runs on EVERY request except the explicitly skipped paths.
-Validates:
-  1. Bearer token present and signature valid
-  2. Session exists in DB and is not revoked
-  3. License is still active and not expired
-
-On failure:
-  - 401: missing/invalid/expired token
-  - 403: license revoked or expired (valid token but license no longer valid)
-
-SKIPPED paths (no token required):
-  - /health
-  - /api/v1/auth/login
-  - /api/v1/auth/refresh
-  - /api/v1/admin/*   ← admin routes use ADMIN_SECRET instead
-"""
 from __future__ import annotations
 
 import logging
@@ -25,116 +6,58 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from api.security import lookup_session, verify_token
+from api.services.license_service import LicenseService
+from core.license_status import LicenseStatus
+
 
 LOGGER = logging.getLogger("api.license_guard")
 
-# Paths that bypass the license guard entirely
 _SKIP_PREFIXES = (
     "/health",
+    "/api/license/",
     "/api/v1/auth/",
-    "/api/v1/admin/",
 )
 
 
 class LicenseGuard(BaseHTTPMiddleware):
     """
-    Starlette middleware that enforces license + session validity
-    on every protected API request.
+    Local license guard.
+
+    Browser session != device license activation.
+    Supabase Auth refresh token != license refresh.
+    The app is unlocked by Edge-verified license key + machine binding only.
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
-
-        # Skip non-protected paths
-        if any(path.startswith(prefix) for prefix in _SKIP_PREFIXES):
+        if request.method == "OPTIONS" or any(path.startswith(prefix) for prefix in _SKIP_PREFIXES):
             return await call_next(request)
 
-        # Allow CORS preflight requests to pass through
-        if request.method == "OPTIONS":
-            return await call_next(request)
-
-        # Extract Bearer token
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            LOGGER.warning(
-                "auth_rejected",
-                extra={"event": "auth_rejected", "reason": "missing_bearer", "path": path},
-            )
-            return JSONResponse(
-                status_code=401,
-                content={"error": "Unauthorized", "message": "Authentication required."},
-            )
-
-        token = auth_header[len("Bearer "):]
-
-        # Step 1: Verify token signature + expiry (no DB hit)
-        payload = verify_token(token)
-        if payload is None:
-            LOGGER.warning(
-                "auth_rejected",
-                extra={"event": "auth_rejected", "reason": "invalid_or_expired_token", "path": path},
-            )
-            return JSONResponse(
-                status_code=401,
-                content={"error": "Unauthorized", "message": "Token invalid or expired."},
-            )
-
-        # Step 2: Validate DB session (checks revocation + license status)
-        db = getattr(request.app.state, "database", None)
-        if db is None:
+        service = getattr(request.app.state, "license_service", None)
+        if not isinstance(service, LicenseService):
             return JSONResponse(
                 status_code=503,
-                content={"error": "ServiceUnavailable", "message": "Database not ready."},
-            )
-
-        session = await lookup_session(db, token)
-        if session is None:
-            LOGGER.warning(
-                "auth_rejected",
-                extra={
-                    "event": "auth_rejected",
-                    "reason": "session_not_found_or_revoked",
-                    "path": path,
-                    "license_key": payload.get("lid"),
-                    "session_id": payload.get("sid"),
+                content={
+                    "ok": False,
+                    "licensed": False,
+                    "status": LicenseStatus.SERVER_ERROR.value,
+                    "reason": "License service is not initialized",
+                    "license": None,
+                    "device": None,
+                    "offline_valid_until": None,
                 },
             )
-            return JSONResponse(
-                status_code=401,
-                content={"error": "Unauthorized", "message": "Session expired or revoked. Please log in again."},
-            )
 
-        # Step 3: Check license is still active in DB
-        if not session["license_active"]:
-            LOGGER.warning(
-                "request_with_revoked_license",
-                extra={
-                    "event": "request_with_revoked_license",
-                    "license_key": payload.get("lid"),
-                    "path": path,
-                },
-            )
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Forbidden", "message": "License has been revoked."},
-            )
+        response = await service.get_license_status(force_refresh=False)
+        if response.status in {LicenseStatus.ACTIVE, LicenseStatus.ACTIVE_OFFLINE} and response.licensed:
+            request.state.license_status = response.status.value
+            request.state.license_id = (response.license or {}).get("id")
+            request.state.license_device_id = (response.device or {}).get("id")
+            return await call_next(request)
 
-        if session["license_expires"] and session["license_expires"] < "9999":
-            from datetime import UTC, datetime
-            try:
-                expires = datetime.fromisoformat(session["license_expires"])
-                if datetime.now(UTC) > expires:
-                    return JSONResponse(
-                        status_code=403,
-                        content={"error": "Forbidden", "message": "License has expired."},
-                    )
-            except Exception:
-                pass
-
-        # Attach session info to request state for downstream handlers
-        request.state.license_key  = payload["lid"]
-        request.state.machine_fp   = payload["fp"]
-        request.state.session_id   = payload["sid"]
-
-        return await call_next(request)
+        status_code = 503 if response.status in {LicenseStatus.NETWORK_ERROR, LicenseStatus.SERVER_ERROR} else 403
+        LOGGER.warning(
+            "license_guard_blocked",
+            extra={"event": "license_guard_blocked", "path": path, "status": response.status.value},
+        )
+        return JSONResponse(status_code=status_code, content=response.to_dict())

@@ -244,10 +244,17 @@ def _ensure_env_file(path: Path) -> None:
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    default_supabase_url = os.getenv("SUPABASE_URL", "https://twkqwtpgahjusofcpivw.supabase.co")
+    default_license_api_url = os.getenv("LICENSE_API_URL", f"{default_supabase_url.rstrip('/')}/functions/v1/license-api")
     path.write_text(
         "\n".join(
             [
                 "DATABASE_URL=sqlite+aiosqlite:///{APP_DATA_DIR}/data/app.db",
+                f"SUPABASE_URL={default_supabase_url}",
+                f"SUPABASE_ANON_KEY={os.getenv('SUPABASE_ANON_KEY', '')}",
+                f"LICENSE_API_URL={default_license_api_url}",
+                "LICENSE_OFFLINE_GRACE_DAYS=7",
+                "LICENSE_STATUS_CACHE_TTL_SECONDS=30",
                 "WORKER_ID=desktop-worker-1",
                 "WORKER_MAX_CONCURRENCY=4",
                 "WORKER_BATCH_SIZE=10",

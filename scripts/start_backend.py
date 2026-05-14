@@ -79,6 +79,12 @@ async def main() -> None:
     _configure_playwright_runtime()
     print(f"DEBUG: DATABASE_URL={os.environ.get('DATABASE_URL')}")
     configure_logging(settings.log_path)
+    if not os.environ.get("SUPABASE_ANON_KEY"):
+        LOGGER.error(
+            "Missing required license environment variables: SUPABASE_ANON_KEY",
+            extra={"event": "missing_env", "error_type": "ConfigurationError"}
+        )
+        sys.exit(1)
     os.environ["API_HOST"] = settings.host
     os.environ["API_PORT"] = str(settings.port)
     os.environ["API_SCHEDULER_ENABLED"] = "false"
@@ -241,36 +247,67 @@ def _get_appdata_dir() -> Path:
 
 
 def _ensure_env_file(path: Path) -> None:
-    if path.exists():
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    default_supabase_url = os.getenv("SUPABASE_URL", "https://twkqwtpgahjusofcpivw.supabase.co")
-    default_license_api_url = os.getenv("LICENSE_API_URL", f"{default_supabase_url.rstrip('/')}/functions/v1/license-api")
-    path.write_text(
-        "\n".join(
-            [
-                "DATABASE_URL=sqlite+aiosqlite:///{APP_DATA_DIR}/data/app.db",
-                f"SUPABASE_URL={default_supabase_url}",
-                f"SUPABASE_ANON_KEY={os.getenv('SUPABASE_ANON_KEY', '')}",
-                f"LICENSE_API_URL={default_license_api_url}",
-                "LICENSE_OFFLINE_GRACE_DAYS=7",
-                "LICENSE_STATUS_CACHE_TTL_SECONDS=30",
-                "WORKER_ID=desktop-worker-1",
-                "WORKER_MAX_CONCURRENCY=4",
-                "WORKER_BATCH_SIZE=10",
-                "WORKER_POLL_INTERVAL_SECONDS=2",
-                "HEARTBEAT_INTERVAL=30",
-                "TASK_TIMEOUT=300",
-                "WORKER_LEASE_SECONDS=300",
-                "WORKER_RETRY_BASE_DELAY_SECONDS=5",
-                "WORKER_RETRY_MAX_DELAY_SECONDS=300",
-                "WORKER_LOG_LEVEL=INFO",
-                "SCHEDULER_INTERVAL_SECONDS=5",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    
+    defaults = {
+        "SUPABASE_URL": "https://twkqwtpgahjusofcpivw.supabase.co",
+        "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR3a3F3dHBnYWhqdXNvZmNwaXZ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5MDMxMzQsImV4cCI6MjA5MzQ3OTEzNH0.zZ91Q-b12LBtk4Q_rvAxO6li-KYqVoGa2Ctycl6tJJs",
+        "LICENSE_API_URL": "https://twkqwtpgahjusofcpivw.supabase.co/functions/v1/license-api",
+        "LICENSE_OFFLINE_GRACE_DAYS": "7",
+        "LICENSE_STATUS_CACHE_TTL_SECONDS": "30",
+        "DATABASE_URL": "sqlite+aiosqlite:///{APP_DATA_DIR}/data/app.db",
+        "WORKER_ID": "desktop-worker-1",
+        "WORKER_MAX_CONCURRENCY": "4",
+        "WORKER_BATCH_SIZE": "10",
+        "WORKER_POLL_INTERVAL_SECONDS": "2",
+        "HEARTBEAT_INTERVAL": "30",
+        "TASK_TIMEOUT": "300",
+        "WORKER_LEASE_SECONDS": "300",
+        "WORKER_RETRY_BASE_DELAY_SECONDS": "5",
+        "WORKER_RETRY_MAX_DELAY_SECONDS": "300",
+        "WORKER_LOG_LEVEL": "INFO",
+        "SCHEDULER_INTERVAL_SECONDS": "5",
+    }
+
+    if not path.exists():
+        lines = [f"{k}={v}" for k, v in defaults.items()]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
+
+    content = path.read_text(encoding="utf-8")
+    existing_keys = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            existing_keys[k.strip()] = v.strip()
+
+    patch_keys = [
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "LICENSE_API_URL",
+        "LICENSE_OFFLINE_GRACE_DAYS",
+        "LICENSE_STATUS_CACHE_TTL_SECONDS"
+    ]
+    
+    missing_lines = []
+    needs_rewrite = False
+    new_lines = content.splitlines()
+    
+    for k in patch_keys:
+        if k not in existing_keys or not existing_keys[k]:
+            if k in existing_keys:
+                for i, line in enumerate(new_lines):
+                    if line.strip().startswith(f"{k}="):
+                        new_lines[i] = f"{k}={defaults[k]}"
+                needs_rewrite = True
+            else:
+                missing_lines.append(f"{k}={defaults[k]}")
+                
+    if missing_lines or needs_rewrite:
+        if missing_lines:
+            new_lines.extend(missing_lines)
+        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _load_env(path: Path, app_data_dir: Path) -> None:

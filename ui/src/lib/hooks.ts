@@ -29,7 +29,7 @@ export function useAccounts() {
 export function useCreateAccount() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string }) =>
+    mutationFn: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string; metadata?: Record<string, unknown>; browser_provider?: string }) =>
       api.createAccount(payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
   });
@@ -38,7 +38,7 @@ export function useCreateAccount() {
 export function useUpdateAccount() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null } }) =>
+    mutationFn: ({ id, payload }: { id: string; payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null; metadata?: Record<string, unknown>; browser_provider?: string | null; real_chrome_user_data_dir?: string | null } }) =>
       api.updateAccount(id, payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
   });

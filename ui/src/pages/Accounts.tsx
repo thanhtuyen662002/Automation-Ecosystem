@@ -12,6 +12,9 @@ interface Account {
   profile_url?: string | null; external_user_id?: string | null;
   status: string; proxy_url: string | null; proxy_country?: string | null; session_valid: boolean; session_status?: string;
   last_login_at: string | null; avatar_url: string | null; display_name: string | null;
+  metadata?: Record<string, unknown>;
+  browser_provider?: string;
+  real_chrome_user_data_dir?: string | null;
   browser_data_dir?: string | null; timezone?: string | null; locale?: string | null;
   viewport_width?: number | null; viewport_height?: number | null;
   risk_score?: number; soft_ban_detected?: boolean;
@@ -90,6 +93,27 @@ function SessionPill({ account, t }: { account: Account; t: (k: string) => strin
   );
 }
 
+function browserProvider(account: Account) {
+  const metadataProvider = typeof account.metadata?.browser_provider === 'string' ? account.metadata.browser_provider : undefined;
+  return account.browser_provider ?? metadataProvider ?? 'playwright';
+}
+
+function providerLabel(provider: string, t: (k: string) => string) {
+  if (provider === 'real_chrome') return t('acc.provider_real_chrome');
+  if (provider === 'adspower') return t('acc.provider_adspower');
+  return t('acc.provider_playwright');
+}
+
+function BrowserProviderSelect({ value, onChange, t }: { value: string; onChange: (value: string) => void; t: (k: string) => string }) {
+  return (
+    <select className="input" value={value} onChange={e => onChange(e.target.value)}>
+      <option value="playwright">{t('acc.provider_playwright')}</option>
+      <option value="real_chrome">{t('acc.provider_real_chrome')}</option>
+      <option value="adspower" disabled>{t('acc.provider_adspower_beta')}</option>
+    </select>
+  );
+}
+
 function ConnectingOverlay({ platform, stage, t }: { platform: string; stage: string | null; t: (k: string, f?: string) => string }) {
   const plat = PLATFORMS[platform] ?? { label: platform };
   return (
@@ -112,7 +136,7 @@ function formatConnectError(message: string, t: (k: string) => string) {
     lowered.includes('too many attempts') ||
     lowered.includes('rate')
   ) {
-    return t('acc.err_tiktok_rate_limited');
+    return t('acc.err_tiktok_runtime_blocked');
   }
   return message;
 }
@@ -135,8 +159,10 @@ export function Accounts() {
   const [newPlatform,   setNewPlatform]   = useState('tiktok');
   const [newProfileUrl, setNewProfileUrl] = useState('');
   const [newProxy,      setNewProxy]      = useState('');
+  const [newBrowserProvider, setNewBrowserProvider] = useState('playwright');
   const [editProfileUrl, setEditProfileUrl] = useState('');
   const [editProxy, setEditProxy] = useState('');
+  const [editBrowserProvider, setEditBrowserProvider] = useState('playwright');
   const [connectingId,  setConnectingId]  = useState<string | null>(null);
   const [connectStage, setConnectStage] = useState<string | null>(null);
   const [connectError,  setConnectError]  = useState<string | null>(null);
@@ -145,6 +171,7 @@ export function Accounts() {
     if (!selected) return;
     setEditProfileUrl(selected.profile_url ?? '');
     setEditProxy(selected.proxy_url ?? '');
+    setEditBrowserProvider(browserProvider(selected));
   }, [selected]);
 
   async function handleAddAndConnect() {
@@ -155,8 +182,10 @@ export function Accounts() {
         account_handle: newHandle.trim(),
         profile_url: newProfileUrl.trim() || undefined,
         proxy_url: newProxy.trim() || undefined,
+        browser_provider: newBrowserProvider,
+        metadata: { browser_provider: newBrowserProvider },
       });
-      setShowAdd(false); setNewHandle(''); setNewProfileUrl(''); setNewProxy('');
+      setShowAdd(false); setNewHandle(''); setNewProfileUrl(''); setNewProxy(''); setNewBrowserProvider('playwright');
       await handleConnect(created.id, created.platform);
     } catch { /* shown via createAccount.isError */ }
   }
@@ -170,6 +199,7 @@ export function Accounts() {
         payload: {
           profile_url: editProfileUrl.trim() || null,
           proxy_url: editProxy.trim() || null,
+          browser_provider: editBrowserProvider,
         },
       });
       setSelected(updated);
@@ -245,6 +275,7 @@ export function Accounts() {
                   const riskScore = a.risk_score ?? 0;
                   const softBan = a.soft_ban_detected ?? false;
                   const plat = PLATFORMS[a.platform] ?? { label: a.platform, bg: 'var(--primary)', color: '#fff' };
+                  const provider = browserProvider(a);
 
                   return (
                     <div key={a.id} className="card" style={{
@@ -273,6 +304,7 @@ export function Accounts() {
                                   {plat.label}
                                 </span>
                                 <Badge status={a.status}>{a.status}</Badge>
+                                <span className="badge badge-muted">{providerLabel(provider, t)}</span>
                                 {softBan && <span className="badge badge-danger">⚠ shadow ban</span>}
                               </div>
                             </div>
@@ -352,10 +384,11 @@ export function Accounts() {
                 ? <a href={selected.profile_url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>{selected.profile_url}</a>
                 : '—'} />
               <StatRow label={t('acc.session_status')} value={<SessionPill account={selected} t={t} />} />
+              <StatRow label={t('acc.detail_provider')} value={providerLabel(browserProvider(selected), t)} />
               <StatRow label={t('acc.detail_proxy')} value={selected.proxy_url ?? '—'} />
               <StatRow label={t('acc.detail_timezone')} value={selected.timezone ?? '—'} />
               <StatRow label={t('acc.detail_locale')} value={selected.locale ?? '—'} />
-              {isDev && <StatRow label={t('acc.detail_browser_profile')} value={<span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>{selected.browser_data_dir ?? '—'}</span>} />}
+              {isDev && <StatRow label={t('acc.detail_browser_profile')} value={<span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>{browserProvider(selected) === 'real_chrome' ? selected.real_chrome_user_data_dir ?? '—' : selected.browser_data_dir ?? '—'}</span>} />}
               <StatRow label={t('acc.detail_risk')} value={`${Math.round((selected.risk_score ?? 0) * 100)}%`} />
               <StatRow label={t('acc.detail_warmup')} value={selected.warmup_sessions_completed ?? 0} />
               <StatRow label={t('acc.detail_failed')} value={
@@ -380,6 +413,12 @@ export function Accounts() {
                   {t('acc.lbl_proxy')}
                 </label>
                 <input className="input" value={editProxy} placeholder={t('acc.ph_proxy')} onChange={e => setEditProxy(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+                  {t('acc.lbl_browser_provider')}
+                </label>
+                <BrowserProviderSelect value={editBrowserProvider} onChange={setEditBrowserProvider} t={t} />
               </div>
               <button className="btn btn-secondary" onClick={handleSaveAccount} disabled={updateAccount.isPending}>
                 <GlassIcon name="save" size={14} /> {updateAccount.isPending ? t('acc.saving') : t('acc.save_account')}
@@ -459,6 +498,13 @@ export function Accounts() {
             </label>
             <input className="input" placeholder={t('acc.ph_proxy')} value={newProxy}
               onChange={e => setNewProxy(e.target.value)} />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+              {t('acc.lbl_browser_provider')}
+            </label>
+            <BrowserProviderSelect value={newBrowserProvider} onChange={setNewBrowserProvider} t={t} />
           </div>
 
           <div style={{

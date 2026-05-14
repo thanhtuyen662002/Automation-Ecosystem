@@ -144,7 +144,7 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     from core.session_crypto import decrypt_cookies
     from core.platform_config import get_platform_config
     from core.stealth import fingerprint_hash
-    from core.browser_context import create_publisher_context
+    from core.browser_providers import BROWSER_PROVIDER_PLAYWRIGHT, make_browser_provider, resolve_browser_provider
     from core.behavior_engine import create_behavior_engine
     from core.cross_account_coordinator import get_coordinator
     from workers.worker_runtime import FatalDependencyError, RetryableDependencyError
@@ -171,6 +171,7 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
         acc_status = account.get("status", "")
         proxy_url: str | None = account.get("proxy_url") or None
+        browser_provider = resolve_browser_provider(account)
 
         fp_hash = fingerprint_hash(account_id)
 
@@ -180,7 +181,8 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 "event": "tiktok_publish_start",
                 "account_id": account_id,
                 "account_handle": account.get("account_handle"),
-                "proxy": proxy_url or "NONE",
+                "has_proxy": bool(proxy_url),
+                "browser_provider": browser_provider,
                 "fingerprint_hash": fp_hash,
                 "video_path": video_path,
                 "caption_length": len(caption),
@@ -409,14 +411,15 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
         # ── 10. Ensure browser_data_dir persisted to DB ──────────────────────
         from core.browser_context import get_browser_data_dir
         data_dir = get_browser_data_dir(account_id)
-        if not account.get("browser_data_dir"):
+        if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT and not account.get("browser_data_dir"):
             await database.set_browser_data_dir(account_id, str(data_dir))
 
         # ── 11. Launch persistent browser context with stealth ───────────────
         from playwright.async_api import async_playwright
 
         async with async_playwright() as pw:
-            async with create_publisher_context(pw, session, account_id, headless=True) as (context, page):
+            provider = make_browser_provider({**account, "account_id": account_id}, session=session)
+            async with provider.open_publisher_context(pw, headless=True) as (context, page, opened_data_dir):
 
                 # Inject DB cookies as belt-and-suspenders (profile dir may already have them)
                 try:

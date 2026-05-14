@@ -276,6 +276,22 @@ async def _browse_session(page: Any, platform: str, stage: int) -> list[str]:
 def _has_connected_session(account: dict[str, Any]) -> bool:
     if bool(account.get("session_valid")) or bool(account.get("browser_data_dir")):
         return True
+    try:
+        from core.browser_providers import (
+            BROWSER_PROVIDER_REAL_CHROME,
+            account_metadata,
+            get_real_chrome_user_data_dir,
+            resolve_browser_provider,
+        )
+        metadata = account_metadata(account)
+        if resolve_browser_provider(account) == BROWSER_PROVIDER_REAL_CHROME:
+            account_id = str(account.get("account_id") or account.get("id") or "default")
+            configured = account.get("real_chrome_user_data_dir") or metadata.get("real_chrome_user_data_dir")
+            if configured and Path(str(configured)).exists():
+                return True
+            return get_real_chrome_user_data_dir(account_id, account, create=False).exists()
+    except Exception:
+        pass
     cookie_file = str(account.get("cookie_file") or "")
     return bool(cookie_file and Path(cookie_file).exists())
 

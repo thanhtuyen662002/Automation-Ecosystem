@@ -273,15 +273,11 @@ async def build_playwright_context(account: dict[str, Any], pw: Any) -> Any:
     session["platform"] = platform
     session["proxy_url"] = proxy_url
 
-    from core.browser_context import create_publisher_context
+    from core.browser_providers import make_browser_provider
 
-    context_manager = create_publisher_context(
-        pw,
-        session=session,
-        account_id=account_id,
-        headless=bool(account.get("headless", True)),
-    )
-    ctx, page = await context_manager.__aenter__()
+    provider = make_browser_provider(session, session=session)
+    context_manager = provider.open_publisher_context(pw, headless=bool(account.get("headless", True)))
+    ctx, page, _data_dir = await context_manager.__aenter__()
     browser = _PersistentBrowserHandle(context_manager)
 
     # Restore legacy cookie files only when DB/profile state is absent.
@@ -307,7 +303,7 @@ async def build_playwright_context(account: dict[str, Any], pw: Any) -> Any:
 
 async def save_session(account: dict[str, Any], ctx: Any) -> None:
     """Persist current browser cookies to session file."""
-    account_id = account["account_id"]
+    account_id = str(account.get("account_id") or account.get("id") or "default")
     platform   = account.get("platform", "tiktok")
     _SESSION_DIR.mkdir(parents=True, exist_ok=True)
     safe_id     = account_id.replace("/", "_").replace(":", "_")

@@ -1347,7 +1347,7 @@ class AutomationDatabase:
         """
         async with self.connection() as conn:
             result = await conn.execute(
-                "SELECT id, platform, account_handle, profile_url, external_user_id, status, "
+                "SELECT id, platform, account_handle, profile_url, external_user_id, status, metadata, "
                 "proxy_url, proxy_country, cookies, user_agent, session_valid, "
                 "last_login_at, last_used_at, browser_data_dir, "
                 "viewport_width, viewport_height, timezone, locale, soft_ban_detected "
@@ -1389,6 +1389,29 @@ class AutomationDatabase:
                 metadata["identity_profile"] = profile
                 if profile.get("identity_id"):
                     metadata["identity_profile_id"] = profile.get("identity_id")
+                await conn.execute(
+                    "UPDATE accounts SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (_to_json(metadata), account_id),
+                )
+                await conn.execute("COMMIT")
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
+    async def patch_account_metadata(self, account_id: str, patch: dict[str, Any]) -> None:
+        """Merge non-secret metadata keys into an account metadata object."""
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await conn.execute(
+                    "SELECT metadata FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                if not row:
+                    await conn.execute("ROLLBACK")
+                    return
+                metadata = _from_json(row["metadata"])
+                metadata.update(patch)
                 await conn.execute(
                     "UPDATE accounts SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (_to_json(metadata), account_id),

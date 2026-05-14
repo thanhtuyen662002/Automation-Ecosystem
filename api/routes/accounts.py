@@ -48,13 +48,21 @@ async def create_account(
     database: DatabaseDependency,
 ) -> AccountResponse:
     profile_url = request.profile_url or _derive_profile_url(request.platform, request.account_handle)
+    metadata = _merge_browser_provider_metadata(
+        request.metadata,
+        {
+            "browser_provider": request.browser_provider,
+            "real_chrome_user_data_dir": request.real_chrome_user_data_dir,
+            "real_chrome_debug_port": request.real_chrome_debug_port,
+        },
+    )
     row = await database.create_account(
         platform=request.platform,
         account_handle=request.account_handle,
         profile_url=profile_url,
         external_user_id=request.external_user_id,
         proxy_url=request.proxy_url,
-        metadata=request.metadata,
+        metadata=metadata,
     )
     LOGGER.info(
         "account_created",
@@ -74,6 +82,16 @@ async def update_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     update_fields = request.model_dump(exclude_unset=True)
+    browser_metadata_updates = {
+        key: update_fields.pop(key)
+        for key in ("browser_provider", "real_chrome_user_data_dir", "real_chrome_debug_port")
+        if key in update_fields
+    }
+    if browser_metadata_updates:
+        base_metadata = update_fields.get("metadata")
+        if base_metadata is None:
+            base_metadata = _metadata_dict(existing)
+        update_fields["metadata"] = _merge_browser_provider_metadata(base_metadata, browser_metadata_updates)
     if "profile_url" not in update_fields and "account_handle" in update_fields:
         update_fields["profile_url"] = _derive_profile_url(
             existing["platform"],
@@ -192,14 +210,17 @@ async def get_session_status(account_id: str, database: DatabaseDependency) -> S
     row = await database.get_account_session(account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
+    metadata = _metadata_dict(row)
     return SessionStatusResponse(
         account_id=account_id,
         session_valid=bool(row.get("session_valid", 0)),
         status="limited" if row.get("status") == "limited" else ("connected" if row.get("session_valid") else ("expired" if row.get("last_login_at") else "not_connected")),
+        browser_provider=str(metadata.get("browser_provider") or "playwright"),
         has_cookies=bool(row.get("cookies")),
         last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
         user_agent=row.get("user_agent"),
         browser_data_dir=row.get("browser_data_dir"),
+        real_chrome_user_data_dir=metadata.get("real_chrome_user_data_dir"),
         timezone=row.get("timezone"),
         locale=row.get("locale"),
     )
@@ -240,16 +261,28 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    metadata = _metadata_dict(row)
     proxy_url: str | None = row.get("proxy_url") or None
     configured_profile_url: str | None = row.get("profile_url") or _derive_profile_url(platform, row["account_handle"])
     session = await database.get_account_session(account_id) or {}
 
     try:
         from core.browser_context import get_browser_data_dir
+        from core.browser_providers import (
+            BROWSER_PROVIDER_PLAYWRIGHT,
+            BROWSER_PROVIDER_REAL_CHROME,
+            make_browser_provider,
+            resolve_browser_provider,
+        )
+
+        browser_provider = resolve_browser_provider({**row, "metadata": metadata})
+        account_for_provider = {**row, "account_id": account_id, "metadata": metadata}
         browser_data_dir = str(row.get("browser_data_dir") or session.get("browser_data_dir") or get_browser_data_dir(account_id))
-        if not row.get("browser_data_dir"):
+        if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT and not row.get("browser_data_dir"):
             await database.set_browser_data_dir(account_id, browser_data_dir)
         identity_profile = await _ensure_identity_profile(account_id, row, database)
+        provider = make_browser_provider(account_for_provider, session=session, identity_profile=identity_profile)
+        provider_data_dir = str(getattr(provider, "user_data_dir", browser_data_dir))
     except Exception as exc:
         LOGGER.warning(
             "account_connect_identity_prepare_failed",
@@ -263,7 +296,9 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             "event": "account_connect_start",
             "account_id": account_id,
             "platform": platform,
-            "browser_data_dir": browser_data_dir,
+            "browser_provider": browser_provider,
+            "user_data_dir": provider_data_dir,
+            "browser_data_dir": browser_data_dir if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT else None,
             "timezone": getattr(identity_profile, "timezone", None),
             "locale": getattr(identity_profile, "locale", None),
             "viewport": getattr(identity_profile, "screen_resolution", None),
@@ -290,28 +325,40 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
     user_agent: str = ""
 
     try:
-        from core.browser_context import create_connect_context
+        from core.browser_providers import collect_runtime_diagnostics
         from core.login_diagnostics import LoginBlockStatus, classify_login_block
 
         async with async_playwright() as pw:
             connect_session = dict(session)
-            connect_session["metadata"] = _metadata_dict(row)
+            connect_session["metadata"] = metadata
             connect_session["browser_data_dir"] = browser_data_dir
-            async with create_connect_context(
-                pw,
-                account_id,
-                proxy_url=proxy_url,
-                session=connect_session,
-                identity_profile=identity_profile,
-                browser_data_dir=browser_data_dir,
-            ) as (context, page):
+            async with provider.open_connect_context(pw) as (context, page, opened_data_dir):
 
                 user_agent = await page.evaluate("navigator.userAgent")
                 await page.goto(cfg.login_url, wait_until="domcontentloaded", timeout=60000)
+                provider_data_dir = str(opened_data_dir)
 
                 LOGGER.info(
                     "account_connect_browser_open",
-                    extra={"event": "account_connect_browser_open", "url": cfg.login_url},
+                    extra={
+                        "event": "account_connect_browser_open",
+                        "url": cfg.login_url,
+                        "account_id": account_id,
+                        "platform": platform,
+                        "browser_provider": browser_provider,
+                        "user_data_dir": provider_data_dir,
+                    },
+                )
+                runtime = await collect_runtime_diagnostics(page, context)
+                LOGGER.info(
+                    "account_connect_runtime",
+                    extra={
+                        "event": "account_connect_runtime",
+                        "account_id": account_id,
+                        "platform": platform,
+                        "browser_provider": browser_provider,
+                        "runtime": runtime,
+                    },
                 )
 
                 # Poll for successful login (max 5 minutes). Do not rely on a single
@@ -433,7 +480,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 # context.close() is handled by create_connect_context
 
         # Persist session + fingerprint to DB (also stored in persistent profile dir)
-        data_dir = browser_data_dir
+        data_dir = provider_data_dir
         cookies_encrypted = encrypt_cookies(cookies)
         updated = await database.save_account_session(
             account_id,
@@ -447,8 +494,13 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         if updated is None:
             raise HTTPException(status_code=404, detail="Account not found after session save")
 
-        # Persist browser_data_dir
-        await database.set_browser_data_dir(account_id, data_dir)
+        if browser_provider == BROWSER_PROVIDER_REAL_CHROME:
+            await database.patch_account_metadata(account_id, {
+                "browser_provider": BROWSER_PROVIDER_REAL_CHROME,
+                "real_chrome_user_data_dir": data_dir,
+            })
+        else:
+            await database.set_browser_data_dir(account_id, data_dir)
         await database.save_account_identity_profile(account_id, identity_profile.to_dict())
 
         # Persist profile info (avatar + display_name)
@@ -475,9 +527,11 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 "event": "account_connect_success",
                 "account_id": account_id,
                 "platform": platform,
+                "browser_provider": browser_provider,
                 "cookie_count": len(cookies),
                 "fingerprint": fingerprint,
-                "browser_data_dir": data_dir,
+                "user_data_dir": data_dir,
+                "browser_data_dir": data_dir if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT else None,
                 "identity_profile_id": getattr(identity_profile, "identity_id", "") or getattr(identity_profile, "fingerprint_hash", "")[:12],
             },
         )
@@ -506,6 +560,19 @@ def _metadata_dict(row: dict) -> dict:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _merge_browser_provider_metadata(metadata: dict | None, values: dict) -> dict:
+    merged = dict(metadata or {})
+    for key, value in values.items():
+        if value is None:
+            if key in {"real_chrome_user_data_dir", "real_chrome_debug_port"}:
+                merged.pop(key, None)
+            continue
+        merged[key] = value
+    if not merged.get("browser_provider"):
+        merged["browser_provider"] = "playwright"
+    return merged
 
 
 async def _ensure_identity_profile(account_id: str, row: dict, database):

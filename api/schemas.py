@@ -221,6 +221,15 @@ class AccountCreateRequest(BaseModel):
     external_user_id: str | None = None
     proxy_url: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    browser_provider: str | None = None
+    real_chrome_user_data_dir: str | None = None
+    real_chrome_debug_port: int | None = Field(default=None, ge=1, le=65535)
+
+    @model_validator(mode="after")
+    def _validate_browser_provider(self) -> "AccountCreateRequest":
+        if self.browser_provider is not None and self.browser_provider not in {"playwright", "real_chrome", "adspower"}:
+            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower")
+        return self
 
 
 class AccountUpdateRequest(BaseModel):
@@ -230,11 +239,16 @@ class AccountUpdateRequest(BaseModel):
     proxy_url: str | None = None
     metadata: dict[str, Any] | None = None
     status: str | None = None
+    browser_provider: str | None = None
+    real_chrome_user_data_dir: str | None = None
+    real_chrome_debug_port: int | None = Field(default=None, ge=1, le=65535)
 
     @model_validator(mode="after")
     def _validate_status(self) -> "AccountUpdateRequest":
         if self.status is not None and self.status not in {"healthy", "limited", "banned", "disabled"}:
             raise ValueError("status must be one of: healthy, limited, banned, disabled")
+        if self.browser_provider is not None and self.browser_provider not in {"playwright", "real_chrome", "adspower"}:
+            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower")
         return self
 
 
@@ -258,6 +272,9 @@ class AccountResponse(BaseModel):
     proxy_url: str | None
     proxy_country: str | None = None
     metadata: dict[str, Any]
+    browser_provider: str = "playwright"
+    real_chrome_user_data_dir: str | None = None
+    real_chrome_debug_port: int | None = None
     # Session fields (None for accounts that have never connected)
     session_valid: bool
     session_status: str
@@ -313,6 +330,9 @@ class AccountResponse(BaseModel):
             proxy_url=row.get("proxy_url"),
             proxy_country=row.get("proxy_country"),
             metadata=metadata,
+            browser_provider=str(metadata.get("browser_provider") or "playwright"),
+            real_chrome_user_data_dir=metadata.get("real_chrome_user_data_dir") or None,
+            real_chrome_debug_port=metadata.get("real_chrome_debug_port"),
             session_valid=bool(row.get("session_valid", 0)),
             session_status=_account_session_status(row),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
@@ -340,10 +360,12 @@ class SessionStatusResponse(BaseModel):
     account_id: str
     session_valid: bool
     status: str
+    browser_provider: str = "playwright"
     has_cookies: bool
     last_login_at: str | None
     user_agent: str | None
     browser_data_dir: str | None = None
+    real_chrome_user_data_dir: str | None = None
     timezone: str | None = None
     locale: str | None = None
 

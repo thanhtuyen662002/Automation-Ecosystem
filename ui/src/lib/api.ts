@@ -66,10 +66,10 @@ export const api = {
   accounts: () =>
     request<{ items: any[] }>('/api/v1/accounts').then(r => r.items),
 
-  createAccount: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string }) =>
+  createAccount: (payload: { platform: string; account_handle: string; profile_url?: string; proxy_url?: string; metadata?: Record<string, unknown>; browser_provider?: string }) =>
     request<any>('/api/v1/accounts', { method: 'POST', body: JSON.stringify(payload) }),
 
-  updateAccount: (id: string, payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null }) =>
+  updateAccount: (id: string, payload: { account_handle?: string; profile_url?: string | null; proxy_url?: string | null; metadata?: Record<string, unknown>; browser_provider?: string | null; real_chrome_user_data_dir?: string | null }) =>
     request<any>(`/api/v1/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
   deleteAccount: (id: string) =>

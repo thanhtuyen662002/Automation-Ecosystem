@@ -1359,6 +1359,89 @@ class AutomationDatabase:
                 return None
             return dict(row)
 
+    async def get_account_identity_profile(self, account_id: str) -> dict[str, Any] | None:
+        """Return the persisted IdentityProfile dict from account metadata."""
+        async with self.connection() as conn:
+            result = await conn.execute(
+                "SELECT metadata FROM accounts WHERE id = ?",
+                (account_id,),
+            )
+            row = await result.fetchone()
+            if not row:
+                return None
+            metadata = _from_json(row["metadata"])
+            profile = metadata.get("identity_profile")
+            return profile if isinstance(profile, dict) else None
+
+    async def save_account_identity_profile(self, account_id: str, profile: dict[str, Any]) -> None:
+        """Persist account IdentityProfile in metadata without overwriting other keys."""
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await conn.execute(
+                    "SELECT metadata FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                if not row:
+                    await conn.execute("ROLLBACK")
+                    return
+                metadata = _from_json(row["metadata"])
+                metadata["identity_profile"] = profile
+                if profile.get("identity_id"):
+                    metadata["identity_profile_id"] = profile.get("identity_id")
+                await conn.execute(
+                    "UPDATE accounts SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (_to_json(metadata), account_id),
+                )
+                await conn.execute("COMMIT")
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
+    async def record_login_diagnostic(
+        self,
+        account_id: str,
+        diagnostic: str,
+        *,
+        platform: str | None = None,
+        status: str | None = None,
+    ) -> None:
+        """Record a non-secret login diagnostic in metadata.
+
+        This deliberately does not clear existing cookies. Callers decide
+        separately whether the session should be invalidated.
+        """
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await conn.execute(
+                    "SELECT metadata FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                if not row:
+                    await conn.execute("ROLLBACK")
+                    return
+                metadata = _from_json(row["metadata"])
+                metadata["login_diagnostic"] = {
+                    "diagnostic": diagnostic,
+                    "platform": platform,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                }
+                if status:
+                    await conn.execute(
+                        "UPDATE accounts SET metadata = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (_to_json(metadata), status, account_id),
+                    )
+                else:
+                    await conn.execute(
+                        "UPDATE accounts SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (_to_json(metadata), account_id),
+                    )
+                await conn.execute("COMMIT")
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
     async def invalidate_account_session(self, account_id: str) -> None:
         """Mark account session as invalid (e.g. after detecting logout)."""
         async with self.connection() as conn:

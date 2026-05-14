@@ -10,8 +10,10 @@ import { PLATFORMS, PlatformBadge, PlatformSelect } from '@/lib/platforms';
 interface Account {
   id: string; platform: string; account_handle: string;
   profile_url?: string | null; external_user_id?: string | null;
-  status: string; proxy_url: string | null; session_valid: boolean;
+  status: string; proxy_url: string | null; proxy_country?: string | null; session_valid: boolean; session_status?: string;
   last_login_at: string | null; avatar_url: string | null; display_name: string | null;
+  browser_data_dir?: string | null; timezone?: string | null; locale?: string | null;
+  viewport_width?: number | null; viewport_height?: number | null;
   risk_score?: number; soft_ban_detected?: boolean;
   warmup_sessions_completed?: number; failed_publish_count?: number;
   captcha_hit_count?: number; can_publish?: boolean; readiness_errors?: string[]; created_at?: string;
@@ -58,32 +60,61 @@ function AccountAvatar({ account, size = 48 }: { account: Account; size?: number
   );
 }
 
-function SessionPill({ valid, t }: { valid: boolean; t: (k: string) => string }) {
+function sessionStatus(account: Account) {
+  if (account.session_status) return account.session_status;
+  if (account.status === 'limited') return 'limited';
+  if (account.session_valid) return 'connected';
+  if (account.last_login_at) return 'expired';
+  return 'not_connected';
+}
+
+function SessionPill({ account, t }: { account: Account; t: (k: string) => string }) {
+  const status = sessionStatus(account);
+  const connected = status === 'connected';
+  const limited = status === 'limited';
+  const expired = status === 'expired';
+  const label = connected ? t('acc.connected') : limited ? t('acc.limited') : expired ? t('acc.expired') : t('acc.not_connected');
+  const color = connected ? 'var(--success)' : limited ? 'var(--warning)' : expired ? 'var(--danger)' : 'var(--text-muted)';
+  const bg = connected ? 'var(--success-muted)' : limited ? 'var(--warning-muted, var(--surface-2))' : expired ? 'var(--danger-muted)' : 'var(--surface-2)';
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
       padding: '0.15rem 0.55rem', borderRadius: '9999px', fontSize: '0.68rem', fontWeight: 600,
-      background: valid ? 'var(--success-muted)' : 'var(--surface-2)',
-      color: valid ? 'var(--success)' : 'var(--text-muted)',
-      border: `1px solid ${valid ? 'var(--success)' : 'var(--border)'}`,
+      background: bg,
+      color,
+      border: `1px solid ${connected || limited || expired ? color : 'var(--border)'}`,
     }}>
-      <span style={{ width: 6, height: 6, borderRadius: '50%', background: valid ? 'var(--success)' : 'var(--border)' }} />
-      {valid ? t('acc.connected') : t('acc.not_connected')}
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected || limited || expired ? color : 'var(--border)' }} />
+      {label}
     </span>
   );
 }
 
-function ConnectingOverlay({ platform, t }: { platform: string; t: (k: string, f?: string) => string }) {
+function ConnectingOverlay({ platform, stage, t }: { platform: string; stage: string | null; t: (k: string, f?: string) => string }) {
   const plat = PLATFORMS[platform] ?? { label: platform };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.625rem', padding: '1.5rem', textAlign: 'center' }}>
       <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--primary)', opacity: 0.15, animation: 'pulse 1.5s ease infinite' }} />
-      <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{t('acc.browser_opening')}</div>
+      <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>{stage ?? t('acc.browser_opening')}</div>
       <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', maxWidth: 260 }}>
         {t('acc.browser_login_hint').replace('{platform}', plat.label)}
       </div>
     </div>
   );
+}
+
+function formatConnectError(message: string, t: (k: string) => string) {
+  const lowered = message.toLowerCase();
+  if (
+    lowered.includes('temporarily blocked login') ||
+    lowered.includes('maximum number of attempts') ||
+    lowered.includes('try again later') ||
+    lowered.includes('too many attempts') ||
+    lowered.includes('rate')
+  ) {
+    return t('acc.err_tiktok_rate_limited');
+  }
+  return message;
 }
 
 export function Accounts() {
@@ -95,6 +126,7 @@ export function Accounts() {
   const markSoftBan    = useMarkSoftBan();
   const clearSoftBan   = useClearSoftBan();
   const connectAccount = useConnectAccount();
+  const isDev = import.meta.env.DEV;
 
   const [selected,      setSelected]      = useState<Account | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Account | null>(null);
@@ -106,6 +138,7 @@ export function Accounts() {
   const [editProfileUrl, setEditProfileUrl] = useState('');
   const [editProxy, setEditProxy] = useState('');
   const [connectingId,  setConnectingId]  = useState<string | null>(null);
+  const [connectStage, setConnectStage] = useState<string | null>(null);
   const [connectError,  setConnectError]  = useState<string | null>(null);
 
   useEffect(() => {
@@ -146,10 +179,21 @@ export function Accounts() {
   }
 
   async function handleConnect(id: string, platform: string) {
-    setConnectingId(id); setConnectError(null);
-    try { await connectAccount.mutateAsync(id); }
-    catch (e: unknown) { setConnectError((e as Error)?.message ?? t('acc.connect_failed')); }
-    finally { setConnectingId(null); }
+    setConnectingId(id); setConnectError(null); setConnectStage(t('acc.connect_stage_opening'));
+    const timers = [
+      window.setTimeout(() => setConnectStage(t('acc.connect_stage_waiting')), 1400),
+      window.setTimeout(() => setConnectStage(t('acc.connect_stage_saving')), 260_000),
+    ];
+    try {
+      await connectAccount.mutateAsync(id);
+      setConnectStage(t('acc.connect_stage_connected'));
+    }
+    catch (e: unknown) { setConnectError(formatConnectError((e as Error)?.message ?? t('acc.connect_failed'), t)); }
+    finally {
+      timers.forEach(timer => window.clearTimeout(timer));
+      setConnectingId(null);
+      window.setTimeout(() => setConnectStage(null), 800);
+    }
   }
 
   function handleDelete(id: string) {
@@ -208,7 +252,7 @@ export function Accounts() {
                       opacity: connecting ? 0.7 : 1, transition: 'opacity 0.2s',
                       borderLeft: softBan ? '3px solid var(--danger)' : a.session_valid ? '3px solid var(--success)' : '3px solid var(--border)',
                     }} onClick={() => !connecting && setSelected(a)}>
-                      {connecting ? <ConnectingOverlay platform={a.platform} t={t} /> : (
+                      {connecting ? <ConnectingOverlay platform={a.platform} stage={connectStage} t={t} /> : (
                         <>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', marginBottom: '0.875rem' }}>
                             <AccountAvatar account={a} size={52} />
@@ -235,7 +279,7 @@ export function Accounts() {
                           </div>
 
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.875rem' }}>
-                            <SessionPill valid={a.session_valid} t={t} />
+                            <SessionPill account={a} t={t} />
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                               <div style={{ width: 36, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
                                 <div style={{
@@ -307,7 +351,11 @@ export function Accounts() {
               <StatRow label={t('acc.detail_profile')} value={selected.profile_url
                 ? <a href={selected.profile_url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>{selected.profile_url}</a>
                 : '—'} />
+              <StatRow label={t('acc.session_status')} value={<SessionPill account={selected} t={t} />} />
               <StatRow label={t('acc.detail_proxy')} value={selected.proxy_url ?? '—'} />
+              <StatRow label={t('acc.detail_timezone')} value={selected.timezone ?? '—'} />
+              <StatRow label={t('acc.detail_locale')} value={selected.locale ?? '—'} />
+              {isDev && <StatRow label={t('acc.detail_browser_profile')} value={<span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>{selected.browser_data_dir ?? '—'}</span>} />}
               <StatRow label={t('acc.detail_risk')} value={`${Math.round((selected.risk_score ?? 0) * 100)}%`} />
               <StatRow label={t('acc.detail_warmup')} value={selected.warmup_sessions_completed ?? 0} />
               <StatRow label={t('acc.detail_failed')} value={

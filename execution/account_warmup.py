@@ -273,17 +273,59 @@ async def _browse_session(page: Any, platform: str, stage: int) -> list[str]:
     return actions
 
 
+def _has_connected_session(account: dict[str, Any]) -> bool:
+    if bool(account.get("session_valid")) or bool(account.get("browser_data_dir")):
+        return True
+    cookie_file = str(account.get("cookie_file") or "")
+    return bool(cookie_file and Path(cookie_file).exists())
+
+
+async def _verify_connected_session(page: Any, platform: str) -> None:
+    from core.login_diagnostics import (
+        LoginBlockStatus,
+        classify_login_block,
+        login_block_error_message,
+    )
+
+    platform_key = platform.lower()
+    target = "https://www.tiktok.com/" if platform_key == "tiktok" else "https://www.facebook.com/"
+    await page.goto(target, wait_until="domcontentloaded", timeout=30_000)
+    await asyncio.sleep(random.uniform(1.0, 2.0))
+
+    status = await classify_login_block(page)
+    if status == LoginBlockStatus.RATE_LIMITED:
+        raise RuntimeError(login_block_error_message(status))
+    if status in {LoginBlockStatus.CAPTCHA_REQUIRED, LoginBlockStatus.CHECKPOINT_REQUIRED}:
+        raise RuntimeError(status.value)
+    if status == LoginBlockStatus.LOGIN_PAGE:
+        raise RuntimeError("SESSION_EXPIRED")
+
+    cookies = await page.context.cookies()
+    names = {str(cookie.get("name", "")).lower() for cookie in cookies}
+    auth_cookie_names = {
+        "tiktok": {"sessionid", "sid_guard", "uid_tt", "passport_csrf_token"},
+        "facebook": {"c_user", "xs", "fr"},
+    }
+    if not (names & auth_cookie_names.get(platform_key, set())):
+        raise RuntimeError("SESSION_NOT_CONNECTED")
+
+
 async def _run_warmup_session(
     account:  dict[str, Any],
     headless: bool,
 ) -> WarmupResult:
-    account_id = account.get("account_id", "default")
+    account_id = str(account.get("account_id") or account.get("id") or "default")
     platform   = account.get("platform", "tiktok")
 
     _ensure_account(account_id, platform)
     stage = advance_stage_if_ready(account_id, platform)
 
     result = WarmupResult(account_id=account_id, platform=platform, stage=stage)
+
+    if not _has_connected_session(account):
+        result.success = False
+        result.error = "SESSION_NOT_CONNECTED"
+        return result
 
     try:
         from playwright.async_api import async_playwright   # type: ignore[import]
@@ -294,49 +336,22 @@ async def _run_warmup_session(
 
     try:
         async with async_playwright() as pw:
+            from execution.account_manager import build_playwright_context
+            managed_account = dict(account)
+            managed_account["headless"] = headless
+            browser, ctx, page = await build_playwright_context(managed_account, pw)
             try:
-                from execution.account_manager import build_playwright_context
-                browser, ctx, page = await build_playwright_context(account, pw)
-            except Exception:
-                browser = await pw.chromium.launch(
-                    headless=headless,
-                    args=["--disable-blink-features=AutomationControlled",
-                          "--no-sandbox", "--disable-dev-shm-usage"],
-                )
-                ctx  = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 900},
-                )
-                page = await ctx.new_page()
-                await page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
+                await _verify_connected_session(page, platform)
 
-            # Login if credentials available
-            logged_in = False
-            try:
-                if platform == "tiktok":
-                    from execution.publisher_playwright import login_tiktok
-                    logged_in = await login_tiktok(page, account)
-                elif platform == "facebook":
-                    from execution.publisher_playwright import login_facebook
-                    logged_in = await login_facebook(page, account)
-            except Exception as le:
-                LOGGER.debug("warmup_login_optional_fail error=%s", le)
-
-            # Run browsing session
-            n_sessions = random.randint(2, 4)
-            for _ in range(n_sessions):
-                actions = await _browse_session(page, platform, stage)
-                result.actions.extend(actions)
-                result.actions_done += len(actions)
-                await asyncio.sleep(random.uniform(5.0, 15.0))
-
-            await browser.close()
+                # Run browsing session
+                n_sessions = random.randint(2, 4)
+                for _ in range(n_sessions):
+                    actions = await _browse_session(page, platform, stage)
+                    result.actions.extend(actions)
+                    result.actions_done += len(actions)
+                    await asyncio.sleep(random.uniform(5.0, 15.0))
+            finally:
+                await browser.close()
 
         # Update DB
         _exec(
@@ -366,7 +381,7 @@ def run_warmup_session(
     Run one warmup browsing session for an account. Synchronous wrapper.
     Returns WarmupResult. Never raises.
     """
-    account_id = account.get("account_id", "default")
+    account_id = str(account.get("account_id") or account.get("id") or "default")
 
     if not WARMUP_ENABLED:
         return WarmupResult(account_id=account_id, platform=account.get("platform", "tiktok"),

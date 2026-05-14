@@ -220,7 +220,7 @@ def get_health_report() -> list[dict[str, Any]]:
 _STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
-Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'languages', {get: () => ['vi-VN', 'vi', 'en-US', 'en']});
 window.chrome = {runtime: {}};
 Object.defineProperty(navigator, 'permissions', {
     query: (p) => Promise.resolve({state: p.name === 'notifications' ? 'denied' : 'granted'})
@@ -242,68 +242,63 @@ def _ua_for_account(account_id: str) -> str:
     return _USER_AGENTS[idx]
 
 
+class _PersistentBrowserHandle:
+    """Compatibility wrapper exposing browser.close() for persistent contexts."""
+
+    def __init__(self, manager: Any) -> None:
+        self._manager = manager
+
+    async def close(self) -> None:
+        await self._manager.__aexit__(None, None, None)
+
+
 async def build_playwright_context(account: dict[str, Any], pw: Any) -> Any:
     """
     Launch Playwright browser + context for an account.
 
-    Applies:
-      - stealth JS
-      - per-account user-agent
-      - optional proxy
-      - saved cookie session if available
+    The primary source is the persistent browser profile created by the
+    Connect flow. Legacy cookie files are restored only when DB/profile session
+    fields are absent.
 
     Returns (browser, context, page) tuple.
     Caller is responsible for closing the browser.
     """
-    account_id = account["account_id"]
+    account_id = str(account.get("account_id") or account.get("id") or "default")
     platform   = account.get("platform", "tiktok")
-    proxy_url  = account.get("proxy")
+    proxy_url  = account.get("proxy_url") or account.get("proxy")
 
-    ua = _ua_for_account(account_id)
+    session = dict(account)
+    session["id"] = account_id
+    session["account_id"] = account_id
+    session["platform"] = platform
+    session["proxy_url"] = proxy_url
 
-    launch_args: dict[str, Any] = {
-        "headless": True,
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-infobars",
-            "--window-size=1280,800",
-        ],
-    }
-    if proxy_url:
-        launch_args["proxy"] = {"server": proxy_url}
+    from core.browser_context import create_publisher_context
 
-    browser = await pw.chromium.launch(**launch_args)
+    context_manager = create_publisher_context(
+        pw,
+        session=session,
+        account_id=account_id,
+        headless=bool(account.get("headless", True)),
+    )
+    ctx, page = await context_manager.__aenter__()
+    browser = _PersistentBrowserHandle(context_manager)
 
-    ctx_args: dict[str, Any] = {
-        "user_agent": ua,
-        "viewport":   {"width": 1280, "height": 800},
-        "locale":     "en-US",
-        "timezone_id": "America/New_York",
-        "geolocation": {"latitude": 40.71, "longitude": -74.01},
-        "permissions": ["geolocation"],
-    }
-    if proxy_url:
-        ctx_args["proxy"] = {"server": proxy_url}
-
-    ctx  = await browser.new_context(**ctx_args)
-    page = await ctx.new_page()
-    await page.add_init_script(_STEALTH_JS)
-
-    # Restore cookies if available
-    cookie_file = Path(account.get("cookie_file", ""))
+    # Restore legacy cookie files only when DB/profile state is absent.
+    cookie_file_raw = str(account.get("cookie_file") or "")
+    cookie_file = Path(cookie_file_raw) if cookie_file_raw else Path("__missing__")
     if not cookie_file.exists():
         # Check default session dir
         _SESSION_DIR.mkdir(parents=True, exist_ok=True)
         safe_id = account_id.replace("/", "_").replace(":", "_")
         cookie_file = _SESSION_DIR / f"{platform}_{safe_id}.json"
 
-    if cookie_file.exists():
+    has_db_session = bool(account.get("session_valid")) or bool(account.get("browser_data_dir"))
+    if cookie_file.exists() and not has_db_session:
         try:
             cookies = json.loads(cookie_file.read_text(encoding="utf-8"))
             await ctx.add_cookies(cookies)
-            LOGGER.debug("cookies_restored account_id=%s", account_id)
+            LOGGER.debug("legacy_cookies_restored account_id=%s", account_id)
         except Exception as exc:
             LOGGER.debug("cookie_restore_failed account_id=%s error=%s", account_id, exc)
 

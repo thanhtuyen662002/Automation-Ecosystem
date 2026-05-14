@@ -256,11 +256,18 @@ class AccountResponse(BaseModel):
     external_user_id: str | None
     status: str
     proxy_url: str | None
+    proxy_country: str | None = None
     metadata: dict[str, Any]
     # Session fields (None for accounts that have never connected)
     session_valid: bool
+    session_status: str
     last_login_at: str | None
     user_agent: str | None
+    viewport_width: int | None = None
+    viewport_height: int | None = None
+    timezone: str | None = None
+    locale: str | None = None
+    browser_data_dir: str | None = None
     # Profile (fetched after browser login)
     avatar_url: str | None
     display_name: str | None
@@ -304,10 +311,17 @@ class AccountResponse(BaseModel):
             external_user_id=row.get("external_user_id") or None,
             status=row["status"],
             proxy_url=row.get("proxy_url"),
+            proxy_country=row.get("proxy_country"),
             metadata=metadata,
             session_valid=bool(row.get("session_valid", 0)),
+            session_status=_account_session_status(row),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
             user_agent=row.get("user_agent"),
+            viewport_width=int(row["viewport_width"]) if row.get("viewport_width") is not None else None,
+            viewport_height=int(row["viewport_height"]) if row.get("viewport_height") is not None else None,
+            timezone=row.get("timezone"),
+            locale=row.get("locale"),
+            browser_data_dir=row.get("browser_data_dir"),
             avatar_url=row.get("avatar_url") or None,
             display_name=row.get("display_name") or None,
             risk_score=float(row.get("risk_score") or 0.0),
@@ -325,9 +339,23 @@ class AccountResponse(BaseModel):
 class SessionStatusResponse(BaseModel):
     account_id: str
     session_valid: bool
+    status: str
     has_cookies: bool
     last_login_at: str | None
     user_agent: str | None
+    browser_data_dir: str | None = None
+    timezone: str | None = None
+    locale: str | None = None
+
+
+def _account_session_status(row: dict) -> str:
+    if row.get("status") == "limited":
+        return "limited"
+    if bool(row.get("session_valid", 0)):
+        return "connected"
+    if row.get("last_login_at"):
+        return "expired"
+    return "not_connected"
 
 
 

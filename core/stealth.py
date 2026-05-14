@@ -102,7 +102,7 @@ _PATCH_LANGUAGES = """
 // Ensure navigator.languages looks like a real user (headless often empty)
 if (!navigator.languages || navigator.languages.length === 0) {
   Object.defineProperty(navigator, 'languages', {
-    get: () => ['en-US', 'en'],
+    get: () => ['vi-VN', 'vi', 'en-US', 'en'],
     configurable: true,
   });
 }

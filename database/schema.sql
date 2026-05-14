@@ -45,8 +45,8 @@ CREATE TABLE accounts (
     -- Browser fingerprint (migration 002) — stable identity per account
     viewport_width  INTEGER NOT NULL DEFAULT 1280,
     viewport_height INTEGER NOT NULL DEFAULT 720,
-    timezone        TEXT NOT NULL DEFAULT 'America/New_York',
-    locale          TEXT NOT NULL DEFAULT 'en-US',
+    timezone        TEXT NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+    locale          TEXT NOT NULL DEFAULT 'vi-VN',
 
     -- Risk tracking (migration 003)
     browser_data_dir       TEXT,                        -- Path to persistent Chromium profile dir

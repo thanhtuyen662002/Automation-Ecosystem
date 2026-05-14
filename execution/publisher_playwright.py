@@ -64,6 +64,13 @@ class PublishResult:
     meta:       dict[str, Any] = field(default_factory=dict)
 
 
+class SessionStateError(RuntimeError):
+    def __init__(self, code: str, message: str, diagnostic: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.diagnostic = diagnostic or code
+
+
 # ── Human-like helpers ────────────────────────────────────────────────────────
 
 async def _human_delay(lo: float = DELAY_MIN_S, hi: float = DELAY_MAX_S) -> None:
@@ -86,12 +93,53 @@ async def _random_scroll(page: Any, pixels: int = 200) -> None:
     await asyncio.sleep(random.uniform(0.3, 0.8))
 
 
+def _account_id(account: dict[str, Any]) -> str:
+    return str(account.get("account_id") or account.get("id") or "default")
+
+
+def _has_connected_session(account: dict[str, Any]) -> bool:
+    if bool(account.get("session_valid")) or bool(account.get("browser_data_dir")):
+        return True
+    cookie_file = str(account.get("cookie_file") or "")
+    if cookie_file and Path(cookie_file).exists():
+        return True
+    platform = str(account.get("platform") or "tiktok")
+    default_cookie_file = _session_path(platform, _account_id(account))
+    return default_cookie_file.exists()
+
+
+async def _ensure_connected_session(page: Any, platform: str) -> None:
+    """Check an existing manual-connect session without trying to log in."""
+    from core.login_diagnostics import (
+        LoginBlockStatus,
+        classify_login_block,
+        login_block_error_message,
+    )
+
+    platform_key = platform.lower()
+    target = _TIKTOK_UPLOAD_URL if platform_key == "tiktok" else _FACEBOOK_REELS_URL
+    await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+    await _human_delay(1.0, 2.0)
+
+    status = await classify_login_block(page)
+    if status == LoginBlockStatus.OK:
+        return
+    if status == LoginBlockStatus.LOGIN_PAGE:
+        raise SessionStateError("SESSION_EXPIRED", "SESSION_EXPIRED", status.value)
+    if status == LoginBlockStatus.RATE_LIMITED:
+        raise SessionStateError("SESSION_LIMITED", login_block_error_message(status), status.value)
+    if status == LoginBlockStatus.CAPTCHA_REQUIRED:
+        raise SessionStateError("CAPTCHA_REQUIRED", login_block_error_message(status), status.value)
+    if status == LoginBlockStatus.CHECKPOINT_REQUIRED:
+        raise SessionStateError("CHECKPOINT_REQUIRED", login_block_error_message(status), status.value)
+
+
 # ── Stealth JS (injected on every new page) ───────────────────────────────────
 
 _STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'plugins',   {get: () => [1, 2, 3]});
-Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'languages', {get: () => ['vi-VN', 'vi', 'en-US', 'en']});
 window.chrome = {runtime: {}};
 """
 
@@ -388,9 +436,12 @@ async def _build_browser(pw: Any, account: dict[str, Any] | None, headless: bool
     if account:
         try:
             from execution.account_manager import build_playwright_context
-            return await build_playwright_context(account, pw)
-        except Exception:
-            pass
+            managed_account = dict(account)
+            managed_account["headless"] = headless
+            return await build_playwright_context(managed_account, pw)
+        except Exception as exc:
+            LOGGER.warning("managed_context_build_failed account=%s error=%s", _account_id(account), exc)
+            raise
 
     # Legacy fallback
     browser = await pw.chromium.launch(
@@ -404,7 +455,7 @@ async def _build_browser(pw: Any, account: dict[str, Any] | None, headless: bool
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
         viewport={"width": 1280, "height": 800},
-        locale="en-US",
+        locale="vi-VN",
     )
     page = await ctx.new_page()
     await page.add_init_script(_STEALTH_JS)
@@ -470,19 +521,28 @@ async def publish_v2(
         )
 
     t0          = time.monotonic()
-    account_id  = account.get("account_id", "default")
+    account_id  = _account_id(account)
     last_checkpoint = "start"
+
+    if platform.lower() in {"tiktok", "facebook"} and not _has_connected_session(account):
+        return PublishResult(
+            success=False,
+            platform=platform,
+            content_id=content_id,
+            error="SESSION_NOT_CONNECTED",
+            attempts=0,
+            elapsed_s=round(time.monotonic() - t0, 2),
+            meta={"account_id": account_id, "error_code": "SESSION_NOT_CONNECTED"},
+        )
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             async with async_playwright() as pw:
                 browser, ctx, page = await _build_browser(pw, account, headless)
                 try:
-                    last_checkpoint = "login"
+                    last_checkpoint = "session_check"
+                    await _ensure_connected_session(page, platform)
                     if platform == "tiktok":
-                        logged_in = await login_tiktok(page, account)
-                        if not logged_in:
-                            raise RuntimeError("login_failed")
                         last_checkpoint = "upload"
                         await _hesitate(page)
                         url = await upload_video_tiktok(
@@ -490,9 +550,6 @@ async def publish_v2(
                             hashtags=hashtags, tracking_code=tracking_code,
                         )
                     elif platform == "facebook":
-                        logged_in = await login_facebook(page, account)
-                        if not logged_in:
-                            raise RuntimeError("login_failed")
                         last_checkpoint = "upload"
                         await _hesitate(page)
                         url = await upload_video_facebook(
@@ -528,11 +585,40 @@ async def publish_v2(
                     await browser.close()
                     raise inner_exc
 
+        except SessionStateError as exc:
+            elapsed = round(time.monotonic() - t0, 2)
+            try:
+                from execution.account_manager import mark_failed
+                mark_failed(account_id, exc.code)
+            except Exception:
+                pass
+            event = {
+                "SESSION_EXPIRED": "account_session_expired",
+                "SESSION_LIMITED": "tiktok_login_rate_limited",
+                "CAPTCHA_REQUIRED": "tiktok_checkpoint_required",
+                "CHECKPOINT_REQUIRED": "tiktok_checkpoint_required",
+            }.get(exc.code, "publish_v2_session_blocked")
+            LOGGER.warning(
+                "%s platform=%s account=%s checkpoint=%s code=%s diagnostic=%s",
+                event, platform, account_id, last_checkpoint, exc.code, exc.diagnostic,
+                extra={"event": event, "account_id": account_id, "platform": platform, "code": exc.code, "diagnostic": exc.diagnostic},
+            )
+            return PublishResult(
+                success=False,
+                platform=platform,
+                content_id=content_id,
+                error=str(exc),
+                attempts=attempt,
+                elapsed_s=elapsed,
+                meta={"account_id": account_id, "checkpoint": last_checkpoint, "error_code": exc.code, "diagnostic": exc.diagnostic},
+            )
         except Exception as exc:
             LOGGER.warning(
                 "publish_v2_attempt_failed platform=%s attempt=%d/%d error=%s",
                 platform, attempt, MAX_RETRIES, exc,
             )
+            if "login_failed" in str(exc).lower():
+                break
             if attempt < MAX_RETRIES:
                 backoff = RETRY_BASE_S * (2 ** (attempt - 1)) + random.uniform(0, 2)
                 LOGGER.info("publish_v2_retry in=%.1fs checkpoint=%s", backoff, last_checkpoint)

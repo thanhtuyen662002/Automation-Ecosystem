@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from core.fingerprint_engine import get_identity_scripts, validate_runtime, runtime_issues_to_session_signals
+from core.identity_manager import detect_local_locale_profile
 from core.stealth import get_stealth_scripts
 
 LOGGER = logging.getLogger("core.browser_context")
@@ -46,6 +47,17 @@ def get_browser_data_dir(account_id: str) -> Path:
     profile_dir = base / account_id
     profile_dir.mkdir(parents=True, exist_ok=True)
     return profile_dir
+
+
+def _resolve_browser_data_dir(
+    account_id: str,
+    session: dict[str, Any] | None = None,
+    browser_data_dir: str | Path | None = None,
+) -> Path:
+    configured = browser_data_dir or (session or {}).get("browser_data_dir")
+    data_dir = Path(configured) if configured else get_browser_data_dir(account_id)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
 
 
 # ── Delay helpers ────────────────────────────────────────────────────────────
@@ -100,11 +112,12 @@ def _build_launch_kwargs(
         })
     else:
         # Session-dict fallback (legacy)
+        fallback_timezone, fallback_locale = detect_local_locale_profile()
         vp_w       = int(session.get("viewport_width")  or 1280)
         vp_h       = int(session.get("viewport_height") or 720)
         user_agent = session.get("user_agent") or None
-        timezone   = session.get("timezone")   or "America/New_York"
-        locale     = session.get("locale")     or "en-US"
+        timezone   = session.get("timezone")   or fallback_timezone
+        locale     = session.get("locale")     or fallback_locale
         proxy_url  = session.get("proxy_url")  or None
         LOGGER.warning("browser_context_no_identity", extra={
             "event": "browser_context_no_identity",
@@ -132,7 +145,7 @@ def _build_launch_kwargs(
     if proxy_url:
         kwargs["proxy"] = {"server": proxy_url}
         LOGGER.info("browser_using_proxy", extra={
-            "event": "browser_using_proxy", "proxy": proxy_url,
+            "event": "browser_using_proxy", "has_proxy": True,
         })
     else:
         LOGGER.warning("browser_no_proxy", extra={
@@ -208,27 +221,37 @@ async def create_publisher_context(
     try:
         from core.identity_manager import get_identity_registry
         reg = get_identity_registry()
+        metadata = session.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("identity_profile"), dict):
+            reg.load_profiles({account_id: metadata["identity_profile"]})
         identity_profile = reg.get(account_id)
         if identity_profile is None:
             # Auto-create from session data
             proxy_url     = session.get("proxy_url") or None
             proxy_country = session.get("proxy_country") or None
             identity_profile = reg.get_or_create(account_id, proxy_url=proxy_url, proxy_country=proxy_country)
+        else:
+            proxy_url = session.get("proxy_url") or None
+            proxy_country = session.get("proxy_country") or None
+            if proxy_url != getattr(identity_profile, "proxy_url", None) or proxy_country != getattr(identity_profile, "proxy_country", None):
+                identity_profile.proxy_url = proxy_url
+                identity_profile.proxy_country = proxy_country
     except Exception as exc:
         LOGGER.warning("identity_registry_unavailable", extra={"error": str(exc)})
 
-    data_dir    = get_browser_data_dir(account_id)
+    data_dir    = _resolve_browser_data_dir(account_id, session=session)
     launch_kw   = _build_launch_kwargs(session, identity_profile, headless)
 
     LOGGER.info("browser_context_launch", extra={
         "event":      "browser_context_launch",
         "account_id": account_id,
-        "data_dir":   str(data_dir),
+        "browser_data_dir": str(data_dir),
         "headless":   headless,
-        "proxy":      str(launch_kw.get("proxy", {}).get("server", "NONE")),
+        "has_proxy":  bool(launch_kw.get("proxy")),
         "timezone":   launch_kw.get("timezone_id"),
         "locale":     launch_kw.get("locale"),
         "viewport":   f"{launch_kw['viewport']['width']}x{launch_kw['viewport']['height']}",
+        "identity_profile_id": getattr(identity_profile, "identity_id", "") or getattr(identity_profile, "fingerprint_hash", "")[:12],
     })
 
     context = await pw.chromium.launch_persistent_context(str(data_dir), **launch_kw)
@@ -267,6 +290,9 @@ async def create_connect_context(
     pw: Any,
     account_id: str,
     proxy_url: str | None = None,
+    session: dict[str, Any] | None = None,
+    identity_profile: Any | None = None,
+    browser_data_dir: str | Path | None = None,
 ) -> AsyncGenerator[tuple[Any, Any], None]:
     """Create a persistent context for the /connect (manual login) flow.
 
@@ -274,14 +300,31 @@ async def create_connect_context(
     """
     from core.platform_config import DEFAULT_VIEWPORT
 
-    identity_profile: Any | None = None
+    session = session or {}
     try:
-        from core.identity_manager import get_identity_registry
-        identity_profile = get_identity_registry().get(account_id)
-    except Exception:
-        pass
+        if identity_profile is None:
+            from core.identity_manager import get_identity_registry
+            reg = get_identity_registry()
+            metadata = session.get("metadata")
+            if isinstance(metadata, dict) and isinstance(metadata.get("identity_profile"), dict):
+                reg.load_profiles({account_id: metadata["identity_profile"]})
+            identity_profile = reg.get(account_id)
+            if identity_profile is None:
+                identity_profile = reg.get_or_create(
+                    account_id,
+                    proxy_url=proxy_url or session.get("proxy_url"),
+                    proxy_country=session.get("proxy_country"),
+                )
+    except Exception as exc:
+        LOGGER.warning("connect_identity_unavailable", extra={"event": "connect_identity_unavailable", "error": str(exc)})
 
-    data_dir = get_browser_data_dir(account_id)
+    data_dir = _resolve_browser_data_dir(account_id, session=session, browser_data_dir=browser_data_dir)
+    if identity_profile is not None:
+        desired_proxy_url = proxy_url or session.get("proxy_url") or None
+        desired_proxy_country = session.get("proxy_country") or None
+        if desired_proxy_url != getattr(identity_profile, "proxy_url", None) or desired_proxy_country != getattr(identity_profile, "proxy_country", None):
+            identity_profile.proxy_url = desired_proxy_url
+            identity_profile.proxy_country = desired_proxy_country
 
     # For connect flow: always use profile's UA/tz/locale if available
     if identity_profile:
@@ -294,12 +337,15 @@ async def create_connect_context(
         tz = identity_profile.timezone
         lc = identity_profile.locale
         px = identity_profile.proxy_url or proxy_url
+        proxy_country = getattr(identity_profile, "proxy_country", None)
     else:
+        fallback_timezone, fallback_locale = detect_local_locale_profile()
         vp = DEFAULT_VIEWPORT
-        ua = None
-        tz = "America/New_York"
-        lc = "en-US"
-        px = proxy_url
+        ua = session.get("user_agent") or None
+        tz = session.get("timezone") or fallback_timezone
+        lc = session.get("locale") or fallback_locale
+        px = proxy_url or session.get("proxy_url")
+        proxy_country = session.get("proxy_country")
 
     launch_kw: dict[str, Any] = {
         "headless":    False,
@@ -316,9 +362,20 @@ async def create_connect_context(
         launch_kw["user_agent"] = ua
     if px:
         launch_kw["proxy"] = {"server": px}
-        LOGGER.info("connect_using_proxy", extra={"event": "connect_using_proxy", "account_id": account_id})
+        LOGGER.info("connect_using_proxy", extra={"event": "connect_using_proxy", "account_id": account_id, "has_proxy": True})
     else:
-        LOGGER.warning("connect_no_proxy", extra={"event": "connect_no_proxy", "warning": "HIGH RISK"})
+        LOGGER.warning("connect_no_proxy", extra={"event": "connect_no_proxy", "account_id": account_id, "has_proxy": False})
+
+    LOGGER.info("connect_context_launch", extra={
+        "event": "connect_context_launch",
+        "account_id": account_id,
+        "browser_data_dir": str(data_dir),
+        "timezone": tz,
+        "locale": lc,
+        "viewport": f"{vp['width']}x{vp['height']}",
+        "has_proxy": bool(px),
+        "identity_profile_id": getattr(identity_profile, "identity_id", "") or getattr(identity_profile, "fingerprint_hash", "")[:12],
+    })
 
     context = await pw.chromium.launch_persistent_context(str(data_dir), **launch_kw)
 
@@ -329,7 +386,6 @@ async def create_connect_context(
         for script in get_stealth_scripts(account_id):
             await context.add_init_script(script)
 
-    proxy_country = getattr(identity_profile, "proxy_country", None)
     await _apply_geolocation(context, proxy_country)
 
     pages = context.pages

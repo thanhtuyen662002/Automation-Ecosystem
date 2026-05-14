@@ -23,7 +23,9 @@ Integration:
 from __future__ import annotations
 
 import hashlib
+import locale as pylocale
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -88,13 +90,99 @@ _TIMEZONE_TO_COUNTRY: dict[str, str] = {
 _LOCALE_TO_COUNTRY: dict[str, str] = {
     "vi-VN": "VN", "th-TH": "TH", "id-ID": "ID", "zh-TW": "TW",
     "ja-JP": "JP", "ko-KR": "KR", "de-DE": "DE", "fr-FR": "FR",
-    "en-US": "US", "en-GB": "GB", "en-AU": "AU",  "zh-CN": "CN",
+    "en-US": "US", "en-GB": "GB", "en-AU": "AU", "en-SG": "SG",
+    "zh-CN": "CN", "zh-HK": "HK",
+}
+
+_DEFAULT_LOCAL_TIMEZONE = "Asia/Ho_Chi_Minh"
+_DEFAULT_LOCAL_LOCALE = "vi-VN"
+
+_COUNTRY_TIMEZONE_DEFAULTS: dict[str, str] = {
+    "VN": "Asia/Ho_Chi_Minh",
+    "TH": "Asia/Bangkok",
+    "ID": "Asia/Jakarta",
+    "TW": "Asia/Taipei",
+    "JP": "Asia/Tokyo",
+    "KR": "Asia/Seoul",
+    "SG": "Asia/Singapore",
+    "CN": "Asia/Shanghai",
+    "HK": "Asia/Hong_Kong",
+    "US": "America/New_York",
+    "GB": "Europe/London",
+    "DE": "Europe/Berlin",
+    "FR": "Europe/Paris",
+    "AU": "Australia/Sydney",
+}
+
+_COUNTRY_LOCALE_DEFAULTS: dict[str, str] = {
+    "VN": "vi-VN",
+    "TH": "th-TH",
+    "ID": "id-ID",
+    "TW": "zh-TW",
+    "JP": "ja-JP",
+    "KR": "ko-KR",
+    "SG": "en-SG",
+    "CN": "zh-CN",
+    "HK": "zh-HK",
+    "US": "en-US",
+    "GB": "en-GB",
+    "DE": "de-DE",
+    "FR": "fr-FR",
+    "AU": "en-AU",
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _normalise_country(country: str | None) -> str | None:
+    value = (country or "").strip().upper()
+    return value if len(value) == 2 else None
+
+
+def _normalise_locale(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw or raw.upper() in {"C", "POSIX"}:
+        return None
+    raw = raw.split(".", 1)[0].replace("_", "-")
+    parts = [part for part in raw.split("-") if part]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0].lower()
+    return f"{parts[0].lower()}-{parts[1].upper()}"
+
+
+def detect_local_locale_profile() -> tuple[str, str]:
+    """Return timezone/locale defaults for local packaged runs."""
+    timezone = (os.environ.get("AE_DEFAULT_TIMEZONE") or os.environ.get("TZ") or "").strip()
+    if timezone == "Asia/Saigon":
+        timezone = _DEFAULT_LOCAL_TIMEZONE
+    if not timezone:
+        timezone = _DEFAULT_LOCAL_TIMEZONE
+
+    raw_locale = os.environ.get("AE_DEFAULT_LOCALE") or os.environ.get("LANG")
+    if not raw_locale:
+        try:
+            raw_locale = pylocale.getlocale()[0]
+        except Exception:
+            raw_locale = None
+    locale = _normalise_locale(raw_locale) or _DEFAULT_LOCAL_LOCALE
+    return timezone, locale
+
+
+def locale_timezone_for_country(country: str | None) -> tuple[str, str]:
+    """Return timezone/locale aligned to an ISO-2 country, else local defaults."""
+    normalised = _normalise_country(country)
+    local_timezone, local_locale = detect_local_locale_profile()
+    if not normalised:
+        return local_timezone, local_locale
+    return (
+        _COUNTRY_TIMEZONE_DEFAULTS.get(normalised, local_timezone),
+        _COUNTRY_LOCALE_DEFAULTS.get(normalised, local_locale),
+    )
+
 
 def _stable_seed(account_id: str) -> int:
     digest = hashlib.sha256(account_id.encode()).hexdigest()
@@ -258,19 +346,10 @@ def generate_identity_profile(
     device_idx = _seeded_choice(seed, 0, len(_DEVICE_POOL))
     device = _DEVICE_POOL[device_idx]
 
-    # Pick locale and timezone
-    locale_idx = _seeded_choice(seed, 1, len(_LOCALE_POOL))
-    locale = _LOCALE_POOL[locale_idx]
-
-    # Align timezone to locale country where possible, otherwise pick independently
-    locale_country = _LOCALE_TO_COUNTRY.get(locale)
-    tz_candidates = [tz for tz, c in _TIMEZONE_TO_COUNTRY.items() if c == locale_country]
-    if not tz_candidates:
-        tz_idx = _seeded_choice(seed, 2, len(_TIMEZONE_POOL))
-        timezone = _TIMEZONE_POOL[tz_idx]
-    else:
-        tz_idx = _seeded_choice(seed, 2, len(tz_candidates))
-        timezone = tz_candidates[tz_idx]
+    # Pick locale/timezone from proxy country when known. Without a proxy, use
+    # the local packaged-machine defaults instead of randomly falling back to US.
+    proxy_country = _normalise_country(proxy_country)
+    timezone, locale = locale_timezone_for_country(proxy_country)
 
     # Noise seeds for browser spoofing (Playwright inject)
     canvas_seed = _seeded_int(seed, 10, 100_000, 999_999)

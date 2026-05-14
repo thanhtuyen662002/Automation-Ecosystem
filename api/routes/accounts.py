@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback as _traceback
 
@@ -194,9 +195,13 @@ async def get_session_status(account_id: str, database: DatabaseDependency) -> S
     return SessionStatusResponse(
         account_id=account_id,
         session_valid=bool(row.get("session_valid", 0)),
+        status="limited" if row.get("status") == "limited" else ("connected" if row.get("session_valid") else ("expired" if row.get("last_login_at") else "not_connected")),
         has_cookies=bool(row.get("cookies")),
         last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
         user_agent=row.get("user_agent"),
+        browser_data_dir=row.get("browser_data_dir"),
+        timezone=row.get("timezone"),
+        locale=row.get("locale"),
     )
 
 
@@ -221,7 +226,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
     platform = row["platform"]
 
     try:
-        from core.platform_config import get_platform_config, is_login_page, DEFAULT_VIEWPORT
+        from core.platform_config import get_platform_config, DEFAULT_VIEWPORT
         from core.session_crypto import encrypt_cookies
         from playwright.async_api import async_playwright
     except ImportError as exc:
@@ -237,6 +242,20 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
 
     proxy_url: str | None = row.get("proxy_url") or None
     configured_profile_url: str | None = row.get("profile_url") or _derive_profile_url(platform, row["account_handle"])
+    session = await database.get_account_session(account_id) or {}
+
+    try:
+        from core.browser_context import get_browser_data_dir
+        browser_data_dir = str(row.get("browser_data_dir") or session.get("browser_data_dir") or get_browser_data_dir(account_id))
+        if not row.get("browser_data_dir"):
+            await database.set_browser_data_dir(account_id, browser_data_dir)
+        identity_profile = await _ensure_identity_profile(account_id, row, database)
+    except Exception as exc:
+        LOGGER.warning(
+            "account_connect_identity_prepare_failed",
+            extra={"event": "account_connect_identity_prepare_failed", "account_id": account_id, "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to prepare account browser identity: {exc}") from exc
 
     LOGGER.info(
         "account_connect_start",
@@ -244,21 +263,48 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             "event": "account_connect_start",
             "account_id": account_id,
             "platform": platform,
-            "proxy": proxy_url or "NONE (HIGH RISK)",
+            "browser_data_dir": browser_data_dir,
+            "timezone": getattr(identity_profile, "timezone", None),
+            "locale": getattr(identity_profile, "locale", None),
+            "viewport": getattr(identity_profile, "screen_resolution", None),
+            "has_proxy": bool(proxy_url),
+            "identity_profile_id": getattr(identity_profile, "identity_id", "") or getattr(identity_profile, "fingerprint_hash", "")[:12],
         },
     )
 
     # Pre-initialize so outer scope is safe even if browser block exits early
     profile: dict = {"avatar_url": "", "display_name": ""}
     cookies: list = []
-    fingerprint: dict = {"width": 1280, "height": 720, "timezone": "America/New_York", "locale": "en-US"}
+    fallback_width = int(DEFAULT_VIEWPORT.get("width", 1280))
+    fallback_height = int(DEFAULT_VIEWPORT.get("height", 720))
+    try:
+        fallback_width, fallback_height = [int(part) for part in identity_profile.screen_resolution.split("x", 1)]
+    except Exception:
+        pass
+    fingerprint: dict = {
+        "width": fallback_width,
+        "height": fallback_height,
+        "timezone": getattr(identity_profile, "timezone", "Asia/Ho_Chi_Minh"),
+        "locale": getattr(identity_profile, "locale", "vi-VN"),
+    }
     user_agent: str = ""
 
     try:
-        from core.browser_context import create_connect_context, get_browser_data_dir
+        from core.browser_context import create_connect_context
+        from core.login_diagnostics import LoginBlockStatus, classify_login_block
 
         async with async_playwright() as pw:
-            async with create_connect_context(pw, account_id, proxy_url=proxy_url) as (context, page):
+            connect_session = dict(session)
+            connect_session["metadata"] = _metadata_dict(row)
+            connect_session["browser_data_dir"] = browser_data_dir
+            async with create_connect_context(
+                pw,
+                account_id,
+                proxy_url=proxy_url,
+                session=connect_session,
+                identity_profile=identity_profile,
+                browser_data_dir=browser_data_dir,
+            ) as (context, page):
 
                 user_agent = await page.evaluate("navigator.userAgent")
                 await page.goto(cfg.login_url, wait_until="domcontentloaded", timeout=60000)
@@ -274,13 +320,20 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 logged_in = False
                 while asyncio.get_running_loop().time() < deadline:
                     try:
-                        current_url = page.url
+                        _ = page.url
                     except Exception:
                         # Browser window was closed by the user before login
                         raise HTTPException(
                             status_code=400,
                             detail="Browser was closed before login completed. Please try again.",
                         )
+                    diagnostic = await classify_login_block(page)
+                    if diagnostic in {
+                        LoginBlockStatus.RATE_LIMITED,
+                        LoginBlockStatus.CAPTCHA_REQUIRED,
+                        LoginBlockStatus.CHECKPOINT_REQUIRED,
+                    }:
+                        await _raise_login_block(account_id, platform, diagnostic, database)
                     if await _looks_logged_in(page, context, platform, cfg.success_url_fragment):
                         logged_in = True
                         break
@@ -372,7 +425,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 fingerprint = await page.evaluate("""
                     () => ({
                         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                        locale: navigator.language || 'en-US',
+                        locale: navigator.language || 'vi-VN',
                         width: window.screen.width,
                         height: window.screen.height,
                     })
@@ -380,22 +433,23 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 # context.close() is handled by create_connect_context
 
         # Persist session + fingerprint to DB (also stored in persistent profile dir)
-        data_dir = str(get_browser_data_dir(account_id))
+        data_dir = browser_data_dir
         cookies_encrypted = encrypt_cookies(cookies)
         updated = await database.save_account_session(
             account_id,
             cookies_encrypted,
             user_agent,
-            viewport_width=fingerprint.get("width", 1280),
-            viewport_height=fingerprint.get("height", 720),
-            timezone=fingerprint.get("timezone", "America/New_York"),
-            locale=fingerprint.get("locale", "en-US"),
+            viewport_width=fingerprint.get("width") or fallback_width,
+            viewport_height=fingerprint.get("height") or fallback_height,
+            timezone=fingerprint.get("timezone") or getattr(identity_profile, "timezone", "Asia/Ho_Chi_Minh"),
+            locale=fingerprint.get("locale") or getattr(identity_profile, "locale", "vi-VN"),
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Account not found after session save")
 
         # Persist browser_data_dir
         await database.set_browser_data_dir(account_id, data_dir)
+        await database.save_account_identity_profile(account_id, identity_profile.to_dict())
 
         # Persist profile info (avatar + display_name)
         if profile.get("avatar_url") or profile.get("display_name") or profile.get("profile_url") or configured_profile_url:
@@ -410,6 +464,10 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             fresh = await database.get_account(account_id)
             if fresh:
                 updated = fresh
+        else:
+            fresh = await database.get_account(account_id)
+            if fresh:
+                updated = fresh
 
         LOGGER.info(
             "account_connect_success",
@@ -420,6 +478,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
                 "cookie_count": len(cookies),
                 "fingerprint": fingerprint,
                 "browser_data_dir": data_dir,
+                "identity_profile_id": getattr(identity_profile, "identity_id", "") or getattr(identity_profile, "fingerprint_hash", "")[:12],
             },
         )
         return AccountResponse.from_row(updated)
@@ -434,6 +493,79 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             extra={"event": "account_connect_error", "account_id": account_id, "error": str(exc)},
         )
         raise _connect_error_to_http(exc) from exc
+
+
+def _metadata_dict(row: dict) -> dict:
+    metadata = row.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+async def _ensure_identity_profile(account_id: str, row: dict, database):
+    from core.identity_manager import get_identity_registry
+
+    registry = get_identity_registry()
+    persisted = await database.get_account_identity_profile(account_id)
+    if persisted:
+        registry.load_profiles({account_id: persisted})
+        profile = registry.get(account_id)
+        if profile is not None:
+            desired_proxy_url = row.get("proxy_url") or None
+            desired_proxy_country = row.get("proxy_country") or None
+            if profile.proxy_url != desired_proxy_url or profile.proxy_country != desired_proxy_country:
+                profile.proxy_url = desired_proxy_url
+                profile.proxy_country = desired_proxy_country
+                await database.save_account_identity_profile(account_id, profile.to_dict())
+            return profile
+
+    desired_proxy_url = row.get("proxy_url") or None
+    desired_proxy_country = row.get("proxy_country") or None
+    profile = registry.get_or_create(
+        account_id,
+        proxy_url=desired_proxy_url,
+        proxy_country=desired_proxy_country,
+    )
+    profile.proxy_url = desired_proxy_url
+    profile.proxy_country = desired_proxy_country
+    await database.save_account_identity_profile(account_id, profile.to_dict())
+    return profile
+
+
+async def _raise_login_block(account_id: str, platform: str, diagnostic, database) -> None:
+    from core.login_diagnostics import LoginBlockStatus, login_block_error_message
+
+    event_by_status = {
+        LoginBlockStatus.RATE_LIMITED: "tiktok_login_rate_limited",
+        LoginBlockStatus.CAPTCHA_REQUIRED: "tiktok_checkpoint_required",
+        LoginBlockStatus.CHECKPOINT_REQUIRED: "tiktok_checkpoint_required",
+    }
+    event = event_by_status.get(diagnostic, "account_login_blocked")
+    status_code = 429 if diagnostic == LoginBlockStatus.RATE_LIMITED else 403
+    detail = login_block_error_message(diagnostic)
+
+    await database.record_login_diagnostic(
+        account_id,
+        diagnostic.value,
+        platform=platform,
+        status="limited",
+    )
+    LOGGER.warning(
+        event,
+        extra={
+            "event": event,
+            "account_id": account_id,
+            "platform": platform,
+            "diagnostic": diagnostic.value,
+        },
+    )
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 def _derive_profile_url(platform: str, account_handle: str | None) -> str | None:

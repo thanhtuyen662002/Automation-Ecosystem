@@ -1,4 +1,9 @@
-import { createClient } from "@supabase/supabase-js";
+// @ts-ignore: Deno npm import resolution
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+// Declare Deno global for IDE type checking
+declare const Deno: any;
+
 
 type Json = Record<string, unknown>;
 type LicenseStatus =
@@ -35,7 +40,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
 
 const envOrigins = (Deno.env.get("LICENSE_API_ALLOWED_ORIGINS") ?? "")
   .split(",")
-  .map((x) => x.trim())
+  .map((x: string) => x.trim())
   .filter(Boolean);
 
 const allowedOrigins = new Set([...DEFAULT_ALLOWED_ORIGINS, ...envOrigins]);
@@ -441,7 +446,7 @@ async function changeKey(req: Request, body: Json): Promise<Response> {
   return result;
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const cors = corsHeaders(req);
   if (req.method === "OPTIONS") {
     if (req.headers.has("origin") && !cors["Access-Control-Allow-Origin"]) {

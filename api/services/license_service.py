@@ -13,8 +13,7 @@ import httpx
 from core.license_key import get_license_key_prefix, mask_license_key, normalize_license_key
 from core.license_status import ERROR_STATUSES, NORMAL_CACHEABLE_STATUSES, LicenseStatus, parse_license_status
 from core.license_store import clear_license_state, read_license_state, write_license_state
-from core.machine_id import get_local_machine_fingerprint_hash, get_machine_id, get_platform_label
-
+from core.machine_id import get_local_machine_fingerprint_hash, get_platform_label
 
 LOGGER = logging.getLogger("api.license_service")
 
@@ -154,7 +153,7 @@ class LicenseService:
                     "activate",
                     {
                         "license_key": normalized,
-                        "machine_fingerprint": get_machine_id(),
+                        "machine_fingerprint": get_local_machine_fingerprint_hash(),
                         "device_name": device_name,
                         "platform": get_platform_label(),
                         "app_version": app_version,
@@ -241,7 +240,7 @@ class LicenseService:
                     {
                         "license_id": license_id,
                         "device_id": device_id,
-                        "machine_fingerprint": get_machine_id(),
+                        "machine_fingerprint": get_local_machine_fingerprint_hash(),
                         "app_version": app_version,
                     },
                 )
@@ -284,7 +283,7 @@ class LicenseService:
                         "license_key": normalized,
                         "previous_license_id": _as_str(state.get("license_id")),
                         "previous_device_id": _as_str(state.get("device_id")),
-                        "machine_fingerprint": get_machine_id(),
+                        "machine_fingerprint": get_local_machine_fingerprint_hash(),
                         "platform": get_platform_label(),
                         "app_version": app_version,
                         "metadata": _client_metadata(normalized, app_version),
@@ -438,7 +437,7 @@ class LicenseService:
                 {
                     "license_id": license_id,
                     "device_id": device_id,
-                    "machine_fingerprint": get_machine_id(),
+                    "machine_fingerprint": get_local_machine_fingerprint_hash(),
                     "app_version": app_version,
                 },
             )

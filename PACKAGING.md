@@ -22,9 +22,24 @@ This package produces a one-click Windows desktop application:
 
 ## License And Secrets
 
-Packaged builds must not include `.env.production`, `SUPABASE_SERVICE_ROLE_KEY`,
-`LICENSE_KEY_PEPPER`, `MACHINE_HASH_PEPPER`, direct database URLs, admin scripts,
-or provider API keys.
+Packaged builds must not include `.env.production` with secrets.
+Customer/local app env chỉ được có:
+
+```env
+SUPABASE_URL=https://twkqwtpgahjusofcpivw.supabase.co
+SUPABASE_ANON_KEY=<public anon key>
+LICENSE_API_URL=https://twkqwtpgahjusofcpivw.supabase.co/functions/v1/license-api
+LICENSE_OFFLINE_GRACE_DAYS=7
+LICENSE_STATUS_CACHE_TTL_SECONDS=30
+```
+
+Không được ship:
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `LICENSE_KEY_PEPPER`
+- `MACHINE_HASH_PEPPER`
+- `SUPABASE_DB_URL`
+- `POSTGRES_URL`
+- `ADMIN_SECRET`
 
 License activation is handled by the trusted Supabase Edge Function at
 `supabase/functions/license-api`:
@@ -86,14 +101,20 @@ npm run build
 Apply the existing license schema migrations, then apply
 `supabase/migrations/202605140001_add_transaction_safe_license_activation_rpc.sql`
 to add the transaction-safe activation RPC. Deploy
-`supabase/functions/license-api` with JWT verification enabled or disabled as
-appropriate for server-to-server local app calls; the function still receives the
-public anon key and uses only server-side secrets for privileged work.
+`supabase/functions/license-api` with JWT verification disabled.
+
+Deploy steps:
+1. `supabase db push` hoặc apply migration RPC.
+2. `supabase functions deploy license-api --no-verify-jwt`.
+3. Set Edge Function Secrets.
+4. `python scripts/check_license_schema.py`.
+5. `python scripts/check_license_security.py`.
+6. `python scripts/create_license.py` tạo key test.
+7. Test Chrome/Edge.
 
 Set these Edge Function secrets in Supabase:
 
 ```text
-SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 LICENSE_KEY_PEPPER
 MACHINE_HASH_PEPPER
@@ -102,7 +123,7 @@ MACHINE_HASH_PEPPER
 Verify release artifacts do not contain strong secret names:
 
 ```powershell
-rg "SUPABASE_SERVICE_ROLE_KEY|LICENSE_KEY_PEPPER|MACHINE_HASH_PEPPER|SUPABASE_DB_URL" dist backend_dist release
+python scripts/check_release_secrets.py ui/dist backend_dist release
 ```
 
 The command should return no matches.

@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 
 
+import os
+
 SECRET_MARKERS = (
     "SUPABASE_SERVICE_ROLE_KEY",
     "LICENSE_KEY_PEPPER",
@@ -11,6 +13,24 @@ SECRET_MARKERS = (
     "APP_MACHINE_SALT",
     "SUPABASE_DB_URL",
 )
+
+
+def get_secret_values() -> dict[str, bytes]:
+    values: dict[str, bytes] = {}
+    for env_name in [
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "LICENSE_KEY_PEPPER",
+        "MACHINE_HASH_PEPPER",
+        "SUPABASE_DB_URL",
+        "POSTGRES_URL",
+    ]:
+        val = os.getenv(env_name, "").strip()
+        if len(val) >= 12:
+            values[env_name] = val.encode("utf-8")
+    return values
+
+
+SECRET_VALUES = get_secret_values()
 
 
 def scan_file(path: Path) -> list[str]:
@@ -22,6 +42,9 @@ def scan_file(path: Path) -> list[str]:
     for marker in SECRET_MARKERS:
         if marker.encode("utf-8") in data:
             hits.append(marker)
+    for env_name, val_bytes in SECRET_VALUES.items():
+        if val_bytes in data:
+            hits.append(f"value of {env_name}")
     return hits
 
 

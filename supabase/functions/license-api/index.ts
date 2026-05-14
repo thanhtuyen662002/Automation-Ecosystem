@@ -26,12 +26,38 @@ type LicenseResponse = {
   offline_valid_until: string | null;
 };
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
 
+const envOrigins = (Deno.env.get("LICENSE_API_ALLOWED_ORIGINS") ?? "")
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
+
+const allowedOrigins = new Set([...DEFAULT_ALLOWED_ORIGINS, ...envOrigins]);
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin");
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin",
+  };
+
+  if (!origin) {
+    return headers;
+  }
+
+  if (allowedOrigins.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+
+  return headers;
+}
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 40;
 const RATE_LIMITS = new Map<string, { count: number; resetAt: number }>();
@@ -54,7 +80,7 @@ function mustEnv(name: string): string {
 function json(statusCode: number, body: LicenseResponse): Response {
   return new Response(JSON.stringify(body), {
     status: statusCode,
-    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -416,22 +442,34 @@ async function changeKey(req: Request, body: Json): Promise<Response> {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
+  const cors = corsHeaders(req);
+  if (req.method === "OPTIONS") {
+    if (req.headers.has("origin") && !cors["Access-Control-Allow-Origin"]) {
+      return new Response("Forbidden", { status: 403, headers: cors });
+    }
+    return new Response("ok", { headers: cors });
+  }
+
+  let res: Response;
   if (req.method !== "POST") {
-    return json(405, response("server_error", "Method not allowed"));
+    res = json(405, response("server_error", "Method not allowed"));
+  } else {
+    try {
+      const body = await readBody(req);
+      const action = actionFromRequest(req, body);
+      if (action === "activate") res = await activate(req, body);
+      else if (action === "status") res = await status(body, "status");
+      else if (action === "refresh") res = await status(body, "refresh");
+      else if (action === "change-key") res = await changeKey(req, body);
+      else res = json(400, response("server_error", "Unsupported license action"));
+    } catch (error) {
+      console.error("license_api_internal_error", error instanceof Error ? error.name : "unknown");
+      res = json(500, response("server_error", "License service failed"));
+    }
   }
 
-  const body = await readBody(req);
-  const action = actionFromRequest(req, body);
-
-  try {
-    if (action === "activate") return await activate(req, body);
-    if (action === "status") return await status(body, "status");
-    if (action === "refresh") return await status(body, "refresh");
-    if (action === "change-key") return await changeKey(req, body);
-    return json(400, response("server_error", "Unsupported license action"));
-  } catch (error) {
-    console.error("license_api_internal_error", error instanceof Error ? error.name : "unknown");
-    return json(500, response("server_error", "License service failed"));
+  for (const [k, v] of Object.entries(cors)) {
+    res.headers.set(k, v);
   }
+  return res;
 });

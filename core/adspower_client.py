@@ -15,6 +15,7 @@ ADSPOWER_START_FAILED = "ADSPOWER_START_FAILED"
 ADSPOWER_PROFILE_NOT_FOUND = "ADSPOWER_PROFILE_NOT_FOUND"
 ADSPOWER_API_UNAVAILABLE = "ADSPOWER_API_UNAVAILABLE"
 ADSPOWER_TIMEOUT = "ADSPOWER_TIMEOUT"
+ADSPOWER_BROWSER_UPDATING = "ADSPOWER_BROWSER_UPDATING"
 
 
 class AdsPowerClientError(RuntimeError):
@@ -157,6 +158,17 @@ class AdsPowerClient:
             return
         message = str(payload.get("msg") or payload.get("message") or "AdsPower request failed")
         lowered = message.lower()
+        if (
+            "is updating" in lowered
+            or "waiting for download" in lowered
+            or "flowerbrowser" in lowered
+            or "browser is updating" in lowered
+        ):
+            raise AdsPowerClientError(
+                ADSPOWER_BROWSER_UPDATING,
+                message,
+                detail={"action": "wait_or_download_browser_core"},
+            )
         error_code = ADSPOWER_PROFILE_NOT_FOUND if "not found" in lowered or "not exist" in lowered else default_code
         raise AdsPowerClientError(error_code, message)
 

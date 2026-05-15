@@ -892,6 +892,7 @@ def _browser_diagnostics_enabled() -> bool:
 def _adspower_error_to_http(exc: Exception) -> HTTPException:
     from core.adspower_client import (
         ADSPOWER_API_UNAVAILABLE,
+        ADSPOWER_BROWSER_UPDATING,
         ADSPOWER_PROFILE_ID_MISSING,
         ADSPOWER_PROFILE_NOT_FOUND,
         ADSPOWER_START_FAILED,
@@ -908,6 +909,14 @@ def _adspower_error_to_http(exc: Exception) -> HTTPException:
         return HTTPException(status_code=503, detail=detail)
     if code == ADSPOWER_TIMEOUT:
         return HTTPException(status_code=504, detail=detail)
+    if code == ADSPOWER_BROWSER_UPDATING:
+        return HTTPException(
+            status_code=409,
+            detail=(
+                "AdsPower is downloading/updating FlowerBrowser for this profile. "
+                "Open AdsPower and wait until the browser core finishes downloading, then try again."
+            ),
+        )
     return HTTPException(status_code=502, detail=detail)
 
 

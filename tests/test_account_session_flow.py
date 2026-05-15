@@ -52,6 +52,36 @@ def test_provider_resolver_reads_adspower_manual_and_legacy_alias():
     assert legacy == BROWSER_PROVIDER_ADSPOWER_MANUAL
 
 
+def test_adspower_browser_updating_is_classified():
+    from core.adspower_client import (
+        ADSPOWER_BROWSER_UPDATING,
+        ADSPOWER_START_FAILED,
+        AdsPowerClient,
+        AdsPowerClientError,
+    )
+
+    with pytest.raises(AdsPowerClientError) as exc:
+        AdsPowerClient._ensure_success(
+            {"code": -1, "msg": "FlowerBrowser is updating, waiting for download"},
+            default_code=ADSPOWER_START_FAILED,
+        )
+
+    assert exc.value.code == ADSPOWER_BROWSER_UPDATING
+    assert exc.value.detail == {"action": "wait_or_download_browser_core"}
+
+
+def test_adspower_browser_updating_maps_to_http_409():
+    from api.routes.accounts import _adspower_error_to_http
+    from core.adspower_client import ADSPOWER_BROWSER_UPDATING, AdsPowerClientError
+
+    http_exc = _adspower_error_to_http(
+        AdsPowerClientError(ADSPOWER_BROWSER_UPDATING, "FlowerBrowser is updating")
+    )
+
+    assert http_exc.status_code == 409
+    assert "FlowerBrowser" in str(http_exc.detail)
+
+
 def test_real_chrome_account_readiness_does_not_require_proxy():
     from api.schemas import AccountResponse
 

@@ -12,11 +12,14 @@ LOGGER = logging.getLogger("core.browser_providers")
 
 BROWSER_PROVIDER_PLAYWRIGHT = "playwright"
 BROWSER_PROVIDER_REAL_CHROME = "real_chrome"
-BROWSER_PROVIDER_ADSPOWER = "adspower"
+BROWSER_PROVIDER_ADSPOWER_MANUAL = "adspower_manual"
+BROWSER_PROVIDER_ADSPOWER_LEGACY = "adspower"
+BROWSER_PROVIDER_ADSPOWER = BROWSER_PROVIDER_ADSPOWER_MANUAL
 VALID_BROWSER_PROVIDERS = {
     BROWSER_PROVIDER_PLAYWRIGHT,
     BROWSER_PROVIDER_REAL_CHROME,
-    BROWSER_PROVIDER_ADSPOWER,
+    BROWSER_PROVIDER_ADSPOWER_MANUAL,
+    BROWSER_PROVIDER_ADSPOWER_LEGACY,
 }
 
 
@@ -42,7 +45,14 @@ def resolve_browser_provider(account: dict[str, Any] | None) -> str:
         or BROWSER_PROVIDER_PLAYWRIGHT
     )
     provider = str(provider).strip().lower()
+    if provider == BROWSER_PROVIDER_ADSPOWER_LEGACY:
+        return BROWSER_PROVIDER_ADSPOWER_MANUAL
     return provider if provider in VALID_BROWSER_PROVIDERS else BROWSER_PROVIDER_PLAYWRIGHT
+
+
+def get_adspower_profile_id(account: dict[str, Any] | None) -> str:
+    metadata = account_metadata(account)
+    return str((account or {}).get("adspower_profile_id") or metadata.get("adspower_profile_id") or "").strip()
 
 
 def _provider_base_dir(folder_name: str) -> Path:
@@ -208,16 +218,77 @@ class RealChromeProvider:
                 pass
 
 
+class AdsPowerManualProvider:
+    """Connect to a manually logged-in AdsPower profile for publish/warmup only.
+
+    The login phase intentionally does not use this provider. Account connect
+    only starts the AdsPower profile and waits for explicit user confirmation.
+    """
+
+    def __init__(
+        self,
+        account: dict[str, Any],
+        session: dict[str, Any] | None = None,
+        identity_profile: Any | None = None,
+    ) -> None:
+        self.account = account
+        self.session = session or {}
+        self.identity_profile = identity_profile
+        self.account_id = str(account.get("account_id") or account.get("id") or self.session.get("id") or "default")
+        self.profile_id = get_adspower_profile_id(account) or get_adspower_profile_id(self.session)
+
+    @asynccontextmanager
+    async def open_connect_context(self, pw: Any) -> AsyncGenerator[tuple[Any, Any, str], None]:
+        raise RuntimeError("AdsPower manual provider cannot be used during login connect flow")
+        yield  # pragma: no cover
+
+    @asynccontextmanager
+    async def open_publisher_context(
+        self,
+        pw: Any,
+        *,
+        headless: bool = False,
+    ) -> AsyncGenerator[tuple[Any, Any, str], None]:
+        from core.adspower_client import AdsPowerClient
+
+        if not self.profile_id:
+            from core.adspower_client import AdsPowerClientError, ADSPOWER_PROFILE_ID_MISSING
+
+            raise AdsPowerClientError(ADSPOWER_PROFILE_ID_MISSING, "AdsPower profile id is required")
+
+        client = AdsPowerClient()
+        debug_endpoint = await client.get_debug_endpoint(self.profile_id)
+        LOGGER.info(
+            "adspower_cdp_connect_start",
+            extra={
+                "event": "adspower_cdp_connect_start",
+                "account_id": self.account_id,
+                "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+                "profile_id": self.profile_id,
+            },
+        )
+        browser = await pw.chromium.connect_over_cdp(debug_endpoint)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+        try:
+            yield context, page, self.profile_id
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 def make_browser_provider(
     account: dict[str, Any],
     session: dict[str, Any] | None = None,
     identity_profile: Any | None = None,
-) -> PlaywrightPersistentProvider | RealChromeProvider:
+) -> PlaywrightPersistentProvider | RealChromeProvider | AdsPowerManualProvider:
     provider = resolve_browser_provider(account)
     if provider == BROWSER_PROVIDER_REAL_CHROME:
         return RealChromeProvider(account, session=session, identity_profile=identity_profile)
-    if provider == BROWSER_PROVIDER_ADSPOWER:
-        raise NotImplementedError("AdsPower provider is not implemented yet")
+    if provider == BROWSER_PROVIDER_ADSPOWER_MANUAL:
+        return AdsPowerManualProvider(account, session=session, identity_profile=identity_profile)
     return PlaywrightPersistentProvider(account, session=session, identity_profile=identity_profile)
 
 

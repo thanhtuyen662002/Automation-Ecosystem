@@ -42,6 +42,16 @@ def test_provider_resolver_reads_json_metadata():
     assert provider == BROWSER_PROVIDER_REAL_CHROME
 
 
+def test_provider_resolver_reads_adspower_manual_and_legacy_alias():
+    from core.browser_providers import BROWSER_PROVIDER_ADSPOWER_MANUAL, resolve_browser_provider
+
+    provider = resolve_browser_provider({"metadata": json.dumps({"browser_provider": "adspower_manual"})})
+    legacy = resolve_browser_provider({"metadata": json.dumps({"browser_provider": "adspower"})})
+
+    assert provider == BROWSER_PROVIDER_ADSPOWER_MANUAL
+    assert legacy == BROWSER_PROVIDER_ADSPOWER_MANUAL
+
+
 def test_real_chrome_account_readiness_does_not_require_proxy():
     from api.schemas import AccountResponse
 
@@ -75,6 +85,61 @@ def test_real_chrome_account_readiness_does_not_require_proxy():
     assert response.browser_provider == "real_chrome"
     assert "proxy_missing" not in response.readiness_errors
     assert response.can_publish is True
+
+
+def test_adspower_manual_account_readiness_requires_profile_not_proxy():
+    from api.schemas import AccountResponse
+
+    response = AccountResponse.from_row(
+        {
+            "id": "account-ads",
+            "platform": "tiktok",
+            "account_handle": "handle",
+            "profile_url": None,
+            "external_user_id": None,
+            "status": "healthy",
+            "proxy_url": None,
+            "proxy_country": None,
+            "metadata": json.dumps({"browser_provider": "adspower_manual", "adspower_profile_id": "profile-1"}),
+            "session_valid": 1,
+            "last_login_at": "2026-05-15T00:00:00Z",
+            "user_agent": None,
+            "browser_data_dir": None,
+            "avatar_url": None,
+            "display_name": None,
+            "risk_score": 0,
+            "soft_ban_detected": 0,
+            "warmup_sessions_completed": 0,
+            "failed_publish_count": 0,
+            "captcha_hit_count": 0,
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+
+    assert response.browser_provider == "adspower_manual"
+    assert response.adspower_profile_id == "profile-1"
+    assert "proxy_missing" not in response.readiness_errors
+    assert "adspower_profile_missing" not in response.readiness_errors
+    assert response.can_publish is True
+
+
+@pytest.mark.asyncio
+async def test_adspower_manual_connect_context_is_disabled():
+    from core.browser_providers import AdsPowerManualProvider
+
+    class FakeChromium:
+        async def connect_over_cdp(self, *_args, **_kwargs):
+            raise AssertionError("CDP must not be attached during manual login connect")
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    provider = AdsPowerManualProvider({"id": "account-ads", "metadata": {"browser_provider": "adspower_manual", "adspower_profile_id": "profile-1"}})
+
+    with pytest.raises(RuntimeError):
+        async with provider.open_connect_context(FakePlaywright()):
+            pass
 
 
 def test_identity_stable_and_local_defaults(monkeypatch):
@@ -279,6 +344,30 @@ def test_warmup_real_chrome_profile_dir_is_not_enough(monkeypatch, tmp_path):
             "account_id": "warmup-real-chrome-no-session",
             "platform": "tiktok",
             "metadata": {"browser_provider": "real_chrome", "real_chrome_user_data_dir": str(profile_dir)},
+        },
+        headless=True,
+    )
+
+    assert result.success is False
+    assert result.error == "SESSION_NOT_CONNECTED"
+
+
+def test_warmup_adspower_profile_id_is_not_enough(monkeypatch, tmp_path):
+    monkeypatch.setenv("WARMUP_DB", str(tmp_path / "warmup.db"))
+
+    import execution.publisher_playwright as publisher
+    from execution.account_warmup import run_warmup_session
+
+    async def fail_login(*args, **kwargs):
+        raise AssertionError("login_tiktok must not be called")
+
+    monkeypatch.setattr(publisher, "login_tiktok", fail_login)
+
+    result = run_warmup_session(
+        {
+            "account_id": "warmup-adspower-no-session",
+            "platform": "tiktok",
+            "metadata": {"browser_provider": "adspower_manual", "adspower_profile_id": "profile-1"},
         },
         headless=True,
     )

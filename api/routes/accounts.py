@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import traceback as _traceback
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
@@ -54,6 +57,7 @@ async def create_account(
             "browser_provider": request.browser_provider,
             "real_chrome_user_data_dir": request.real_chrome_user_data_dir,
             "real_chrome_debug_port": request.real_chrome_debug_port,
+            "adspower_profile_id": request.adspower_profile_id,
         },
     )
     row = await database.create_account(
@@ -84,7 +88,7 @@ async def update_account(
     update_fields = request.model_dump(exclude_unset=True)
     browser_metadata_updates = {
         key: update_fields.pop(key)
-        for key in ("browser_provider", "real_chrome_user_data_dir", "real_chrome_debug_port")
+        for key in ("browser_provider", "real_chrome_user_data_dir", "real_chrome_debug_port", "adspower_profile_id")
         if key in update_fields
     }
     if browser_metadata_updates:
@@ -221,22 +225,20 @@ async def get_session_status(account_id: str, database: DatabaseDependency) -> S
         user_agent=row.get("user_agent"),
         browser_data_dir=row.get("browser_data_dir"),
         real_chrome_user_data_dir=metadata.get("real_chrome_user_data_dir"),
+        adspower_profile_id=metadata.get("adspower_profile_id"),
         timezone=row.get("timezone"),
         locale=row.get("locale"),
     )
 
 
-@router.post("/{account_id}/connect", response_model=AccountResponse)
-async def connect_account(account_id: str, database: DatabaseDependency) -> AccountResponse:
+@router.post("/{account_id}/connect")
+async def connect_account(account_id: str, database: DatabaseDependency) -> Any:
     """
-    Launch a visible Playwright browser window so the user can log in manually.
+    Launch a visible browser window so the user can log in manually.
 
-    Flow:
-    1. Open Chromium to the platform login page
-    2. Wait for the user to complete login (max 5 minutes)
-    3. Extract cookies and user-agent
-    4. Save encrypted session to DB
-    5. Return updated account
+    Playwright/Real Chrome open the login page, wait for manual login, and
+    save the session. AdsPower Manual only starts the AdsPower profile and
+    returns immediately; the app never attaches CDP during the login phase.
 
     The browser is always visible (non-headless) — credentials are never automated.
     """
@@ -245,6 +247,25 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         raise HTTPException(status_code=404, detail="Account not found")
 
     platform = row["platform"]
+    metadata = _metadata_dict(row)
+    session = await database.get_account_session(account_id) or {}
+
+    try:
+        from core.browser_providers import (
+            BROWSER_PROVIDER_ADSPOWER_MANUAL,
+            resolve_browser_provider,
+        )
+
+        browser_provider = resolve_browser_provider({**row, "metadata": metadata})
+    except Exception as exc:
+        LOGGER.warning(
+            "account_connect_provider_resolve_failed",
+            extra={"event": "account_connect_provider_resolve_failed", "account_id": account_id, "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to resolve browser provider: {exc}") from exc
+
+    if browser_provider == BROWSER_PROVIDER_ADSPOWER_MANUAL:
+        return await _open_adspower_manual_login(account_id, row, metadata, database)
 
     try:
         from core.platform_config import get_platform_config, DEFAULT_VIEWPORT
@@ -261,14 +282,13 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    metadata = _metadata_dict(row)
     proxy_url: str | None = row.get("proxy_url") or None
     configured_profile_url: str | None = row.get("profile_url") or _derive_profile_url(platform, row["account_handle"])
-    session = await database.get_account_session(account_id) or {}
 
     try:
         from core.browser_context import get_browser_data_dir
         from core.browser_providers import (
+            BROWSER_PROVIDER_ADSPOWER_MANUAL,
             BROWSER_PROVIDER_PLAYWRIGHT,
             BROWSER_PROVIDER_REAL_CHROME,
             make_browser_provider,
@@ -281,7 +301,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT and not row.get("browser_data_dir"):
             await database.set_browser_data_dir(account_id, browser_data_dir)
         identity_profile = None
-        if browser_provider != BROWSER_PROVIDER_REAL_CHROME:
+        if browser_provider not in {BROWSER_PROVIDER_REAL_CHROME, BROWSER_PROVIDER_ADSPOWER_MANUAL}:
             identity_profile = await _ensure_identity_profile(account_id, row, database)
         provider = make_browser_provider(account_for_provider, session=session, identity_profile=identity_profile)
         provider_data_dir = str(getattr(provider, "user_data_dir", browser_data_dir))
@@ -552,6 +572,221 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         raise _connect_error_to_http(exc, browser_provider=browser_provider) from exc
 
 
+@router.post("/{account_id}/confirm-manual-login", response_model=AccountResponse)
+async def confirm_manual_login(account_id: str, database: DatabaseDependency) -> AccountResponse:
+    row = await database.get_account(account_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    metadata = _metadata_dict(row)
+    from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        get_adspower_profile_id,
+        resolve_browser_provider,
+    )
+
+    browser_provider = resolve_browser_provider({**row, "metadata": metadata})
+    if browser_provider != BROWSER_PROVIDER_ADSPOWER_MANUAL:
+        raise HTTPException(status_code=422, detail="Manual login confirmation is only for AdsPower Manual accounts")
+
+    profile_id = get_adspower_profile_id({**row, "metadata": metadata})
+    if not profile_id:
+        raise HTTPException(status_code=422, detail="AdsPower profile id is required")
+
+    diagnostic: dict[str, Any] = {
+        "status": "manual_confirmed",
+        "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        "confirmed_at": datetime.now(UTC).isoformat(),
+        "verification_mode": "user_confirmation",
+    }
+
+    if _env_bool("ADSPOWER_VERIFY_AFTER_LOGIN", default=False):
+        diagnostic = await _verify_adspower_login_after_confirmation(account_id, row, metadata, database)
+
+    updated = await database.mark_account_manual_login_confirmed(
+        account_id,
+        browser_provider=BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        metadata_patch={
+            "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+            "adspower_profile_id": profile_id,
+            "manual_login_state": "connected_by_confirmation",
+            "last_login_diagnostic": diagnostic,
+        },
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Account not found after manual login confirmation")
+
+    LOGGER.info(
+        "account_manual_login_confirmed",
+        extra={
+            "event": "account_manual_login_confirmed",
+            "account_id": account_id,
+            "platform": row["platform"],
+            "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+            "adspower_profile_id": profile_id,
+            "verified": diagnostic.get("verification_mode") == "cdp_after_confirmation",
+        },
+    )
+    return AccountResponse.from_row(updated)
+
+
+@router.get("/{account_id}/browser-diagnostic")
+async def get_browser_diagnostic(account_id: str, database: DatabaseDependency) -> dict[str, Any]:
+    if not _browser_diagnostics_enabled():
+        raise HTTPException(status_code=404, detail="Browser diagnostics are disabled")
+    row = await database.get_account(account_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    metadata = _metadata_dict(row)
+
+    from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        make_browser_provider,
+        resolve_browser_provider,
+        collect_runtime_diagnostics,
+    )
+    from core.platform_config import get_platform_config
+    from playwright.async_api import async_playwright
+
+    browser_provider = resolve_browser_provider({**row, "metadata": metadata})
+    if browser_provider == BROWSER_PROVIDER_ADSPOWER_MANUAL and not bool(row.get("session_valid", 0)):
+        raise HTTPException(status_code=409, detail="Confirm manual login before running AdsPower diagnostics")
+
+    cfg = get_platform_config(row["platform"])
+    session = await database.get_account_session(account_id) or {}
+    account_for_provider = {**row, "account_id": account_id, "metadata": metadata}
+    provider = make_browser_provider(account_for_provider, session=session, identity_profile=None)
+    async with async_playwright() as pw:
+        async with provider.open_publisher_context(pw, headless=False) as (context, page, opened_data_dir):
+            target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+            runtime = await collect_runtime_diagnostics(page, context)
+            return {
+                "account_id": account_id,
+                "platform": row["platform"],
+                "browser_provider": browser_provider,
+                "profile": str(opened_data_dir),
+                "diagnostic": runtime,
+            }
+
+
+async def _open_adspower_manual_login(
+    account_id: str,
+    row: dict,
+    metadata: dict,
+    database,
+) -> dict[str, Any]:
+    from core.adspower_client import AdsPowerClient, AdsPowerClientError
+    from core.browser_providers import BROWSER_PROVIDER_ADSPOWER_MANUAL, get_adspower_profile_id
+
+    profile_id = get_adspower_profile_id({**row, "metadata": metadata})
+    if not profile_id:
+        raise HTTPException(status_code=422, detail="AdsPower profile id is required")
+
+    client = AdsPowerClient()
+    try:
+        started = await client.start_profile(profile_id)
+    except AdsPowerClientError as exc:
+        LOGGER.warning(
+            "adspower_manual_open_failed",
+            extra={
+                "event": "adspower_manual_open_failed",
+                "account_id": account_id,
+                "platform": row["platform"],
+                "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+                "adspower_profile_id": profile_id,
+                "error_code": exc.code,
+            },
+        )
+        raise _adspower_error_to_http(exc) from exc
+
+    await database.patch_account_metadata(
+        account_id,
+        {
+            "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+            "adspower_profile_id": profile_id,
+            "manual_login_state": "browser_opened",
+            "last_login_diagnostic": {
+                "status": "browser_opened",
+                "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+                "opened_at": datetime.now(UTC).isoformat(),
+                "has_cdp_endpoint": bool(started.debug_endpoint),
+            },
+        },
+    )
+
+    LOGGER.info(
+        "adspower_manual_browser_opened",
+        extra={
+            "event": "adspower_manual_browser_opened",
+            "account_id": account_id,
+            "platform": row["platform"],
+            "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+            "adspower_profile_id": profile_id,
+        },
+    )
+    return {
+        "account_id": account_id,
+        "platform": row["platform"],
+        "browser_provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        "adspower_profile_id": profile_id,
+        "status": "browser_opened",
+        "message": "AdsPower profile opened. Please login manually, then click Confirm Login.",
+    }
+
+
+async def _verify_adspower_login_after_confirmation(
+    account_id: str,
+    row: dict,
+    metadata: dict,
+    database,
+) -> dict[str, Any]:
+    from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        collect_runtime_diagnostics,
+        make_browser_provider,
+    )
+    from core.login_diagnostics import LoginBlockStatus, classify_login_block
+    from core.platform_config import get_platform_config
+    from playwright.async_api import async_playwright
+
+    cfg = get_platform_config(row["platform"])
+    session = await database.get_account_session(account_id) or {}
+    provider = make_browser_provider({**row, "account_id": account_id, "metadata": metadata}, session=session)
+
+    async with async_playwright() as pw:
+        async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_data_dir):
+            target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+            diagnostic_status = await classify_login_block(page)
+            if diagnostic_status in {
+                LoginBlockStatus.RATE_LIMITED,
+                LoginBlockStatus.CAPTCHA_REQUIRED,
+                LoginBlockStatus.CHECKPOINT_REQUIRED,
+            }:
+                await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
+
+            runtime = await collect_runtime_diagnostics(page, context)
+            logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
+            diagnostic = {
+                "status": "verified" if logged_in else "not_connected",
+                "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+                "verified_at": datetime.now(UTC).isoformat(),
+                "verification_mode": "cdp_after_confirmation",
+                "runtime": runtime,
+            }
+            if not logged_in:
+                await database.patch_account_metadata(
+                    account_id,
+                    {
+                        "manual_login_state": "verification_failed",
+                        "last_login_diagnostic": diagnostic,
+                    },
+                )
+                raise HTTPException(status_code=409, detail="SESSION_NOT_CONNECTED")
+            return diagnostic
+
+
 def _metadata_dict(row: dict) -> dict:
     metadata = row.get("metadata")
     if isinstance(metadata, dict):
@@ -568,14 +803,49 @@ def _metadata_dict(row: dict) -> dict:
 def _merge_browser_provider_metadata(metadata: dict | None, values: dict) -> dict:
     merged = dict(metadata or {})
     for key, value in values.items():
+        if key == "browser_provider" and isinstance(value, str) and value.strip().lower() == "adspower":
+            value = "adspower_manual"
         if value is None:
-            if key in {"real_chrome_user_data_dir", "real_chrome_debug_port"}:
+            if key in {"real_chrome_user_data_dir", "real_chrome_debug_port", "adspower_profile_id"}:
                 merged.pop(key, None)
             continue
         merged[key] = value
     if not merged.get("browser_provider"):
         merged["browser_provider"] = "playwright"
     return merged
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _browser_diagnostics_enabled() -> bool:
+    return _env_bool("BROWSER_DIAGNOSTICS_ENABLED", default=os.environ.get("APP_ENV") == "development")
+
+
+def _adspower_error_to_http(exc: Exception) -> HTTPException:
+    from core.adspower_client import (
+        ADSPOWER_API_UNAVAILABLE,
+        ADSPOWER_PROFILE_ID_MISSING,
+        ADSPOWER_PROFILE_NOT_FOUND,
+        ADSPOWER_START_FAILED,
+        ADSPOWER_TIMEOUT,
+    )
+
+    code = getattr(exc, "code", ADSPOWER_START_FAILED)
+    detail = str(exc)
+    if code == ADSPOWER_PROFILE_ID_MISSING:
+        return HTTPException(status_code=422, detail=detail)
+    if code == ADSPOWER_PROFILE_NOT_FOUND:
+        return HTTPException(status_code=404, detail=detail)
+    if code == ADSPOWER_API_UNAVAILABLE:
+        return HTTPException(status_code=503, detail=detail)
+    if code == ADSPOWER_TIMEOUT:
+        return HTTPException(status_code=504, detail=detail)
+    return HTTPException(status_code=502, detail=detail)
 
 
 async def _ensure_identity_profile(account_id: str, row: dict, database):

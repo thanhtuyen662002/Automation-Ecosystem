@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { PageHeader, Badge, SlideOver, StatRow, ConfirmDialog, EmptyState } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useAccounts, useCreateAccount, useDeleteAccount, useMarkSoftBan, useClearSoftBan, useConnectAccount, useUpdateAccount } from '@/lib/hooks';
+import { useAccounts, useCreateAccount, useDeleteAccount, useMarkSoftBan, useClearSoftBan, useConnectAccount, useUpdateAccount, useConfirmManualLogin } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { PLATFORMS, PlatformBadge, PlatformSelect } from '@/lib/platforms';
@@ -15,6 +15,8 @@ interface Account {
   metadata?: Record<string, unknown>;
   browser_provider?: string;
   real_chrome_user_data_dir?: string | null;
+  adspower_profile_id?: string | null;
+  last_login_diagnostic?: Record<string, unknown> | null;
   browser_data_dir?: string | null; timezone?: string | null; locale?: string | null;
   viewport_width?: number | null; viewport_height?: number | null;
   risk_score?: number; soft_ban_detected?: boolean;
@@ -64,6 +66,9 @@ function AccountAvatar({ account, size = 48 }: { account: Account; size?: number
 }
 
 function sessionStatus(account: Account) {
+  if (browserProvider(account) === 'adspower_manual' && account.metadata?.manual_login_state === 'browser_opened' && !account.session_valid) {
+    return 'browser_opened';
+  }
   if (account.session_status) return account.session_status;
   if (account.status === 'limited') return 'limited';
   if (account.session_valid) return 'connected';
@@ -76,9 +81,10 @@ function SessionPill({ account, t }: { account: Account; t: (k: string) => strin
   const connected = status === 'connected';
   const limited = status === 'limited';
   const expired = status === 'expired';
-  const label = connected ? t('acc.connected') : limited ? t('acc.limited') : expired ? t('acc.expired') : t('acc.not_connected');
-  const color = connected ? 'var(--success)' : limited ? 'var(--warning)' : expired ? 'var(--danger)' : 'var(--text-muted)';
-  const bg = connected ? 'var(--success-muted)' : limited ? 'var(--warning-muted, var(--surface-2))' : expired ? 'var(--danger-muted)' : 'var(--surface-2)';
+  const browserOpened = status === 'browser_opened';
+  const label = connected ? t('acc.connected') : limited ? t('acc.limited') : expired ? t('acc.expired') : browserOpened ? t('acc.browser_opened_waiting') : t('acc.not_connected');
+  const color = connected ? 'var(--success)' : limited || browserOpened ? 'var(--warning)' : expired ? 'var(--danger)' : 'var(--text-muted)';
+  const bg = connected ? 'var(--success-muted)' : limited || browserOpened ? 'var(--warning-muted, var(--surface-2))' : expired ? 'var(--danger-muted)' : 'var(--surface-2)';
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
@@ -95,12 +101,13 @@ function SessionPill({ account, t }: { account: Account; t: (k: string) => strin
 
 function browserProvider(account: Account) {
   const metadataProvider = typeof account.metadata?.browser_provider === 'string' ? account.metadata.browser_provider : undefined;
-  return account.browser_provider ?? metadataProvider ?? 'playwright';
+  const provider = account.browser_provider ?? metadataProvider ?? 'playwright';
+  return provider === 'adspower' ? 'adspower_manual' : provider;
 }
 
 function providerLabel(provider: string, t: (k: string) => string) {
   if (provider === 'real_chrome') return t('acc.provider_real_chrome');
-  if (provider === 'adspower') return t('acc.provider_adspower');
+  if (provider === 'adspower' || provider === 'adspower_manual') return t('acc.provider_adspower_manual');
   return t('acc.provider_playwright');
 }
 
@@ -109,7 +116,7 @@ function BrowserProviderSelect({ value, onChange, t }: { value: string; onChange
     <select className="input" value={value} onChange={e => onChange(e.target.value)}>
       <option value="playwright">{t('acc.provider_playwright')}</option>
       <option value="real_chrome">{t('acc.provider_real_chrome')}</option>
-      <option value="adspower" disabled>{t('acc.provider_adspower_beta')}</option>
+      <option value="adspower_manual">{t('acc.provider_adspower_manual')}</option>
     </select>
   );
 }
@@ -150,6 +157,7 @@ export function Accounts() {
   const markSoftBan    = useMarkSoftBan();
   const clearSoftBan   = useClearSoftBan();
   const connectAccount = useConnectAccount();
+  const confirmManualLogin = useConfirmManualLogin();
   const isDev = import.meta.env.DEV;
 
   const [selected,      setSelected]      = useState<Account | null>(null);
@@ -160,9 +168,11 @@ export function Accounts() {
   const [newProfileUrl, setNewProfileUrl] = useState('');
   const [newProxy,      setNewProxy]      = useState('');
   const [newBrowserProvider, setNewBrowserProvider] = useState('playwright');
+  const [newAdsPowerProfileId, setNewAdsPowerProfileId] = useState('');
   const [editProfileUrl, setEditProfileUrl] = useState('');
   const [editProxy, setEditProxy] = useState('');
   const [editBrowserProvider, setEditBrowserProvider] = useState('playwright');
+  const [editAdsPowerProfileId, setEditAdsPowerProfileId] = useState('');
   const [connectingId,  setConnectingId]  = useState<string | null>(null);
   const [connectStage, setConnectStage] = useState<string | null>(null);
   const [connectError,  setConnectError]  = useState<string | null>(null);
@@ -172,6 +182,7 @@ export function Accounts() {
     setEditProfileUrl(selected.profile_url ?? '');
     setEditProxy(selected.proxy_url ?? '');
     setEditBrowserProvider(browserProvider(selected));
+    setEditAdsPowerProfileId(selected.adspower_profile_id ?? (typeof selected.metadata?.adspower_profile_id === 'string' ? selected.metadata.adspower_profile_id : ''));
   }, [selected]);
 
   async function handleAddAndConnect() {
@@ -183,9 +194,13 @@ export function Accounts() {
         profile_url: newProfileUrl.trim() || undefined,
         proxy_url: newProxy.trim() || undefined,
         browser_provider: newBrowserProvider,
-        metadata: { browser_provider: newBrowserProvider },
+        adspower_profile_id: newBrowserProvider === 'adspower_manual' ? newAdsPowerProfileId.trim() : undefined,
+        metadata: {
+          browser_provider: newBrowserProvider,
+          ...(newBrowserProvider === 'adspower_manual' ? { adspower_profile_id: newAdsPowerProfileId.trim() } : {}),
+        },
       });
-      setShowAdd(false); setNewHandle(''); setNewProfileUrl(''); setNewProxy(''); setNewBrowserProvider('playwright');
+      setShowAdd(false); setNewHandle(''); setNewProfileUrl(''); setNewProxy(''); setNewBrowserProvider('playwright'); setNewAdsPowerProfileId('');
       await handleConnect(created.id, created.platform);
     } catch { /* shown via createAccount.isError */ }
   }
@@ -200,6 +215,7 @@ export function Accounts() {
           profile_url: editProfileUrl.trim() || null,
           proxy_url: editProxy.trim() || null,
           browser_provider: editBrowserProvider,
+          adspower_profile_id: editBrowserProvider === 'adspower_manual' ? editAdsPowerProfileId.trim() || null : null,
         },
       });
       setSelected(updated);
@@ -215,12 +231,31 @@ export function Accounts() {
       window.setTimeout(() => setConnectStage(t('acc.connect_stage_saving')), 260_000),
     ];
     try {
-      await connectAccount.mutateAsync(id);
+      const result = await connectAccount.mutateAsync(id);
+      if (result?.status === 'browser_opened') {
+        timers.forEach(timer => window.clearTimeout(timer));
+        setConnectStage(t('acc.adspower_waiting_manual'));
+        return;
+      }
       setConnectStage(t('acc.connect_stage_connected'));
     }
     catch (e: unknown) { setConnectError(formatConnectError((e as Error)?.message ?? t('acc.connect_failed'), t)); }
     finally {
       timers.forEach(timer => window.clearTimeout(timer));
+      setConnectingId(null);
+      window.setTimeout(() => setConnectStage(null), 800);
+    }
+  }
+
+  async function handleConfirmManualLogin(id: string) {
+    setConnectingId(id); setConnectError(null); setConnectStage(t('acc.adspower_confirming'));
+    try {
+      const updated = await confirmManualLogin.mutateAsync(id);
+      setConnectStage(t('acc.connect_stage_connected'));
+      if (selected?.id === id) setSelected(updated);
+    } catch (e: unknown) {
+      setConnectError((e as Error)?.message ?? t('acc.connect_failed'));
+    } finally {
       setConnectingId(null);
       window.setTimeout(() => setConnectStage(null), 800);
     }
@@ -276,6 +311,7 @@ export function Accounts() {
                   const softBan = a.soft_ban_detected ?? false;
                   const plat = PLATFORMS[a.platform] ?? { label: a.platform, bg: 'var(--primary)', color: '#fff' };
                   const provider = browserProvider(a);
+                  const isAdsPowerManual = provider === 'adspower_manual' || provider === 'adspower';
 
                   return (
                     <div key={a.id} className="card" style={{
@@ -334,8 +370,13 @@ export function Accounts() {
                               style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
                               onClick={() => handleConnect(a.id, a.platform)} disabled={!!connectingId}>
                               <GlassIcon name="key" size={13} style={{ filter: 'brightness(0) invert(1)' }} />
-                              {a.session_valid ? t('acc.reconnect') : t('acc.connect')}
+                              {isAdsPowerManual ? t('acc.open_adspower_profile') : a.session_valid ? t('acc.reconnect') : t('acc.connect')}
                             </button>
+                            {isAdsPowerManual && !a.session_valid && (
+                              <button className="btn btn-secondary btn-sm" onClick={() => handleConfirmManualLogin(a.id)} disabled={!!connectingId}>
+                                {t('acc.confirm_manual_login')}
+                              </button>
+                            )}
                             {softBan
                               ? <button className="btn btn-secondary btn-sm btn-icon" title={t('acc.clear_ban_title')} onClick={() => clearSoftBan.mutate(a.id)}>
                                   <GlassIcon name="shield" size={14} style={{ opacity: 0.8 }} />
@@ -388,7 +429,7 @@ export function Accounts() {
               <StatRow label={t('acc.detail_proxy')} value={selected.proxy_url ?? '—'} />
               <StatRow label={t('acc.detail_timezone')} value={selected.timezone ?? '—'} />
               <StatRow label={t('acc.detail_locale')} value={selected.locale ?? '—'} />
-              {isDev && <StatRow label={t('acc.detail_browser_profile')} value={<span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>{browserProvider(selected) === 'real_chrome' ? selected.real_chrome_user_data_dir ?? '—' : selected.browser_data_dir ?? '—'}</span>} />}
+              {isDev && <StatRow label={t('acc.detail_browser_profile')} value={<span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>{browserProvider(selected) === 'real_chrome' ? selected.real_chrome_user_data_dir ?? '—' : browserProvider(selected) === 'adspower_manual' ? selected.adspower_profile_id ?? '—' : selected.browser_data_dir ?? '—'}</span>} />}
               <StatRow label={t('acc.detail_risk')} value={`${Math.round((selected.risk_score ?? 0) * 100)}%`} />
               <StatRow label={t('acc.detail_warmup')} value={selected.warmup_sessions_completed ?? 0} />
               <StatRow label={t('acc.detail_failed')} value={
@@ -420,6 +461,14 @@ export function Accounts() {
                 </label>
                 <BrowserProviderSelect value={editBrowserProvider} onChange={setEditBrowserProvider} t={t} />
               </div>
+              {editBrowserProvider === 'adspower_manual' && (
+                <div>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+                    {t('acc.lbl_adspower_profile_id')}
+                  </label>
+                  <input className="input" value={editAdsPowerProfileId} placeholder="AdsPower user_id / profile id" onChange={e => setEditAdsPowerProfileId(e.target.value)} />
+                </div>
+              )}
               <button className="btn btn-secondary" onClick={handleSaveAccount} disabled={updateAccount.isPending}>
                 <GlassIcon name="save" size={14} /> {updateAccount.isPending ? t('acc.saving') : t('acc.save_account')}
               </button>
@@ -429,8 +478,15 @@ export function Accounts() {
               <button className="btn btn-primary" disabled={isConnecting(selected.id)}
                 onClick={() => handleConnect(selected.id, selected.platform)}>
                 <GlassIcon name="key" size={14} style={{ filter: 'brightness(0) invert(1)' }} />
-                {' '}{isConnecting(selected.id) ? t('acc.browser_opening') : selected.session_valid ? t('acc.reconnect_account') : t('acc.connect_account')}
+                {' '}{isConnecting(selected.id) ? t('acc.browser_opening') : browserProvider(selected) === 'adspower_manual' ? t('acc.open_adspower_profile') : selected.session_valid ? t('acc.reconnect_account') : t('acc.connect_account')}
               </button>
+              {browserProvider(selected) === 'adspower_manual' && (
+                <button className="btn btn-secondary" disabled={isConnecting(selected.id)}
+                  onClick={() => handleConfirmManualLogin(selected.id)}>
+                  <GlassIcon name="shield" size={14} />
+                  {' '}{t('acc.confirm_manual_login')}
+                </button>
+              )}
               {(selected.soft_ban_detected ?? false)
                 ? <button className="btn btn-secondary" onClick={() => clearSoftBan.mutate(selected.id, { onSuccess: () => setSelected(null) })}>
                     <GlassIcon name="shield" size={14} /> {t('acc.btn_clear')}
@@ -507,6 +563,16 @@ export function Accounts() {
             <BrowserProviderSelect value={newBrowserProvider} onChange={setNewBrowserProvider} t={t} />
           </div>
 
+          {newBrowserProvider === 'adspower_manual' && (
+            <div>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>
+                {t('acc.lbl_adspower_profile_id')}
+              </label>
+              <input className="input" placeholder="AdsPower user_id / profile id" value={newAdsPowerProfileId}
+                onChange={e => setNewAdsPowerProfileId(e.target.value)} />
+            </div>
+          )}
+
           <div style={{
             padding: '0.75rem 1rem', borderRadius: 'var(--radius)',
             background: 'var(--surface-2)', border: '1px solid var(--border)',
@@ -523,7 +589,7 @@ export function Accounts() {
 
           <button className="btn btn-primary" style={{ width: '100%', padding: '0.75rem' }}
             onClick={handleAddAndConnect}
-            disabled={!newHandle.trim() || createAccount.isPending}>
+            disabled={!newHandle.trim() || (newBrowserProvider === 'adspower_manual' && !newAdsPowerProfileId.trim()) || createAccount.isPending}>
             {createAccount.isPending ? t('acc.creating') : t('acc.connect_login')}
           </button>
 

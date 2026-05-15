@@ -10,6 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from database.database import JobDetailRecord, JobRecord, SystemStatsRecord, TaskRecord, TaskStatus
 
+_VALID_BROWSER_PROVIDERS = {"playwright", "real_chrome", "adspower_manual", "adspower"}
+
+
+def _normalize_browser_provider(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = value.strip().lower()
+    if clean == "adspower":
+        return "adspower_manual"
+    return clean
+
 
 class TaskCreateRequest(BaseModel):
     task_type: str = Field(min_length=1)
@@ -224,11 +235,13 @@ class AccountCreateRequest(BaseModel):
     browser_provider: str | None = None
     real_chrome_user_data_dir: str | None = None
     real_chrome_debug_port: int | None = Field(default=None, ge=1, le=65535)
+    adspower_profile_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_browser_provider(self) -> "AccountCreateRequest":
-        if self.browser_provider is not None and self.browser_provider not in {"playwright", "real_chrome", "adspower"}:
-            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower")
+        self.browser_provider = _normalize_browser_provider(self.browser_provider)
+        if self.browser_provider is not None and self.browser_provider not in _VALID_BROWSER_PROVIDERS:
+            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower_manual")
         return self
 
 
@@ -242,13 +255,15 @@ class AccountUpdateRequest(BaseModel):
     browser_provider: str | None = None
     real_chrome_user_data_dir: str | None = None
     real_chrome_debug_port: int | None = Field(default=None, ge=1, le=65535)
+    adspower_profile_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_status(self) -> "AccountUpdateRequest":
         if self.status is not None and self.status not in {"healthy", "limited", "banned", "disabled"}:
             raise ValueError("status must be one of: healthy, limited, banned, disabled")
-        if self.browser_provider is not None and self.browser_provider not in {"playwright", "real_chrome", "adspower"}:
-            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower")
+        self.browser_provider = _normalize_browser_provider(self.browser_provider)
+        if self.browser_provider is not None and self.browser_provider not in _VALID_BROWSER_PROVIDERS:
+            raise ValueError("browser_provider must be one of: playwright, real_chrome, adspower_manual")
         return self
 
 
@@ -275,6 +290,8 @@ class AccountResponse(BaseModel):
     browser_provider: str = "playwright"
     real_chrome_user_data_dir: str | None = None
     real_chrome_debug_port: int | None = None
+    adspower_profile_id: str | None = None
+    last_login_diagnostic: dict[str, Any] | None = None
     # Session fields (None for accounts that have never connected)
     session_valid: bool
     session_status: str
@@ -311,14 +328,16 @@ class AccountResponse(BaseModel):
                 metadata = {}
         if not isinstance(metadata, dict):
             metadata = {}
-        browser_provider = str(metadata.get("browser_provider") or "playwright")
+        browser_provider = _normalize_browser_provider(str(metadata.get("browser_provider") or "playwright")) or "playwright"
         readiness_errors: list[str] = []
         if row.get("status") != "healthy":
             readiness_errors.append("account_not_healthy")
         if not bool(row.get("session_valid", 0)):
             readiness_errors.append("session_not_connected")
-        if not row.get("proxy_url") and browser_provider != "real_chrome":
+        if not row.get("proxy_url") and browser_provider not in {"real_chrome", "adspower_manual"}:
             readiness_errors.append("proxy_missing")
+        if browser_provider == "adspower_manual" and not metadata.get("adspower_profile_id"):
+            readiness_errors.append("adspower_profile_missing")
         if bool(row.get("soft_ban_detected", 0)):
             readiness_errors.append("soft_ban_detected")
         return cls(
@@ -334,6 +353,8 @@ class AccountResponse(BaseModel):
             browser_provider=browser_provider,
             real_chrome_user_data_dir=metadata.get("real_chrome_user_data_dir") or None,
             real_chrome_debug_port=metadata.get("real_chrome_debug_port"),
+            adspower_profile_id=metadata.get("adspower_profile_id") or None,
+            last_login_diagnostic=metadata.get("last_login_diagnostic") if isinstance(metadata.get("last_login_diagnostic"), dict) else None,
             session_valid=bool(row.get("session_valid", 0)),
             session_status=_account_session_status(row),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
@@ -367,6 +388,7 @@ class SessionStatusResponse(BaseModel):
     user_agent: str | None
     browser_data_dir: str | None = None
     real_chrome_user_data_dir: str | None = None
+    adspower_profile_id: str | None = None
     timezone: str | None = None
     locale: str | None = None
 

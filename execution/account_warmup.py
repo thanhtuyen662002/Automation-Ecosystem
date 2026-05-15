@@ -278,10 +278,14 @@ def _has_connected_session(account: dict[str, Any]) -> bool:
         return True
     try:
         from core.browser_providers import (
+            BROWSER_PROVIDER_ADSPOWER_MANUAL,
             BROWSER_PROVIDER_REAL_CHROME,
             resolve_browser_provider,
         )
-        if resolve_browser_provider(account) == BROWSER_PROVIDER_REAL_CHROME:
+        provider = resolve_browser_provider(account)
+        if provider == BROWSER_PROVIDER_ADSPOWER_MANUAL:
+            return False
+        if provider == BROWSER_PROVIDER_REAL_CHROME:
             return bool(account.get("cookies"))
     except Exception:
         pass

@@ -139,6 +139,21 @@ async def _detect_session_issues(
 
 # ── Main publisher ────────────────────────────────────────────────────────────
 
+async def _has_tiktok_auth_signal(page: Any, context: Any) -> bool:
+    try:
+        cookies = await context.cookies()
+        cookie_names = {str(cookie.get("name", "")).lower() for cookie in cookies}
+        if cookie_names & {"sessionid", "sid_guard", "uid_tt", "passport_csrf_token"}:
+            return True
+    except Exception:
+        pass
+    try:
+        avatar = page.locator('[data-e2e="header-avatar"], [data-e2e="nav-avatar"]').first
+        return await avatar.is_visible(timeout=800)
+    except Exception:
+        return False
+
+
 async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Publish a video to TikTok using persistent Playwright session + stealth layer.
@@ -159,8 +174,10 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     from core.platform_config import get_platform_config
     from core.stealth import fingerprint_hash
     from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
         BROWSER_PROVIDER_PLAYWRIGHT,
         BROWSER_PROVIDER_REAL_CHROME,
+        get_adspower_profile_id,
         make_browser_provider,
         resolve_browser_provider,
     )
@@ -241,9 +258,9 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
         # ── 3. Proxy guard (Playwright requires proxy; Real Chrome may use local network) ──
-        real_chrome_provider = browser_provider == BROWSER_PROVIDER_REAL_CHROME
+        profile_managed_provider = browser_provider in {BROWSER_PROVIDER_REAL_CHROME, BROWSER_PROVIDER_ADSPOWER_MANUAL}
 
-        if not proxy_url and not real_chrome_provider:
+        if not proxy_url and not profile_managed_provider:
             raise RetryableDependencyError(
                 f"No proxy configured for account {account_id}. "
                 "Set proxy_url via PUT /api/v1/accounts/{id} and retry. "
@@ -282,12 +299,12 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             _proxy_latency_ms = -1
             _proxy_country = None
             LOGGER.info(
-                "real_chrome_publish_no_proxy",
+                "profile_managed_publish_no_proxy",
                 extra={
-                    "event": "real_chrome_publish_no_proxy",
+                    "event": "profile_managed_publish_no_proxy",
                     "account_id": account_id,
                     "browser_provider": browser_provider,
-                    "note": "Using local network with Real Chrome provider.",
+                    "note": "Provider owns browser/network profile; no app proxy is injected.",
                 },
             )
 
@@ -360,14 +377,25 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
         # ── 6. Session validation ────────────────────────────────────────────
         session = await database.get_account_session(account_id)
-        if not session or not session.get("cookies"):
+        adspower_manual_provider = browser_provider == BROWSER_PROVIDER_ADSPOWER_MANUAL
+        if not session:
             raise FatalDependencyError(
                 f"[{ACCOUNT_AUTH_REQUIRED}] No session for account {account_id}. "
                 "Use POST /api/v1/accounts/{id}/connect."
             )
         if not bool(session.get("session_valid", 0)):
             raise FatalDependencyError(
-                f"[{ACCOUNT_AUTH_REQUIRED}] Session expired for account {account_id}. "
+                f"[{ACCOUNT_AUTH_REQUIRED}] SESSION_NOT_CONNECTED for account {account_id}. "
+                "Open the account profile and confirm manual login before publishing."
+            )
+        if adspower_manual_provider and not get_adspower_profile_id({**account, "metadata": account.get("metadata")}):
+            raise FatalDependencyError(
+                f"[{ACCOUNT_AUTH_REQUIRED}] ADSPOWER_PROFILE_ID_MISSING for account {account_id}. "
+                "Set adspower_profile_id on the account."
+            )
+        if not adspower_manual_provider and not session.get("cookies"):
+            raise FatalDependencyError(
+                f"[{ACCOUNT_AUTH_REQUIRED}] No cookies for account {account_id}. "
                 "Use POST /api/v1/accounts/{id}/connect."
             )
 
@@ -402,10 +430,12 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
         # ── 8. Decrypt cookies ───────────────────────────────────────────────
-        try:
-            cookies = decrypt_cookies(session["cookies"])
-        except ValueError as exc:
-            raise FatalDependencyError(f"[{ACCOUNT_AUTH_REQUIRED}] Cookie decryption failed: {exc}")
+        cookies: list[dict[str, Any]] = []
+        if not adspower_manual_provider:
+            try:
+                cookies = decrypt_cookies(session["cookies"])
+            except ValueError as exc:
+                raise FatalDependencyError(f"[{ACCOUNT_AUTH_REQUIRED}] Cookie decryption failed: {exc}")
 
         # ── 9. Caption truncation ────────────────────────────────────────────
         MAX_CAPTION = 2200
@@ -455,11 +485,11 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             provider = make_browser_provider({**account, "account_id": account_id}, session=session)
             async with provider.open_publisher_context(pw, headless=True) as (context, page, opened_data_dir):
 
-                # Inject DB cookies as belt-and-suspenders (profile dir may already have them)
-                try:
-                    await context.add_cookies(cookies)
-                except Exception as exc:
-                    LOGGER.warning("cookie_inject_warning", extra={"error": str(exc)})
+                if cookies:
+                    try:
+                        await context.add_cookies(cookies)
+                    except Exception as exc:
+                        LOGGER.warning("cookie_inject_warning", extra={"error": str(exc)})
 
                 nav_path: list[str] = []
 
@@ -490,6 +520,12 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     await page.goto(_target, wait_until="domcontentloaded", timeout=30000)
                     nav_path.append(page.url)
                     await _detect_session_issues(page, "tiktok", account_id, database)
+                    if adspower_manual_provider and not await _has_tiktok_auth_signal(page, context):
+                        await database.invalidate_account_session(account_id)
+                        raise FatalDependencyError(
+                            f"[{ACCOUNT_AUTH_REQUIRED}] SESSION_NOT_CONNECTED for account {account_id}. "
+                            "AdsPower profile is open but TikTok login was not detected."
+                        )
 
                     # Behaviour-engine driven warmup: mouse → warmup delay → scroll → hover
                     await _engine.simulate_mouse_move(page)

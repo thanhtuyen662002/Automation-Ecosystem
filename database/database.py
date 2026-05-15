@@ -1295,6 +1295,53 @@ class AutomationDatabase:
                 await conn.execute("ROLLBACK")
                 raise e
 
+    async def mark_account_manual_login_confirmed(
+        self,
+        account_id: str,
+        *,
+        browser_provider: str,
+        metadata_patch: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a manually confirmed browser profile as connected.
+
+        This is used by provider flows where the browser owns the session
+        storage, such as AdsPower Manual. No cookies are read or stored here.
+        """
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await conn.execute(
+                    "SELECT metadata FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                if not row:
+                    await conn.execute("ROLLBACK")
+                    return None
+                metadata = _from_json(row["metadata"])
+                metadata.update(metadata_patch or {})
+                metadata["browser_provider"] = browser_provider
+                metadata["manual_login_confirmed_at"] = datetime.now(UTC).isoformat()
+                await conn.execute(
+                    """
+                    UPDATE accounts
+                    SET metadata = ?,
+                        session_valid = 1,
+                        last_login_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (_to_json(metadata), account_id),
+                )
+                updated = await (await conn.execute(
+                    f"SELECT {_ACCOUNT_SELECT_COLUMNS} FROM accounts WHERE id = ?",
+                    (account_id,),
+                )).fetchone()
+                await conn.execute("COMMIT")
+                return dict(updated) if updated else None
+            except Exception as e:
+                await conn.execute("ROLLBACK")
+                raise e
+
     async def update_account_profile(
         self,
         account_id: str,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -23,6 +24,12 @@ def account_metadata(account: dict[str, Any] | None) -> dict[str, Any]:
     raw = (account or {}).get("metadata")
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     return {}
 
 

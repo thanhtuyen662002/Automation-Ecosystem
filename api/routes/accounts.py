@@ -280,7 +280,9 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
         browser_data_dir = str(row.get("browser_data_dir") or session.get("browser_data_dir") or get_browser_data_dir(account_id))
         if browser_provider == BROWSER_PROVIDER_PLAYWRIGHT and not row.get("browser_data_dir"):
             await database.set_browser_data_dir(account_id, browser_data_dir)
-        identity_profile = await _ensure_identity_profile(account_id, row, database)
+        identity_profile = None
+        if browser_provider != BROWSER_PROVIDER_REAL_CHROME:
+            identity_profile = await _ensure_identity_profile(account_id, row, database)
         provider = make_browser_provider(account_for_provider, session=session, identity_profile=identity_profile)
         provider_data_dir = str(getattr(provider, "user_data_dir", browser_data_dir))
     except Exception as exc:
@@ -501,7 +503,8 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             })
         else:
             await database.set_browser_data_dir(account_id, data_dir)
-        await database.save_account_identity_profile(account_id, identity_profile.to_dict())
+        if browser_provider != BROWSER_PROVIDER_REAL_CHROME and identity_profile is not None:
+            await database.save_account_identity_profile(account_id, identity_profile.to_dict())
 
         # Persist profile info (avatar + display_name)
         if profile.get("avatar_url") or profile.get("display_name") or profile.get("profile_url") or configured_profile_url:
@@ -546,7 +549,7 @@ async def connect_account(account_id: str, database: DatabaseDependency) -> Acco
             type(exc).__name__, str(exc), tb,
             extra={"event": "account_connect_error", "account_id": account_id, "error": str(exc)},
         )
-        raise _connect_error_to_http(exc) from exc
+        raise _connect_error_to_http(exc, browser_provider=browser_provider) from exc
 
 
 def _metadata_dict(row: dict) -> dict:
@@ -680,11 +683,19 @@ async def _looks_logged_in(page, context, platform: str, success_url_fragment: s
     return False
 
 
-def _connect_error_to_http(exc: Exception) -> HTTPException:
+def _connect_error_to_http(exc: Exception, *, browser_provider: str = "playwright") -> HTTPException:
     message = str(exc)
     exc_type = type(exc).__name__
     lowered = message.lower()
-    if "executable doesn't exist" in lowered or "playwright install" in lowered:
+    if "executable doesn't exist" in lowered or "playwright install" in lowered or "chrome" in lowered and "not found" in lowered:
+        if browser_provider == "real_chrome":
+            return HTTPException(
+                status_code=503,
+                detail=(
+                    "Chrome Stable was not found for Real Chrome provider. "
+                    "Install Google Chrome or set CHROME_EXECUTABLE_PATH to chrome.exe."
+                ),
+            )
         return HTTPException(
             status_code=503,
             detail="Chromium browser runtime is not installed. Run: python -m playwright install chromium",

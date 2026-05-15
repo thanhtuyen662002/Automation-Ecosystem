@@ -27,6 +27,7 @@ import random
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 LOGGER = logging.getLogger("workers.handlers.publish.tiktok")
 
@@ -48,6 +49,19 @@ CAPTCHA_INDICATORS = [
     "are you a robot", "security check", "challenge",
     "unusual activity", "suspicious activity",
 ]
+
+
+def _safe_proxy_label(proxy_url: str | None) -> str:
+    if not proxy_url:
+        return "NONE"
+    try:
+        parsed = urlsplit(proxy_url)
+        if not parsed.scheme or not parsed.hostname:
+            return "configured"
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname}{port}"
+    except Exception:
+        return "configured"
 
 
 # ── Mouse / scroll helpers (thin wrappers — real logic lives in BehaviorEngine) ──
@@ -144,7 +158,12 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     from core.session_crypto import decrypt_cookies
     from core.platform_config import get_platform_config
     from core.stealth import fingerprint_hash
-    from core.browser_providers import BROWSER_PROVIDER_PLAYWRIGHT, make_browser_provider, resolve_browser_provider
+    from core.browser_providers import (
+        BROWSER_PROVIDER_PLAYWRIGHT,
+        BROWSER_PROVIDER_REAL_CHROME,
+        make_browser_provider,
+        resolve_browser_provider,
+    )
     from core.behavior_engine import create_behavior_engine
     from core.cross_account_coordinator import get_coordinator
     from workers.worker_runtime import FatalDependencyError, RetryableDependencyError
@@ -221,8 +240,10 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 },
             )
 
-        # ── 3. HARD PROXY REQUIREMENT ────────────────────────────────────────
-        if not proxy_url:
+        # ── 3. Proxy guard (Playwright requires proxy; Real Chrome may use local network) ──
+        real_chrome_provider = browser_provider == BROWSER_PROVIDER_REAL_CHROME
+
+        if not proxy_url and not real_chrome_provider:
             raise RetryableDependencyError(
                 f"No proxy configured for account {account_id}. "
                 "Set proxy_url via PUT /api/v1/accounts/{id} and retry. "
@@ -231,31 +252,44 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
         # ── 3a. Proxy TCP health check ───────────────────────────────────────
         from core.proxy_validator import check_proxy_connectivity, guess_country_from_proxy_url
-        _proxy_reachable, _proxy_latency_ms = await check_proxy_connectivity(proxy_url, timeout_seconds=8.0)
-        if not _proxy_reachable:
-            LOGGER.error(
-                "proxy_unreachable",
+        if proxy_url:
+            _proxy_reachable, _proxy_latency_ms = await check_proxy_connectivity(proxy_url, timeout_seconds=8.0)
+            if not _proxy_reachable:
+                LOGGER.error(
+                    "proxy_unreachable",
+                    extra={
+                        "event": "proxy_unreachable",
+                        "account_id": account_id,
+                        "proxy": _safe_proxy_label(proxy_url),
+                    },
+                )
+                raise RetryableDependencyError(
+                    f"Proxy {_safe_proxy_label(proxy_url)!r} is unreachable (TCP timeout). "
+                    "Fix or replace the proxy and retry."
+                )
+            LOGGER.info(
+                "proxy_healthy",
                 extra={
-                    "event": "proxy_unreachable",
+                    "event": "proxy_healthy",
                     "account_id": account_id,
-                    "proxy": proxy_url,
+                    "proxy": _safe_proxy_label(proxy_url),
+                    "latency_ms": _proxy_latency_ms,
                 },
             )
-            raise RetryableDependencyError(
-                f"Proxy {proxy_url!r} is unreachable (TCP timeout). "
-                "Fix or replace the proxy and retry."
+            _proxy_country = guess_country_from_proxy_url(proxy_url)
+            await database.update_proxy_health(account_id, _proxy_latency_ms, country=_proxy_country)
+        else:
+            _proxy_latency_ms = -1
+            _proxy_country = None
+            LOGGER.info(
+                "real_chrome_publish_no_proxy",
+                extra={
+                    "event": "real_chrome_publish_no_proxy",
+                    "account_id": account_id,
+                    "browser_provider": browser_provider,
+                    "note": "Using local network with Real Chrome provider.",
+                },
             )
-        LOGGER.info(
-            "proxy_healthy",
-            extra={
-                "event": "proxy_healthy",
-                "account_id": account_id,
-                "proxy": proxy_url,
-                "latency_ms": _proxy_latency_ms,
-            },
-        )
-        _proxy_country = guess_country_from_proxy_url(proxy_url)
-        await database.update_proxy_health(account_id, _proxy_latency_ms, country=_proxy_country)
 
         # ── 3a-bis. Build BehaviorEngine + apply personality distribution balance ──
         # Built here so constraints reflect actual measured proxy latency.
@@ -271,7 +305,7 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
         # If proxy is catastrophically slow → abort immediately
         if _engine.constraints.minimal_mode:
             raise RetryableDependencyError(
-                f"Proxy {proxy_url!r} latency={_proxy_latency_ms}ms exceeds danger threshold. "
+                f"Proxy {_safe_proxy_label(proxy_url)!r} latency={_proxy_latency_ms}ms exceeds danger threshold. "
                 "Aborting session to protect account. Replace proxy and retry."
             )
 
@@ -284,13 +318,13 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
         _coordinator.register_job_start(account_id, proxy_url or "")
 
         # ── 3b. Proxy over-sharing check (1 account = 1 proxy rule) ─────────
-        _proxy_share_count = await database.get_proxy_account_count(proxy_url)
-        if _proxy_share_count > 3:
+        _proxy_share_count = await database.get_proxy_account_count(proxy_url) if proxy_url else 0
+        if proxy_url and _proxy_share_count > 3:
             LOGGER.warning(
                 "proxy_overused",
                 extra={
                     "event": "proxy_overused",
-                    "proxy": proxy_url,
+                    "proxy": _safe_proxy_label(proxy_url),
                     "account_count": _proxy_share_count,
                     "account_id": account_id,
                     "warning": "Proxy shared by >3 accounts — HIGH correlation risk",
@@ -400,7 +434,7 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 "event": "tiktok_session_info",
                 "account_id": account_id,
                 "fingerprint_hash": fp_hash,
-                "proxy": proxy_url or "NONE",
+                "proxy": _safe_proxy_label(proxy_url),
                 "viewport": f"{session.get('viewport_width', 1280)}x{session.get('viewport_height', 720)}",
                 "timezone": session.get("timezone"),
                 "locale": session.get("locale"),
@@ -640,7 +674,7 @@ async def publish_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                         "event": "tiktok_publish_success",
                         "account_id": account_id,
                         "fingerprint_hash": fp_hash,
-                        "proxy": proxy_url or "NONE",
+                        "proxy": _safe_proxy_label(proxy_url),
                         "final_url": final_url,
                         "nav_path": nav_path,
                         "caption_length": len(caption),

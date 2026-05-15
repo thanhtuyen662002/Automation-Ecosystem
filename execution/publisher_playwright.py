@@ -98,23 +98,19 @@ def _account_id(account: dict[str, Any]) -> str:
 
 
 def _has_connected_session(account: dict[str, Any]) -> bool:
-    if bool(account.get("session_valid")) or bool(account.get("browser_data_dir")):
+    if bool(account.get("session_valid")):
         return True
     try:
         from core.browser_providers import (
             BROWSER_PROVIDER_REAL_CHROME,
-            account_metadata,
-            get_real_chrome_user_data_dir,
             resolve_browser_provider,
         )
-        metadata = account_metadata(account)
         if resolve_browser_provider(account) == BROWSER_PROVIDER_REAL_CHROME:
-            configured = account.get("real_chrome_user_data_dir") or metadata.get("real_chrome_user_data_dir")
-            if configured and Path(str(configured)).exists():
-                return True
-            return get_real_chrome_user_data_dir(_account_id(account), account, create=False).exists()
+            return bool(account.get("cookies"))
     except Exception:
         pass
+    if bool(account.get("browser_data_dir")):
+        return True
     cookie_file = str(account.get("cookie_file") or "")
     if cookie_file and Path(cookie_file).exists():
         return True

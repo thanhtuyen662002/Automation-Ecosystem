@@ -60,11 +60,25 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Deque, Literal
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from core.behavior_engine import ActivityLevel, SessionPersonality
 
 LOGGER = logging.getLogger("core.cross_account_coordinator")
+
+
+def _safe_proxy_label(proxy_url: str | None) -> str:
+    if not proxy_url:
+        return "NONE"
+    try:
+        parsed = urlsplit(proxy_url)
+        if not parsed.scheme or not parsed.hostname:
+            return "configured"
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname}{port}"
+    except Exception:
+        return "configured"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,7 +229,7 @@ class CrossAccountCoordinator:
             extra={
                 "event":          "coordinator_job_registered",
                 "account_id":     account_id,
-                "proxy":          proxy_url,
+                "proxy":          _safe_proxy_label(proxy_url),
                 "active_jobs":    len(self._active_jobs),
                 "proxy_accounts": len(self._proxy_accounts.get(proxy_url, set())),
             },
@@ -327,7 +341,7 @@ class CrossAccountCoordinator:
                         extra={
                             "event":           "coordinator_proxy_overload_soft_deny",
                             "account_id":      account_id,
-                            "proxy":           proxy_url,
+                            "proxy":           _safe_proxy_label(proxy_url),
                             "active_accounts": active_on_proxy,
                             "max":             _MAX_ACCOUNTS_PER_PROXY,
                             "soft_deny_secs":  300,
@@ -347,7 +361,7 @@ class CrossAccountCoordinator:
             extra={
                 "event":       "coordinator_start_delay",
                 "account_id":  account_id,
-                "proxy":       proxy_url or "NONE",
+                "proxy":       _safe_proxy_label(proxy_url),
                 "delay_secs":  round(total, 1),
                 "breakdown":   " | ".join(reason_parts),
                 "active_jobs": len(self._active_jobs),
@@ -746,7 +760,7 @@ class CrossAccountCoordinator:
                 "coordinator_proxy_overloaded",
                 extra={
                     "event":           "coordinator_proxy_overloaded",
-                    "proxy":           proxy_url,
+                    "proxy":           _safe_proxy_label(proxy_url),
                     "active_accounts": active,
                     "max":             _MAX_ACCOUNTS_PER_PROXY,
                 },

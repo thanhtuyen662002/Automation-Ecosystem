@@ -311,12 +311,13 @@ class AccountResponse(BaseModel):
                 metadata = {}
         if not isinstance(metadata, dict):
             metadata = {}
+        browser_provider = str(metadata.get("browser_provider") or "playwright")
         readiness_errors: list[str] = []
         if row.get("status") != "healthy":
             readiness_errors.append("account_not_healthy")
         if not bool(row.get("session_valid", 0)):
             readiness_errors.append("session_not_connected")
-        if not row.get("proxy_url"):
+        if not row.get("proxy_url") and browser_provider != "real_chrome":
             readiness_errors.append("proxy_missing")
         if bool(row.get("soft_ban_detected", 0)):
             readiness_errors.append("soft_ban_detected")
@@ -330,7 +331,7 @@ class AccountResponse(BaseModel):
             proxy_url=row.get("proxy_url"),
             proxy_country=row.get("proxy_country"),
             metadata=metadata,
-            browser_provider=str(metadata.get("browser_provider") or "playwright"),
+            browser_provider=browser_provider,
             real_chrome_user_data_dir=metadata.get("real_chrome_user_data_dir") or None,
             real_chrome_debug_port=metadata.get("real_chrome_debug_port"),
             session_valid=bool(row.get("session_valid", 0)),

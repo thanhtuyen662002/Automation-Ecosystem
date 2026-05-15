@@ -1325,6 +1325,7 @@ class AutomationDatabase:
                     """
                     UPDATE accounts
                     SET metadata = ?,
+                        status = 'healthy',
                         session_valid = 1,
                         last_login_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP

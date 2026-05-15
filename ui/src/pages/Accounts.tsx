@@ -11,6 +11,7 @@ interface Account {
   id: string; platform: string; account_handle: string;
   profile_url?: string | null; external_user_id?: string | null;
   status: string; proxy_url: string | null; proxy_country?: string | null; session_valid: boolean; session_status?: string;
+  has_cookies?: boolean;
   last_login_at: string | null; avatar_url: string | null; display_name: string | null;
   metadata?: Record<string, unknown>;
   browser_provider?: string;
@@ -66,6 +67,18 @@ function AccountAvatar({ account, size = 48 }: { account: Account; size?: number
 }
 
 function sessionStatus(account: Account) {
+  if (browserProvider(account) === 'adspower_manual' && account.metadata?.manual_login_state === 'connected_by_confirmation' && account.session_valid) {
+    const diagnostic = account.last_login_diagnostic ?? (
+      typeof account.metadata?.last_login_diagnostic === 'object' && account.metadata?.last_login_diagnostic !== null
+        ? account.metadata.last_login_diagnostic as Record<string, unknown>
+        : null
+    );
+    const diagnosticStatus = String(diagnostic?.status ?? '').toUpperCase();
+    if (['RATE_LIMITED', 'CAPTCHA_REQUIRED', 'CHECKPOINT_REQUIRED'].includes(diagnosticStatus)) {
+      return 'limited';
+    }
+    return 'connected';
+  }
   if (browserProvider(account) === 'adspower_manual' && account.metadata?.manual_login_state === 'browser_opened' && !account.session_valid) {
     return 'browser_opened';
   }
@@ -74,6 +87,13 @@ function sessionStatus(account: Account) {
   if (account.session_valid) return 'connected';
   if (account.last_login_at) return 'expired';
   return 'not_connected';
+}
+
+function displayAccountStatus(account: Account) {
+  if (browserProvider(account) === 'adspower_manual' && sessionStatus(account) === 'connected') {
+    return 'healthy';
+  }
+  return account.status;
 }
 
 function SessionPill({ account, t }: { account: Account; t: (k: string) => string }) {
@@ -109,6 +129,25 @@ function providerLabel(provider: string, t: (k: string) => string) {
   if (provider === 'real_chrome') return t('acc.provider_real_chrome');
   if (provider === 'adspower' || provider === 'adspower_manual') return t('acc.provider_adspower_manual');
   return t('acc.provider_playwright');
+}
+
+function sessionSource(account: Account) {
+  const diagnostic = account.last_login_diagnostic ?? (
+    typeof account.metadata?.last_login_diagnostic === 'object' && account.metadata?.last_login_diagnostic !== null
+      ? account.metadata.last_login_diagnostic as Record<string, unknown>
+      : null
+  );
+  return typeof diagnostic?.session_source === 'string' ? diagnostic.session_source : null;
+}
+
+function cookiesCaptured(account: Account) {
+  const diagnostic = account.last_login_diagnostic ?? (
+    typeof account.metadata?.last_login_diagnostic === 'object' && account.metadata?.last_login_diagnostic !== null
+      ? account.metadata.last_login_diagnostic as Record<string, unknown>
+      : null
+  );
+  if (typeof diagnostic?.cookies_captured === 'boolean') return diagnostic.cookies_captured;
+  return Boolean(account.has_cookies);
 }
 
 function BrowserProviderSelect({ value, onChange, t }: { value: string; onChange: (value: string) => void; t: (k: string) => string }) {
@@ -339,8 +378,10 @@ export function Accounts() {
                                     style={{ borderRadius: 2, opacity: 0.9 }} />
                                   {plat.label}
                                 </span>
-                                <Badge status={a.status}>{a.status}</Badge>
+                                <Badge status={displayAccountStatus(a)}>{displayAccountStatus(a)}</Badge>
                                 <span className="badge badge-muted">{providerLabel(provider, t)}</span>
+                                {isAdsPowerManual && sessionSource(a) === 'adspower_profile' && <span className="badge badge-muted">{t('acc.session_source_adspower')}</span>}
+                                {isAdsPowerManual && <span className="badge badge-muted">{cookiesCaptured(a) ? t('acc.cookies_yes') : t('acc.cookies_no')}</span>}
                                 {softBan && <span className="badge badge-danger">⚠ shadow ban</span>}
                               </div>
                             </div>
@@ -413,9 +454,11 @@ export function Accounts() {
               </div>
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
                 <Badge status="info">{PLATFORMS[selected.platform]?.label ?? selected.platform}</Badge>
-                <Badge status={selected.status}>{selected.status}</Badge>
+                <Badge status={displayAccountStatus(selected)}>{displayAccountStatus(selected)}</Badge>
                 {selected.soft_ban_detected && <Badge status="danger">shadow ban</Badge>}
                 {selected.session_valid && <Badge status="success">{t('acc.connected')}</Badge>}
+                {browserProvider(selected) === 'adspower_manual' && sessionSource(selected) === 'adspower_profile' && <Badge status="info">{t('acc.session_source_adspower')}</Badge>}
+                {browserProvider(selected) === 'adspower_manual' && <Badge status={cookiesCaptured(selected) ? 'success' : 'info'}>{cookiesCaptured(selected) ? t('acc.cookies_yes') : t('acc.cookies_no')}</Badge>}
               </div>
             </div>
 

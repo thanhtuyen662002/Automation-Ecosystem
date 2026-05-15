@@ -124,6 +124,70 @@ def test_adspower_manual_account_readiness_requires_profile_not_proxy():
     assert response.can_publish is True
 
 
+def test_session_status_connected_for_confirmed_adspower_even_if_limited():
+    from api.routes.accounts import _session_status_for_row
+
+    row = {"status": "limited", "session_valid": 1, "last_login_at": "2026-05-15T00:00:00Z"}
+    metadata = {
+        "browser_provider": "adspower_manual",
+        "manual_login_state": "connected_by_confirmation",
+        "last_login_diagnostic": {
+            "status": "manual_confirmed",
+            "provider": "adspower_manual",
+            "session_source": "adspower_profile",
+            "cookies_captured": False,
+        },
+    }
+
+    assert _session_status_for_row(row, metadata) == "connected"
+
+
+@pytest.mark.asyncio
+async def test_manual_login_confirmation_clears_limited_status(tmp_path):
+    from database.database import AutomationDatabase
+
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+    db = AutomationDatabase(database_url)
+    await db.init_schema("database/schema.sql")
+    row = await db.create_account(
+        platform="tiktok",
+        account_handle="ads-confirm",
+        metadata={
+            "browser_provider": "adspower_manual",
+            "adspower_profile_id": "profile-1",
+            "manual_login_state": "browser_opened",
+            "last_login_diagnostic": {"status": "RATE_LIMITED"},
+        },
+    )
+    await db.update_account_status(row["id"], "limited")
+
+    updated = await db.mark_account_manual_login_confirmed(
+        row["id"],
+        browser_provider="adspower_manual",
+        metadata_patch={
+            "browser_provider": "adspower_manual",
+            "adspower_profile_id": "profile-1",
+            "manual_login_state": "connected_by_confirmation",
+            "last_login_diagnostic": {
+                "status": "manual_confirmed",
+                "provider": "adspower_manual",
+                "session_source": "adspower_profile",
+                "cookies_captured": False,
+            },
+        },
+    )
+
+    assert updated is not None
+    assert updated["status"] == "healthy"
+    assert bool(updated["session_valid"]) is True
+    assert updated["cookies"] is None
+    metadata = json.loads(updated["metadata"])
+    assert metadata["manual_login_state"] == "connected_by_confirmation"
+    assert metadata["last_login_diagnostic"]["status"] == "manual_confirmed"
+    assert metadata["last_login_diagnostic"]["session_source"] == "adspower_profile"
+    assert metadata["last_login_diagnostic"]["cookies_captured"] is False
+
+
 @pytest.mark.asyncio
 async def test_adspower_manual_connect_context_is_disabled():
     from core.browser_providers import AdsPowerManualProvider
@@ -140,6 +204,23 @@ async def test_adspower_manual_connect_context_is_disabled():
     with pytest.raises(RuntimeError):
         async with provider.open_connect_context(FakePlaywright()):
             pass
+
+
+def test_adspower_manual_connected_session_does_not_require_db_cookies():
+    import execution.publisher_playwright as publisher
+
+    account = {
+        "account_id": "ads-connected",
+        "platform": "tiktok",
+        "session_valid": True,
+        "metadata": {
+            "browser_provider": "adspower_manual",
+            "adspower_profile_id": "profile-1",
+            "manual_login_state": "connected_by_confirmation",
+        },
+    }
+
+    assert publisher._has_connected_session(account) is True
 
 
 def test_identity_stable_and_local_defaults(monkeypatch):

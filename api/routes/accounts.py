@@ -215,11 +215,15 @@ async def get_session_status(account_id: str, database: DatabaseDependency) -> S
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
     metadata = _metadata_dict(row)
+    browser_provider = str(metadata.get("browser_provider") or "playwright").strip().lower()
+    if browser_provider == "adspower":
+        browser_provider = "adspower_manual"
+    session_status = _session_status_for_row(row, metadata)
     return SessionStatusResponse(
         account_id=account_id,
         session_valid=bool(row.get("session_valid", 0)),
-        status="limited" if row.get("status") == "limited" else ("connected" if row.get("session_valid") else ("expired" if row.get("last_login_at") else "not_connected")),
-        browser_provider=str(metadata.get("browser_provider") or "playwright"),
+        status=session_status,
+        browser_provider=browser_provider,
         has_cookies=bool(row.get("cookies")),
         last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
         user_agent=row.get("user_agent"),
@@ -598,6 +602,8 @@ async def confirm_manual_login(account_id: str, database: DatabaseDependency) ->
         "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
         "confirmed_at": datetime.now(UTC).isoformat(),
         "verification_mode": "user_confirmation",
+        "cookies_captured": False,
+        "session_source": "adspower_profile",
     }
 
     if _env_bool("ADSPOWER_VERIFY_AFTER_LOGIN", default=False):
@@ -748,6 +754,7 @@ async def _verify_adspower_login_after_confirmation(
     )
     from core.login_diagnostics import LoginBlockStatus, classify_login_block
     from core.platform_config import get_platform_config
+    from core.session_crypto import encrypt_cookies
     from playwright.async_api import async_playwright
 
     cfg = get_platform_config(row["platform"])
@@ -767,12 +774,19 @@ async def _verify_adspower_login_after_confirmation(
                 await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
 
             runtime = await collect_runtime_diagnostics(page, context)
+            cookies: list[dict[str, Any]] = []
+            try:
+                cookies = await context.cookies()
+            except Exception:
+                cookies = []
             logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
             diagnostic = {
                 "status": "verified" if logged_in else "not_connected",
                 "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
                 "verified_at": datetime.now(UTC).isoformat(),
                 "verification_mode": "cdp_after_confirmation",
+                "cookies_captured": bool(cookies),
+                "session_source": "adspower_profile",
                 "runtime": runtime,
             }
             if not logged_in:
@@ -784,6 +798,31 @@ async def _verify_adspower_login_after_confirmation(
                     },
                 )
                 raise HTTPException(status_code=409, detail="SESSION_NOT_CONNECTED")
+            if cookies:
+                try:
+                    user_agent = await page.evaluate("navigator.userAgent")
+                except Exception:
+                    user_agent = ""
+                try:
+                    fingerprint = await page.evaluate("""
+                        () => ({
+                            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                            locale: navigator.language || 'vi-VN',
+                            width: window.screen.width,
+                            height: window.screen.height,
+                        })
+                    """)
+                except Exception:
+                    fingerprint = {}
+                await database.save_account_session(
+                    account_id,
+                    encrypt_cookies(cookies),
+                    user_agent,
+                    viewport_width=fingerprint.get("width") or row.get("viewport_width") or 1280,
+                    viewport_height=fingerprint.get("height") or row.get("viewport_height") or 720,
+                    timezone=fingerprint.get("timezone") or row.get("timezone") or "Asia/Ho_Chi_Minh",
+                    locale=fingerprint.get("locale") or row.get("locale") or "vi-VN",
+                )
             return diagnostic
 
 
@@ -798,6 +837,30 @@ def _metadata_dict(row: dict) -> dict:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _session_status_for_row(row: dict, metadata: dict) -> str:
+    browser_provider = str(metadata.get("browser_provider") or "playwright").strip().lower()
+    if browser_provider == "adspower":
+        browser_provider = "adspower_manual"
+    manual_connected = (
+        browser_provider == "adspower_manual"
+        and metadata.get("manual_login_state") == "connected_by_confirmation"
+        and bool(row.get("session_valid", 0))
+    )
+    if manual_connected:
+        diagnostic = metadata.get("last_login_diagnostic")
+        diagnostic_status = str(diagnostic.get("status") if isinstance(diagnostic, dict) else "").upper()
+        if diagnostic_status in {"RATE_LIMITED", "CAPTCHA_REQUIRED", "CHECKPOINT_REQUIRED"}:
+            return "limited"
+        return "connected"
+    if row.get("status") == "limited":
+        return "limited"
+    if bool(row.get("session_valid", 0)):
+        return "connected"
+    if row.get("last_login_at"):
+        return "expired"
+    return "not_connected"
 
 
 def _merge_browser_provider_metadata(metadata: dict | None, values: dict) -> dict:

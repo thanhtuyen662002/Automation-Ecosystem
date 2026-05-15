@@ -293,6 +293,7 @@ class AccountResponse(BaseModel):
     adspower_profile_id: str | None = None
     last_login_diagnostic: dict[str, Any] | None = None
     # Session fields (None for accounts that have never connected)
+    has_cookies: bool = False
     session_valid: bool
     session_status: str
     last_login_at: str | None
@@ -355,8 +356,9 @@ class AccountResponse(BaseModel):
             real_chrome_debug_port=metadata.get("real_chrome_debug_port"),
             adspower_profile_id=metadata.get("adspower_profile_id") or None,
             last_login_diagnostic=metadata.get("last_login_diagnostic") if isinstance(metadata.get("last_login_diagnostic"), dict) else None,
+            has_cookies=bool(row.get("cookies")),
             session_valid=bool(row.get("session_valid", 0)),
-            session_status=_account_session_status(row),
+            session_status=_account_session_status(row, metadata),
             last_login_at=str(row["last_login_at"]) if row.get("last_login_at") else None,
             user_agent=row.get("user_agent"),
             viewport_width=int(row["viewport_width"]) if row.get("viewport_width") is not None else None,
@@ -393,7 +395,20 @@ class SessionStatusResponse(BaseModel):
     locale: str | None = None
 
 
-def _account_session_status(row: dict) -> str:
+def _account_session_status(row: dict, metadata: dict | None = None) -> str:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    browser_provider = _normalize_browser_provider(str(metadata.get("browser_provider") or "playwright")) or "playwright"
+    manual_connected = (
+        browser_provider == "adspower_manual"
+        and metadata.get("manual_login_state") == "connected_by_confirmation"
+        and bool(row.get("session_valid", 0))
+    )
+    if manual_connected:
+        diagnostic = metadata.get("last_login_diagnostic")
+        diagnostic_status = str(diagnostic.get("status") if isinstance(diagnostic, dict) else "").upper()
+        if diagnostic_status in {"RATE_LIMITED", "CAPTCHA_REQUIRED", "CHECKPOINT_REQUIRED"}:
+            return "limited"
+        return "connected"
     if row.get("status") == "limited":
         return "limited"
     if bool(row.get("session_valid", 0)):

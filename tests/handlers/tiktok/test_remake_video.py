@@ -25,6 +25,19 @@ async def test_remake_video_missing_video_paths():
 
 
 @pytest.mark.asyncio
+async def test_remake_video_skips_decision_gate_without_signals(monkeypatch):
+    from workers.handlers.tiktok import remake_video as module
+
+    def fail_gate(*_args, **_kwargs):
+        raise AssertionError("decision gate should not run without decision_signals")
+
+    monkeypatch.setattr(module, "_content_decision_gate", fail_gate)
+
+    with pytest.raises(ValueError, match="video_paths"):
+        await module.remake_video_handler({"job_id": "test-job"})
+
+
+@pytest.mark.asyncio
 async def test_remake_video_idempotency():
     from workers.handlers.tiktok.remake_video import remake_video_handler
 

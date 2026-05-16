@@ -130,7 +130,17 @@ async def remake_video_handler(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Content Decision Gate (MANDATORY — remark mode) ─────────────────────
     # match_score < 0.6 → blocked (wrong product)
     # EV < 0.05         → blocked (not worth FFmpeg cost)
-    _content_decision_gate(payload, mode="remark")
+    signals = payload.get("decision_signals")
+    if isinstance(signals, dict) and signals:
+        _content_decision_gate(payload, mode="remark")
+    else:
+        LOGGER.info(
+            "remake_video_decision_gate_skipped",
+            extra={
+                "event": "remake_video_decision_gate_skipped",
+                "reason": "missing_decision_signals",
+            },
+        )
 
     # ── Resolve inputs ────────────────────────────────────────────────────────
     try:

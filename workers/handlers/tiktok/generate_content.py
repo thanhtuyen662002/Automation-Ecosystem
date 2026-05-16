@@ -410,7 +410,17 @@ async def generate_content_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Content Decision Gate (MANDATORY — before any AI API call) ────────────
     # generate mode: EV < 0.1 or final_score < 0 → skip entirely.
-    _content_decision_gate(payload, title=title, mode="generate")
+    signals = payload.get("decision_signals")
+    if isinstance(signals, dict) and signals:
+        _content_decision_gate(payload, title=title, mode="generate")
+    else:
+        LOGGER.info(
+            "generate_content_decision_gate_skipped",
+            extra={
+                "event": "generate_content_decision_gate_skipped",
+                "reason": "missing_decision_signals",
+            },
+        )
 
     # ── Config flags ──────────────────────────────────────────────────────────
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"

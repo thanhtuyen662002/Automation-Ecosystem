@@ -114,7 +114,7 @@ async def test_search_tiktok_handler_uses_adspower_profile(monkeypatch):
             return [
                 {
                     "video_url": "https://www.tiktok.com/@alice/video/123",
-                    "caption": "A real TikTok result",
+                    "caption": "A real product demo TikTok result",
                     "views_text": "10K",
                     "likes_text": "1K",
                     "comments_text": "12",
@@ -188,3 +188,67 @@ def test_search_tiktok_handler_has_no_video_search_fallbacks():
     assert "get_ytdlp_path" not in source
     assert "run_subprocess" not in source
 
+
+def test_search_relevance_helper_scores_keyword_matches():
+    from workers.handlers.tiktok.search_tiktok import _calculate_relevance_score
+
+    high_score, matched = _calculate_relevance_score(
+        {
+            "title": "Kem chống nắng nâng tone",
+            "description": "Review #kemchongnang dùng hằng ngày",
+            "author": "skincare_store",
+        },
+        "kem chống nắng",
+    )
+    low_score, low_matched = _calculate_relevance_score(
+        {
+            "title": "Máy xay sinh tố",
+            "description": "Đồ gia dụng nhà bếp",
+            "author": "home_store",
+        },
+        "kem chống nắng",
+    )
+
+    assert high_score > 0.25
+    assert set(matched) >= {"kem", "chống", "nắng"}
+    assert low_score < 0.25
+    assert low_matched == []
+
+
+def test_search_filter_viral_bypass_and_low_relevance_drop():
+    from workers.handlers.tiktok.search_tiktok import _filter_search_videos
+
+    seen_urls: set[str] = set()
+    author_counts: dict[str, int] = {}
+    accepted, stats = _filter_search_videos(
+        [
+            {
+                "url": "https://www.tiktok.com/@a/video/1",
+                "title": "unrelated",
+                "description": "nothing relevant",
+                "author": "a",
+                "uploader_id": "a",
+                "views": 100_000,
+            },
+            {
+                "url": "https://www.tiktok.com/@b/video/2",
+                "title": "unrelated viral",
+                "description": "nothing relevant",
+                "author": "b",
+                "uploader_id": "b",
+                "views": 500_000,
+            },
+        ],
+        keyword="kem chống nắng",
+        seen_urls=seen_urls,
+        author_counts=author_counts,
+        min_views=10_000,
+        min_relevance_score=0.25,
+        max_per_author=3,
+        viral_bypass_views=300_000,
+    )
+
+    assert [video["url"] for video in accepted] == ["https://www.tiktok.com/@b/video/2"]
+    assert accepted[0]["relevance_score"] < 0.25
+    assert stats["dropped_low_relevance"] == 1
+    assert stats["accepted"] == 1

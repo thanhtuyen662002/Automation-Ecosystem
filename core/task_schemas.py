@@ -18,7 +18,7 @@ TASK_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
     },
     "tiktok.search_tiktok": {
         "required": ["account_id", "keywords", "max_results"],
-        "optional": ["scroll_max", "stagnant_limit"],
+        "optional": ["min_views", "min_relevance_score", "max_per_author", "scroll_max", "stagnant_limit"],
         "output": ["videos", "ok", "source"]
     },
     "tiktok.select_videos": {
@@ -28,7 +28,7 @@ TASK_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
     },
     "tiktok.download_videos": {
         "required": ["selected_videos"],
-        "optional": [],
+        "optional": ["account_id"],
         "output": ["video_paths", "failed_urls", "output_dir", "ok"]
     },
     "tiktok.remake_video": {

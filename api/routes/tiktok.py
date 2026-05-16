@@ -68,7 +68,6 @@ async def create_tiktok_pipeline(
     Poll GET /jobs/{job_id} to track progress.
     All task results are stored in the 'result' JSON field on each task.
     """
-    media_output_dir = os.environ.get("MEDIA_OUTPUT_DIR", "./media_output")
     min_views = request.min_views or int(os.environ.get("TIKTOK_MIN_VIEWS", "10000"))
     min_likes = request.min_likes or int(os.environ.get("TIKTOK_MIN_LIKES", "500"))
     top_n = request.top_n or int(os.environ.get("TIKTOK_TOP_N", "5"))
@@ -106,6 +105,7 @@ async def create_tiktok_pipeline(
             "payload": {
                 "account_id": str(request.account_id),
                 "max_results": int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50")),
+                "min_views": min_views,
                 # {"from_task": ..., "field": ...} → resolved by worker before handler runs
                 "keywords": {"from_task": _KEY_EXTRACT, "field": "keywords"},
             },
@@ -134,6 +134,7 @@ async def create_tiktok_pipeline(
             "task_type": "tiktok.download_videos",
             "task_key": _KEY_DOWNLOAD,
             "payload": {
+                "account_id": str(request.account_id),
                 "selected_videos": {"from_task": _KEY_SELECT, "field": "selected_videos"},
                 # job_id injected automatically by worker runtime
             },

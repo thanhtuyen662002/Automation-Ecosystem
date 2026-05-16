@@ -49,6 +49,7 @@ from workers.handlers.tiktok._base import (
 LOGGER = logging.getLogger("workers.handlers.tiktok.select_videos")
 
 _DEFAULT_MIN_VIEWS = int(os.environ.get("TIKTOK_MIN_VIEWS", "10000"))
+_DEFAULT_MIN_LIKES = int(os.environ.get("TIKTOK_MIN_LIKES", "500"))
 _DEFAULT_MIN_DURATION = float(os.environ.get("TIKTOK_MIN_DURATION", "5.0"))
 _DEFAULT_MAX_DURATION = float(os.environ.get("TIKTOK_MAX_DURATION", "40.0"))
 _DEFAULT_TOP_N = int(os.environ.get("TIKTOK_TOP_N", "5"))
@@ -119,6 +120,7 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Thresholds ────────────────────────────────────────────────────────────
     min_views: int = int(payload.get("min_views", _DEFAULT_MIN_VIEWS))
+    min_likes: int = int(payload.get("min_likes", _DEFAULT_MIN_LIKES))
     min_duration: float = float(payload.get("min_duration", _DEFAULT_MIN_DURATION))
     max_duration: float = float(payload.get("max_duration", _DEFAULT_MAX_DURATION))
     min_engagement_rate: float = float(payload.get("min_engagement_rate", _DEFAULT_MIN_ER))
@@ -134,6 +136,7 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "event": "select_videos_start",
             "total_input": len(videos),
             "min_views": min_views,
+            "min_likes": min_likes,
             "min_duration": min_duration,
             "max_duration": max_duration,
             "min_er": min_engagement_rate,
@@ -152,6 +155,8 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         er = likes / max(views, 1)
 
         if views < min_views:
+            continue
+        if likes > 0 and likes < min_likes:
             continue
         if duration > 0 and not (min_duration <= duration <= max_duration):
             continue

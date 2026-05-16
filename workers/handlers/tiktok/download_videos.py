@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import random
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ from workers.handlers.tiktok._base import (
 )
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.download_videos")
+
+_YTDLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -53,6 +56,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Output directory ──────────────────────────────────────────────────────
     job_id: str = str(payload.get("job_id", "unknown_job"))
+    account_id: str = str(payload.get("account_id") or "").strip()
     base_output_dir = get_media_output_dir()
     output_dir = base_output_dir / job_id / "downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +66,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         extra={
             "event": "download_videos_start",
             "video_count": len(selected_videos),
+            "has_account_id": bool(account_id),
             "output_dir": str(output_dir),
         },
     )
@@ -70,37 +75,87 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     video_paths: list[str] = []
     failed_urls: list[str] = []
+    cookie_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    cookie_file: Path | None = None
+    cookie_export_attempted = False
 
-    for idx, video in enumerate(selected_videos):
-        url: str = video.get("url", "")
-        if not url:
-            LOGGER.warning(
-                "download_skip_empty_url",
-                extra={"event": "download_skip_empty_url", "index": idx},
-            )
-            continue
+    try:
+        for idx, video in enumerate(selected_videos):
+            url: str = video.get("url", "")
+            if not url:
+                LOGGER.warning(
+                    "download_skip_empty_url",
+                    extra={"event": "download_skip_empty_url", "index": idx},
+                )
+                continue
 
-        output_template = str(output_dir / f"video_{idx:02d}.%(ext)s")
-        try:
+            output_template = str(output_dir / f"video_{idx:02d}.%(ext)s")
             LOGGER.info(
                 "download_video_start",
                 extra={"event": "download_video_start", "url": url, "index": idx},
             )
-            await run_subprocess(
-                "yt-dlp",
-                "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format", "mp4",
-                "--no-playlist",
-                "--quiet",
-                "--output", output_template,
-                url,
-                timeout=180.0,
-            )
 
-            # Find the downloaded file (yt-dlp picks the extension)
-            downloaded = list(output_dir.glob(f"video_{idx:02d}.*"))
+            try:
+                await _download_with_ytdlp(url, output_template)
+            except SubprocessError as exc:
+                LOGGER.warning(
+                    "download_video_primary_failed",
+                    extra={"event": "download_video_primary_failed", "url": url, "error": str(exc)[:300]},
+                )
+                if not account_id:
+                    LOGGER.info(
+                        "download_cookie_fallback_skipped_no_account_id",
+                        extra={"event": "download_cookie_fallback_skipped_no_account_id", "url": url},
+                    )
+                    failed_urls.append(url)
+                    continue
+
+                if not cookie_export_attempted:
+                    cookie_export_attempted = True
+                    cookie_tmpdir = tempfile.TemporaryDirectory(prefix="ae_tiktok_cookies_")
+                    cookie_file = Path(cookie_tmpdir.name) / "cookies.txt"
+                    try:
+                        await _export_adspower_tiktok_cookies(account_id, cookie_file)
+                    except Exception as cookie_exc:
+                        LOGGER.warning(
+                            "download_video_cookie_fallback_failed",
+                            extra={
+                                "event": "download_video_cookie_fallback_failed",
+                                "url": url,
+                                "error": str(cookie_exc)[:300],
+                            },
+                        )
+                        cookie_file = None
+
+                if cookie_file is None:
+                    failed_urls.append(url)
+                    continue
+
+                try:
+                    LOGGER.info(
+                        "download_video_cookie_fallback_start",
+                        extra={"event": "download_video_cookie_fallback_start", "url": url, "account_id": account_id},
+                    )
+                    await _download_with_ytdlp(url, output_template, cookies_file=cookie_file)
+                    LOGGER.info(
+                        "download_video_cookie_fallback_done",
+                        extra={"event": "download_video_cookie_fallback_done", "url": url, "account_id": account_id},
+                    )
+                except SubprocessError as fallback_exc:
+                    LOGGER.warning(
+                        "download_video_cookie_fallback_failed",
+                        extra={
+                            "event": "download_video_cookie_fallback_failed",
+                            "url": url,
+                            "error": str(fallback_exc)[:300],
+                        },
+                    )
+                    failed_urls.append(url)
+                    continue
+
+            downloaded = _find_downloaded_file(output_dir, idx)
             if downloaded:
-                video_path = str(downloaded[0])
+                video_path = str(downloaded)
                 video_paths.append(video_path)
                 LOGGER.info(
                     "download_video_done",
@@ -113,17 +168,13 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 failed_urls.append(url)
 
-        except SubprocessError as exc:
-            LOGGER.error(
-                "download_video_failed",
-                extra={"event": "download_video_failed", "url": url, "error": str(exc)[:300]},
-            )
-            failed_urls.append(url)
-
-        # Anti-abuse delay between downloads
-        if idx < len(selected_videos) - 1:
-            delay = random.uniform(3.0, 10.0)
-            await asyncio.sleep(delay)
+            # Anti-abuse delay between downloads
+            if idx < len(selected_videos) - 1:
+                delay = random.uniform(3.0, 10.0)
+                await asyncio.sleep(delay)
+    finally:
+        if cookie_tmpdir is not None:
+            cookie_tmpdir.cleanup()
 
     if not video_paths:
         raise RuntimeError(
@@ -145,3 +196,114 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "ok": True,
     }
+
+
+async def _download_with_ytdlp(
+    url: str,
+    output_template: str,
+    *,
+    cookies_file: Path | None = None,
+) -> None:
+    args = [
+        "yt-dlp",
+        "--format", _YTDLP_FORMAT,
+        "--merge-output-format", "mp4",
+        "--no-playlist",
+        "--quiet",
+        "--output", output_template,
+    ]
+    if cookies_file is not None:
+        args.extend(["--cookies", str(cookies_file)])
+    args.append(url)
+    await run_subprocess(*args, timeout=180.0)
+
+
+def _find_downloaded_file(output_dir: Path, idx: int) -> Path | None:
+    downloaded = list(output_dir.glob(f"video_{idx:02d}.*"))
+    return downloaded[0] if downloaded else None
+
+
+async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) -> None:
+    from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        account_metadata,
+        make_browser_provider,
+        resolve_browser_provider,
+    )
+    from database.database import AutomationDatabase, RetryConfig
+    from playwright.async_api import async_playwright
+
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is required for TikTok cookie fallback")
+
+    database = AutomationDatabase(db_url, retry_config=RetryConfig())
+    await database.open()
+    try:
+        account = await database.get_account(account_id)
+        if account is None:
+            raise RuntimeError(f"Account {account_id} not found")
+        if str(account.get("platform") or "").strip().lower() != "tiktok":
+            raise RuntimeError(f"Account {account_id} must be a TikTok account")
+
+        metadata = account_metadata(account)
+        account_for_provider = {**account, "account_id": account_id, "metadata": metadata}
+        browser_provider = resolve_browser_provider(account_for_provider)
+        if browser_provider != BROWSER_PROVIDER_ADSPOWER_MANUAL:
+            raise RuntimeError("TikTok cookie fallback requires AdsPower manual provider")
+
+        session = await database.get_account_session(account_id) or {}
+        provider = make_browser_provider(account_for_provider, session=session, identity_profile=None)
+
+        async with async_playwright() as pw:
+            async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_profile):
+                await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30_000)
+                await asyncio.sleep(random.uniform(1.5, 3.0))
+                cookies = await context.cookies()
+
+        _write_netscape_cookie_file(cookies, cookie_file)
+        LOGGER.info(
+            "download_cookie_file_exported",
+            extra={
+                "event": "download_cookie_file_exported",
+                "account_id": account_id,
+                "cookie_count": len([cookie for cookie in cookies if "tiktok.com" in str(cookie.get("domain", ""))]),
+            },
+        )
+    finally:
+        await database.close()
+
+
+def _write_netscape_cookie_file(cookies: list[dict[str, Any]], path: Path) -> None:
+    lines = ["# Netscape HTTP Cookie File\n"]
+    for cookie in cookies:
+        domain = _sanitize_cookie_field(cookie.get("domain", ""))
+        if not domain or "tiktok.com" not in domain:
+            continue
+        name = _sanitize_cookie_field(cookie.get("name", ""))
+        if not name:
+            continue
+        value = _sanitize_cookie_field(cookie.get("value", ""))
+        include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+        cookie_path = _sanitize_cookie_field(cookie.get("path", "/")) or "/"
+        secure = "TRUE" if bool(cookie.get("secure")) else "FALSE"
+        expires = int(float(cookie.get("expires") or 0))
+        lines.append(
+            "\t".join(
+                [
+                    domain,
+                    include_subdomains,
+                    cookie_path,
+                    secure,
+                    str(expires),
+                    name,
+                    value,
+                ]
+            )
+            + "\n"
+        )
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def _sanitize_cookie_field(value: Any) -> str:
+    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")

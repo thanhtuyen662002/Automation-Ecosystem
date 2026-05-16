@@ -44,6 +44,118 @@ _SYSTEM_PROMPT = (
 )
 
 
+async def extract_tiktok_shop_product_info(product_url: str, account_id: str | None = None) -> dict[str, Any]:
+    from core.browser_providers import make_browser_provider
+    from database.database import AutomationDatabase, RetryConfig
+    from playwright.async_api import async_playwright
+    import json
+    import os
+
+    result = {
+        "title": "",
+        "description": "",
+        "keywords": [],
+        "ld_json": None,
+        "og_title": "",
+        "meta_description": "",
+        "page_title": "",
+        "ok": False,
+        "error": None
+    }
+
+    if not account_id:
+        result["error"] = "No account_id provided for TikTok Shop extraction"
+        return result
+
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        result["error"] = "DATABASE_URL not set"
+        return result
+
+    database = AutomationDatabase(db_url, retry_config=RetryConfig())
+    await database.open()
+
+    try:
+        account = await database.get_account(account_id)
+        if not account:
+            result["error"] = "Account not found"
+            return result
+        
+        metadata = account.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        elif not isinstance(metadata, dict):
+            metadata = {}
+            
+        session = await database.get_account_session(account_id) or {}
+        
+        provider = make_browser_provider(
+            {**account, "account_id": account_id, "metadata": metadata},
+            session=session,
+        )
+
+        async with async_playwright() as pw:
+            async with provider.open_publisher_context(pw, headless=False) as (context, page, _):
+                try:
+                    await page.goto(product_url, wait_until="domcontentloaded", timeout=30_000)
+                    await asyncio.sleep(2)
+                    
+                    try:
+                        ld_json_text = await page.evaluate('''() => {
+                            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                            for (const s of scripts) {
+                                if (s.innerText.includes('Product')) return s.innerText;
+                            }
+                            return null;
+                        }''')
+                        if ld_json_text:
+                            result["ld_json"] = json.loads(ld_json_text)
+                    except Exception:
+                        pass
+                        
+                    try:
+                        result["og_title"] = await page.evaluate('''() => {
+                            const og = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="twitter:title"]');
+                            return og ? og.content : "";
+                        }''')
+                    except Exception:
+                        pass
+                        
+                    try:
+                        result["meta_description"] = await page.evaluate('''() => {
+                            const desc = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
+                            return desc ? desc.content : "";
+                        }''')
+                    except Exception:
+                        pass
+                        
+                    try:
+                        result["page_title"] = await page.title()
+                    except Exception:
+                        pass
+                        
+                    try:
+                        title_from_dom = await page.evaluate('''() => {
+                            const el = document.querySelector('h1') || document.querySelector('[class*="title"]') || document.querySelector('[class*="name"]');
+                            return el ? el.innerText : "";
+                        }''')
+                        if title_from_dom:
+                            result["title"] = title_from_dom
+                    except Exception:
+                        pass
+                        
+                    result["ok"] = True
+                except Exception as exc:
+                    result["error"] = str(exc)
+    finally:
+        await database.close()
+
+    return result
+
+
 async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Idempotency guard ─────────────────────────────────────────────────────
     if (cached := check_already_processed(payload)) is not None:
@@ -51,11 +163,16 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
 
     product_url: str | None = payload.get("product_url") or None
     product_image_path: str | None = payload.get("product_image_path") or None
+    account_id: str | None = payload.get("account_id") or None
 
     if not product_url and not product_image_path:
         raise ValueError("extract_product_info requires 'product_url' or 'product_image_path'")
 
     await random_jitter(0.5, 2.0)
+
+    is_tiktok_shop = False
+    if product_url and ("shop.tiktok.com/view/product" in product_url or "www.tiktok.com/shop/product" in product_url):
+        is_tiktok_shop = True
 
     LOGGER.info(
         "extract_product_info_start",
@@ -63,6 +180,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
             "event": "extract_product_info_start",
             "has_url": bool(product_url),
             "has_image": bool(product_image_path),
+            "is_tiktok_shop": is_tiktok_shop,
         },
     )
 
@@ -87,19 +205,44 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
         pil_img = Image.open(image_path)
         content.append(pil_img)
 
-    # Text: scrape product URL (first 8 000 chars to stay within context window)
-    if product_url:
-        try:
-            page_text = await fetch_url_text(product_url)
-            page_text = page_text[:8000]
-        except Exception as exc:
-            LOGGER.warning(
-                "fetch_url_failed",
-                extra={"event": "fetch_url_failed", "url": product_url, "error": str(exc)},
-            )
-            page_text = f"Product URL: {product_url}"
+    import json
+    fetch_url_success = False
+    fetched_text_length = 0
+    shop_data = None
 
-        content.append(f"Product page content:\n\n{page_text}")
+    if product_url:
+        if is_tiktok_shop and account_id:
+            shop_data = await extract_tiktok_shop_product_info(product_url, account_id)
+            if shop_data.get("ok"):
+                fetch_url_success = True
+                page_text = f"URL: {product_url}\n"
+                if shop_data.get("page_title"): page_text += f"Page Title: {shop_data['page_title']}\n"
+                if shop_data.get("og_title"): page_text += f"Meta Title: {shop_data['og_title']}\n"
+                if shop_data.get("title"): page_text += f"DOM Title: {shop_data['title']}\n"
+                if shop_data.get("meta_description"): page_text += f"Meta Desc: {shop_data['meta_description']}\n"
+                if shop_data.get("ld_json"): page_text += f"JSON-LD: {json.dumps(shop_data['ld_json'])}\n"
+                fetched_text_length = len(page_text)
+                content.append(f"Product page data:\n\n{page_text}")
+            else:
+                LOGGER.warning(
+                    "tiktok_shop_extract_failed",
+                    extra={"event": "tiktok_shop_extract_failed", "url": product_url, "error": shop_data.get("error")}
+                )
+
+        if not fetch_url_success:
+            try:
+                page_text = await fetch_url_text(product_url)
+                page_text = page_text[:8000]
+                fetch_url_success = True
+                fetched_text_length = len(page_text)
+                content.append(f"Product page content:\n\n{page_text}")
+            except Exception as exc:
+                LOGGER.warning(
+                    "fetch_url_failed",
+                    extra={"event": "fetch_url_failed", "url": product_url, "error": str(exc)},
+                )
+                page_text = f"Product URL: {product_url}"
+                content.append(f"Product page content:\n\n{page_text}")
 
     if not content:
         content.append("Analyze the product and return the JSON.")
@@ -154,24 +297,40 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
     keywords: list[str] = [str(k).strip() for k in parsed.get("keywords", []) if k]
 
     if not keywords:
-        # Fallback: derive from title words
         keywords = [w.lower() for w in title.split() if len(w) > 3][:8]
 
-    result = {
-        "title": title,
-        "description": description,
-        "keywords": keywords,
-        "ok": True,
-    }
-
+    is_fallback_unknown = title.lower() == "unknown product" or title.strip() == ""
+    
+    junk_set = {"unknown", "product", "item", "shop", "tiktok", "tiktok shop"}
+    meaningful_keywords = [k for k in keywords if k.lower() not in junk_set and len(k) > 2]
+    
     LOGGER.info(
         "extract_product_info_done",
         extra={
             "event": "extract_product_info_done",
-            "title": title,
-            "keyword_count": len(keywords),
+            "product_url": product_url,
+            "fetch_url_success": fetch_url_success,
+            "fetched_text_length": fetched_text_length,
+            "parsed_title": title,
+            "parsed_keywords": keywords,
+            "is_fallback_unknown": is_fallback_unknown,
+            "raw_ai_text_preview": raw_text[:200] if raw_text else "",
         },
     )
+
+    if is_fallback_unknown or len(meaningful_keywords) < 3:
+        raise RuntimeError(
+            f"Could not extract meaningful product title/keywords from product_url: {product_url}. "
+            f"Got title='{title}', keywords={keywords}"
+        )
+
+    result = {
+        "title": title if not is_fallback_unknown else " ".join(meaningful_keywords),
+        "description": description,
+        "keywords": meaningful_keywords if len(meaningful_keywords) >= 3 else keywords,
+        "ok": True,
+    }
+
     return result
 
 

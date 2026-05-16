@@ -150,6 +150,10 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     if not keywords:
         raise FatalDependencyError("search_tiktok received an empty keyword list")
 
+    junk_set = {"unknown", "product", "item", "shop", "tiktok", "tiktok shop"}
+    meaningful_keywords = [k for k in keywords if k.lower() not in junk_set and len(k) > 2]
+    if not meaningful_keywords:
+        raise FatalDependencyError(f"search_tiktok received only generic/junk keywords: {keywords}. Pipeline blocked to prevent search pollution.")
     search_provider = _search_provider_from_env()
     if search_provider != "adspower":
         raise FatalDependencyError("TIKTOK_SEARCH_PROVIDER must be 'adspower' for tiktok.search_tiktok")

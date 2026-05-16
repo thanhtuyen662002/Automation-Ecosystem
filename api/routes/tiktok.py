@@ -102,6 +102,7 @@ async def create_tiktok_pipeline(
             "payload": {
                 "product_url": request.product_url,
                 "product_image_path": request.product_image_path,
+                "account_id": str(request.account_id),
             },
             "metadata": {"pipeline": "tiktok", "step": 1},
             "max_retries": 3,

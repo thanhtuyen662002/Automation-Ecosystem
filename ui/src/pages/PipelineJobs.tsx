@@ -64,7 +64,13 @@ export function PipelineJobs() {
   const [autoPublish, setAutoPublish] = useState(false);
   const [accountId, setAccountId] = useState('');
   const [launchError, setLaunchError] = useState('');
-  const publishAccounts = accounts.filter((account: any) => account.platform === 'tiktok');
+  const browserProvider = (account: any) => String(account.browser_provider ?? account.metadata?.browser_provider ?? '').toLowerCase();
+  const searchAccounts = accounts.filter((account: any) =>
+    account.platform === 'tiktok' && ['adspower_manual', 'adspower'].includes(browserProvider(account))
+  );
+  const accountReady = (account: any) =>
+    Boolean(account.session_valid) && account.metadata?.manual_login_state === 'connected_by_confirmation';
+  const accountDisabled = (account: any) => autoPublish ? !account.can_publish : !accountReady(account);
 
   function toggle(id: string) {
     setExpanded(prev => {
@@ -76,7 +82,7 @@ export function PipelineJobs() {
 
   async function handleLaunch() {
     setLaunchError('');
-    if (autoPublish && !accountId) {
+    if (!accountId) {
       setLaunchError(t('job.select_account_error'));
       return;
     }
@@ -85,7 +91,7 @@ export function PipelineJobs() {
         product_url: productUrl,
         top_n: topN,
         auto_publish: autoPublish,
-        account_id: autoPublish ? accountId : undefined,
+        account_id: accountId,
       });
       setShowLaunch(false);
       setProductUrl('');
@@ -209,7 +215,7 @@ export function PipelineJobs() {
                       {job.input?.product_url && <span>{t('job.lbl_url')} {job.input.product_url}</span>}
                       {job.metadata?.top_n !== undefined && <span>{t('job.lbl_topn')} {job.metadata.top_n}</span>}
                       {job.metadata?.min_views !== undefined && <span>{t('job.lbl_min_views')} {(job.metadata.min_views / 1000).toFixed(0)}K</span>}
-                      {job.metadata?.auto_publish && <span>{t('job.lbl_publish_account')} {job.metadata.account_id ?? '—'}</span>}
+                      {job.metadata?.account_id && <span>{t('job.lbl_publish_account')} {job.metadata.account_id}</span>}
                       {job.started_at && <span>{t('job.lbl_started')} {fmtRelative(new Date(job.started_at).getTime() / 1000)}</span>}
                       {job.completed_at && <span>{t('job.lbl_done')} {fmtRelative(new Date(job.completed_at).getTime() / 1000)}</span>}
                     </div>
@@ -242,28 +248,26 @@ export function PipelineJobs() {
             <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
             {t('job.auto_publish')}
           </label>
-          {autoPublish && (
-            <div>
-              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
-                {t('job.lbl_account')}
-              </label>
-              <select className="input" value={accountId} onChange={e => setAccountId(e.target.value)}>
-                <option value="">{t('job.select_account')}</option>
-                {publishAccounts.map((account: any) => (
-                  <option key={account.id} value={account.id} disabled={!account.can_publish}>
-                    {account.display_name || account.account_handle} {account.can_publish ? '' : `(${t('job.account_not_ready')})`}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
+              {t('job.lbl_account')}
+            </label>
+            <select className="input" value={accountId} onChange={e => setAccountId(e.target.value)}>
+              <option value="">{t('job.select_account')}</option>
+              {searchAccounts.map((account: any) => (
+                <option key={account.id} value={account.id} disabled={accountDisabled(account)}>
+                  {account.display_name || account.account_handle} {accountDisabled(account) ? `(${t('job.account_not_ready')})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           {launchError && (
             <div style={{ padding: '0.5rem 0.75rem', background: 'var(--danger-muted)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <GlassIcon name="warning" size={13} style={{ filter: 'brightness(0) saturate(100%) invert(26%) sepia(90%) saturate(3000%) hue-rotate(345deg)' }} />
               {launchError}
             </div>
           )}
-          <button className="btn btn-primary" disabled={!productUrl.trim() || launch.isPending} onClick={handleLaunch} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', justifyContent: 'center' }}>
+          <button className="btn btn-primary" disabled={!productUrl.trim() || !accountId || launch.isPending} onClick={handleLaunch} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', justifyContent: 'center' }}>
             <GlassIcon name="play-circle" size={15} style={{ filter: 'brightness(0) invert(1)' }} />
             {launch.isPending ? t('job.launching') : t('job.launch')}
           </button>

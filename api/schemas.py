@@ -199,7 +199,7 @@ class TikTokPipelineRequest(BaseModel):
     comment_count: int = Field(default=3, ge=2, le=5, description="Number of comments to generate.")
     account_id: UUID | None = Field(
         default=None,
-        description="Account used by the optional publish_tiktok task.",
+        description="TikTok account used for AdsPower search and optional publishing.",
     )
     auto_publish: bool = Field(
         default=False,
@@ -218,8 +218,8 @@ class TikTokPipelineRequest(BaseModel):
     def _require_product_source(self) -> "TikTokPipelineRequest":
         if not self.product_url and not self.product_image_path:
             raise ValueError("At least one of 'product_url' or 'product_image_path' must be provided.")
-        if self.auto_publish and self.account_id is None:
-            raise ValueError("'account_id' is required when 'auto_publish' is true.")
+        if self.account_id is None:
+            raise ValueError("'account_id' is required for TikTok search.")
         return self
 
 

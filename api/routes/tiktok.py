@@ -73,6 +73,15 @@ async def create_tiktok_pipeline(
     min_likes = request.min_likes or int(os.environ.get("TIKTOK_MIN_LIKES", "500"))
     top_n = request.top_n or int(os.environ.get("TIKTOK_TOP_N", "5"))
 
+    if request.account_id is None:
+        raise HTTPException(status_code=422, detail="account_id is required for TikTok search")
+    account = await database.get_account(str(request.account_id))
+    if account is None:
+        raise HTTPException(status_code=404, detail="TikTok search account not found")
+    account_response = AccountResponse.from_row(account)
+    if account_response.platform.lower() != "tiktok":
+        raise HTTPException(status_code=422, detail="TikTok search account must be a TikTok account")
+
     # ── Build task list ───────────────────────────────────────────────────────
     # NOTE: 'depends_on' uses task_key strings; the database layer resolves them
     # to task UUIDs within the same job creation transaction.
@@ -93,7 +102,9 @@ async def create_tiktok_pipeline(
         {
             "task_type": "tiktok.search_tiktok",
             "task_key": _KEY_SEARCH,
+            "account_id": str(request.account_id),
             "payload": {
+                "account_id": str(request.account_id),
                 "max_results": int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50")),
                 # {"from_task": ..., "field": ...} → resolved by worker before handler runs
                 "keywords": {"from_task": _KEY_EXTRACT, "field": "keywords"},
@@ -174,14 +185,6 @@ async def create_tiktok_pipeline(
     ]
 
     if request.auto_publish:
-        if request.account_id is None:
-            raise HTTPException(status_code=422, detail="account_id is required when auto_publish is enabled")
-        account = await database.get_account(str(request.account_id))
-        if account is None:
-            raise HTTPException(status_code=404, detail="Publish account not found")
-        account_response = AccountResponse.from_row(account)
-        if account_response.platform.lower() != "tiktok":
-            raise HTTPException(status_code=422, detail="Publish account must be a TikTok account")
         if not account_response.can_publish:
             raise HTTPException(
                 status_code=422,

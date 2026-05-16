@@ -309,7 +309,7 @@ export function useJobs() {
 export function useLaunchPipeline() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { product_url: string; top_n?: number; priority?: number; account_id?: string; auto_publish?: boolean }) =>
+    mutationFn: (payload: { product_url: string; top_n?: number; priority?: number; account_id: string; auto_publish?: boolean }) =>
       api.launchPipeline(payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
   });

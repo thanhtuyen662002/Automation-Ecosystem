@@ -96,6 +96,13 @@ def _calculate_days_old(upload_date: str) -> float:
 
 # ── Handler ───────────────────────────────────────────────────────────────────
 
+def _duration_seconds(value: Any) -> float:
+    try:
+        return max(float(value or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Idempotency guard ─────────────────────────────────────────────────────
     if (cached := check_already_processed(payload)) is not None:
@@ -141,11 +148,12 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     for v in videos:
         views = max(int(v.get("views", 0)), 0)
         likes = max(int(v.get("likes", 0)), 0)
+        duration = _duration_seconds(v.get("duration"))
         er = likes / max(views, 1)
 
         if views < min_views:
             continue
-        if not (min_duration <= v.get("duration", 0.0) <= max_duration):
+        if duration > 0 and not (min_duration <= duration <= max_duration):
             continue
         if not v.get("url", ""):
             continue
@@ -159,6 +167,7 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         
         v["_raw_views"] = views
         v["_raw_likes"] = likes
+        v["duration"] = duration
         v["_raw_er"] = er
         v["_recency_boost"] = max(0.0, 1.0 - (days_old / 7.0))
         v["_days_old"] = days_old

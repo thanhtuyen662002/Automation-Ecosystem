@@ -37,9 +37,15 @@ import concurrent.futures
 import logging
 import os
 import random
-import re
 import time
 from typing import Any
+
+from core.tiktok_search_extractor import (
+    JS_EXTRACT_SEARCH_CARDS as _JS_EXTRACT_V2,
+    JS_SEARCH_PAGE_STATE as _JS_CHECK_ERROR,
+    author_from_url as _author_from_url,
+    parse_count as _parse_count,
+)
 
 LOGGER = logging.getLogger("core.tiktok_scraper")
 
@@ -55,34 +61,6 @@ _last_scrape: dict[str, float] = {}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _parse_count(text: str) -> int:
-    """'1.2M' / '45.6K' / '123,456' -> int. Returns 0 on failure."""
-    if not text:
-        return 0
-    text = text.strip().replace(",", "").replace(" ", "").replace("\u00a0", "")
-    try:
-        m = re.match(r"([\d.]+)([KkMmBb]?)", text)
-        if not m:
-            return 0
-        num    = float(m.group(1))
-        suffix = m.group(2).upper()
-        if suffix == "K":
-            return int(num * 1_000)
-        if suffix == "M":
-            return int(num * 1_000_000)
-        if suffix == "B":
-            return int(num * 1_000_000_000)
-        return int(num)
-    except Exception:
-        return 0
-
-
-def _author_from_url(url: str) -> str:
-    """Extract @username from a TikTok URL. Returns '' if not found."""
-    m = re.search(r"tiktok\.com/@([^/?#]+)", url)
-    return m.group(1) if m else ""
-
-
 async def _human_scroll(page: Any, distance: int = 700) -> None:
     steps     = random.randint(4, 9)
     step_base = distance // steps
@@ -95,138 +73,6 @@ async def _human_scroll(page: Any, distance: int = 700) -> None:
 async def _delay(lo: float = 1.0, hi: float = 3.0) -> None:
     await asyncio.sleep(random.uniform(lo, hi))
 
-
-# ── JavaScript extractor (v2) ─────────────────────────────────────────────────
-
-_JS_EXTRACT_V2 = """
-() => {
-    const results = [];
-
-    // --- Find video card containers ---
-    const containerSelectors = [
-        '[data-e2e="search_video-item"]',
-        'div[class*="DivItemContainerForSearch"]',
-        'div[class*="DivItemContainer"]',
-        'article[data-e2e]',
-        'li[class*="VideoFeed"]',
-    ];
-
-    let containers = [];
-    for (const sel of containerSelectors) {
-        const found = [...document.querySelectorAll(sel)];
-        if (found.length > 0) { containers = found; break; }
-    }
-
-    // Deduplicate by node identity
-    const seen = new WeakSet();
-    const unique = containers.filter(el => {
-        if (seen.has(el)) return false;
-        seen.add(el);
-        return true;
-    });
-
-    for (const el of unique) {
-        try {
-            // --- Video URL ---
-            const linkEl = el.querySelector('a[href*="/video/"]')
-                        || el.querySelector('a[href*="/photo/"]')
-                        || el.querySelector('a[href*="/@"]');
-            const videoUrl = linkEl ? linkEl.href : '';
-            if (!videoUrl || !videoUrl.includes('tiktok.com')) continue;
-
-            // --- Author: from DOM, fallback handled in Python via URL ---
-            const authorEl =
-                el.querySelector('[data-e2e="video-author-uniqueid"]') ||
-                el.querySelector('[data-e2e*="author-uniqueid"]')       ||
-                el.querySelector('[data-e2e*="author"]')                ||
-                el.querySelector('a[href*="/@"][class*="author"]')      ||
-                el.querySelector('span[class*="AuthorTitle"]')          ||
-                el.querySelector('p[class*="author"]')                  ||
-                el.querySelector('h3[class*="author"]');
-            const author = authorEl ? authorEl.textContent.trim().replace(/^@/, '') : '';
-
-            // --- Caption ---
-            const captionEl =
-                el.querySelector('[data-e2e="video-desc"]')     ||
-                el.querySelector('[data-e2e*="video-desc"]')    ||
-                el.querySelector('div[class*="DivDesc"]')        ||
-                el.querySelector('span[class*="SpanText"]')      ||
-                el.querySelector('h1[class*="video-meta"]')      ||
-                el.querySelector('div[class*="video-meta-title"]');
-            const caption = captionEl
-                ? captionEl.textContent.trim().slice(0, 600) : '';
-
-            // --- Stats: collect ALL <strong> text values in this card ---
-            // TikTok puts view/like/comment counts in <strong> tags.
-            // The order inside a card is typically: views, likes, comments.
-            // We also try data-e2e attributes for precision.
-            const viewEl =
-                el.querySelector('[data-e2e="video-views"]')   ||
-                el.querySelector('[data-e2e*="views"]')         ||
-                el.querySelector('span[class*="SpanViews"]');
-
-            const likeEl =
-                el.querySelector('[data-e2e="like-count"]')    ||
-                el.querySelector('[data-e2e*="like-count"]')    ||
-                el.querySelector('[data-e2e*="like"]');
-
-            const commentEl =
-                el.querySelector('[data-e2e="comment-count"]') ||
-                el.querySelector('[data-e2e*="comment-count"]')||
-                el.querySelector('[data-e2e*="comment"]');
-
-            // Collect all <strong> tags in DOM order inside this card
-            const strongs = [...el.querySelectorAll('strong')].map(s =>
-                s.textContent.trim()
-            ).filter(t => /[\d.]+[KkMm]?/.test(t) && t.length < 12);
-
-            // Priority: explicit selectors > positional <strong> fallback
-            const viewsText    = viewEl    ? viewEl.textContent.trim()    : (strongs[0] || '0');
-            const likesText    = likeEl    ? likeEl.textContent.trim()    : (strongs[1] || '0');
-            const commentsText = commentEl ? commentEl.textContent.trim() : (strongs[2] || '0');
-
-            // --- Thumbnail ---
-            const imgEl =
-                el.querySelector('img[src*="tiktokcdn"]') ||
-                el.querySelector('img[class*="ImgPoster"]') ||
-                el.querySelector('img[src*="p16"]') ||
-                el.querySelector('img[src*="p19"]') ||
-                el.querySelector('img');
-            const thumbnail = imgEl ? (imgEl.src || imgEl.dataset.src || '') : '';
-
-            results.push({
-                video_url:     videoUrl,
-                author:        author,
-                caption:       caption,
-                views_text:    viewsText,
-                likes_text:    likesText,
-                comments_text: commentsText,
-                thumbnail:     thumbnail,
-            });
-        } catch(e) { /* skip malformed */ }
-    }
-    return results;
-}
-"""
-
-# Detect TikTok error/block page
-_JS_CHECK_ERROR = """
-() => {
-    const errEl = document.querySelector('[data-e2e="search-error-title"]');
-    const loginBtn = document.querySelector('[data-e2e="top-login-button"]');
-    return {
-        has_error: !!errEl,
-        needs_login: !!loginBtn,
-        error_text: errEl ? errEl.textContent.trim() : '',
-        card_count: document.querySelectorAll(
-            '[data-e2e="search_video-item"], div[class*="DivItemContainer"]'
-        ).length,
-    };
-}
-"""
-
-
-# ── Core async scraper ────────────────────────────────────────────────────────
 
 async def scrape_keyword(
     keyword:   str,

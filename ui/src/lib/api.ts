@@ -154,7 +154,7 @@ export const api = {
 
   jobs: () => request<any[]>('/jobs'),
 
-  launchPipeline: (payload: { product_url: string; top_n?: number; priority?: number; account_id?: string; auto_publish?: boolean }) =>
+  launchPipeline: (payload: { product_url: string; top_n?: number; priority?: number; account_id: string; auto_publish?: boolean }) =>
     request<any>('/pipelines/tiktok', { method: 'POST', body: JSON.stringify(payload) }),
 
   artifacts: (limit = 50) =>

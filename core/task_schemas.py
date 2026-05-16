@@ -17,9 +17,9 @@ TASK_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
         "output": ["title", "description", "keywords", "ok"]
     },
     "tiktok.search_tiktok": {
-        "required": ["keywords", "max_results"],
-        "optional": [],
-        "output": ["videos", "ok"]
+        "required": ["account_id", "keywords", "max_results"],
+        "optional": ["scroll_max", "stagnant_limit"],
+        "output": ["videos", "ok", "source"]
     },
     "tiktok.select_videos": {
         "required": ["videos"],

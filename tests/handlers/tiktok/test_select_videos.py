@@ -86,6 +86,28 @@ async def test_select_videos_all_filtered_out():
 
 
 @pytest.mark.asyncio
+async def test_select_videos_allows_unknown_duration():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    payload = {
+        "videos": [
+            {"url": "https://tiktok.com/@x/video/1", "views": 50000, "likes": 2500, "duration": 0},
+            {"url": "https://tiktok.com/@y/video/2", "views": 60000, "likes": 3000},
+        ],
+        "min_views": 10000,
+        "min_duration": 6.0,
+        "max_duration": 30.0,
+        "top_n": 3,
+    }
+
+    result = await select_videos_handler(payload)
+
+    assert result["ok"] is True
+    assert len(result["selected_videos"]) == 2
+    assert {video["duration"] for video in result["selected_videos"]} == {0.0}
+
+
+@pytest.mark.asyncio
 async def test_select_videos_idempotency():
     from workers.handlers.tiktok.select_videos import select_videos_handler
 

@@ -98,6 +98,7 @@ async def test_select_videos_allows_unknown_duration():
         "min_duration": 6.0,
         "max_duration": 30.0,
         "top_n": 3,
+        "max_per_author": 3,
     }
 
     result = await select_videos_handler(payload)
@@ -123,6 +124,7 @@ async def test_select_videos_respects_min_likes_when_known():
         "min_duration": 6.0,
         "max_duration": 30.0,
         "top_n": 3,
+        "max_per_author": 3,
     }
 
     result = await select_videos_handler(payload)
@@ -131,6 +133,55 @@ async def test_select_videos_respects_min_likes_when_known():
     assert "https://tiktok.com/@x/video/1" not in selected_urls
     assert "https://tiktok.com/@y/video/2" in selected_urls
     assert "https://tiktok.com/@z/video/3" in selected_urls
+
+
+@pytest.mark.asyncio
+async def test_select_videos_preserves_search_metadata():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    videos = [
+        {
+            "url": f"https://tiktok.com/@a/video/{idx}",
+            "title": "kem chong nang",
+            "description": "caption here",
+            "thumbnail": "https://example.com/thumb.jpg",
+            "keyword": "kem ch\u1ed1ng n\u1eafng",
+            "source": "tiktok_ads_power_search",
+            "scraped_at": 123,
+            "views": 100000 + idx,
+            "likes": 1000 + idx,
+            "comments": 50 + idx,
+            "duration": 0,
+            "relevance_score": 0.9,
+            "matched_keyword_terms": ["kem", "n\u1eafng"],
+        }
+        for idx in range(1, 4)
+    ]
+    payload = {
+        "videos": videos,
+        "min_views": 10000,
+        "min_likes": 500,
+        "min_engagement_rate": 0.0,
+        "min_duration": 6.0,
+        "max_duration": 30.0,
+        "top_n": 3,
+        "max_per_author": 3,
+    }
+
+    result = await select_videos_handler(payload)
+    selected = result["selected_videos"]
+
+    assert len(selected) == 3
+    for video in selected:
+        assert video["description"] == "caption here"
+        assert video["thumbnail"] == "https://example.com/thumb.jpg"
+        assert video["keyword"] == "kem ch\u1ed1ng n\u1eafng"
+        assert video["source"] == "tiktok_ads_power_search"
+        assert video["scraped_at"] == 123
+        assert video["relevance_score"] == 0.9
+        assert video["matched_keyword_terms"] == ["kem", "n\u1eafng"]
+        assert video["comments"] >= 51
+        assert video["url"]
 
 
 @pytest.mark.asyncio

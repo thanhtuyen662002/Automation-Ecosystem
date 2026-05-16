@@ -35,6 +35,8 @@ from workers.handlers.tiktok._base import (
 LOGGER = logging.getLogger("workers.handlers.tiktok.download_videos")
 
 _YTDLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+_TEMP_SUFFIXES = {".part", ".ytdl", ".temp", ".tmp", ".frag"}
+_VALID_MEDIA_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv"}
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -219,8 +221,40 @@ async def _download_with_ytdlp(
 
 
 def _find_downloaded_file(output_dir: Path, idx: int) -> Path | None:
-    downloaded = list(output_dir.glob(f"video_{idx:02d}.*"))
-    return downloaded[0] if downloaded else None
+    candidates: list[tuple[bool, float, Path]] = []
+    for path in output_dir.glob(f"video_{idx:02d}.*"):
+        try:
+            if not path.is_file():
+                continue
+            if _is_temp_download_file(path):
+                continue
+            suffix = path.suffix.lower()
+            if suffix not in _VALID_MEDIA_SUFFIXES:
+                continue
+            stat = path.stat()
+            if stat.st_size <= 0:
+                continue
+            candidates.append((suffix == ".mp4", stat.st_mtime, path))
+        except OSError:
+            continue
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def _is_temp_download_file(path: Path) -> bool:
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if suffix in _TEMP_SUFFIXES:
+        return True
+    if name.endswith(".part") or ".part-" in name:
+        return True
+    if name.endswith(".ytdl") or name.endswith(".temp") or name.endswith(".tmp"):
+        return True
+    return False
 
 
 async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) -> None:

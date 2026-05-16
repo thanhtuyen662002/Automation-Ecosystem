@@ -215,6 +215,38 @@ def test_search_relevance_helper_scores_keyword_matches():
     assert low_matched == []
 
 
+def test_search_relevance_helper_matches_vietnamese_without_accents():
+    from workers.handlers.tiktok.search_tiktok import _calculate_relevance_score
+
+    score, matched = _calculate_relevance_score(
+        {"title": "kem chong nang sieu hot", "description": "", "author": ""},
+        "kem ch\u1ed1ng n\u1eafng",
+    )
+
+    assert score >= 0.25
+    assert matched
+
+
+def test_search_relevance_helper_matches_ascii_keyword_to_accented_text():
+    from workers.handlers.tiktok.search_tiktok import _calculate_relevance_score
+
+    score, matched = _calculate_relevance_score(
+        {"title": "\u00e1o gi\u1eef nhi\u1ec7t n\u1eef m\u00f9a \u0111\u00f4ng", "description": "", "author": ""},
+        "ao giu nhiet",
+    )
+
+    assert score >= 0.25
+    assert set(matched) >= {"giu", "nhiet"}
+
+
+def test_empty_text_warning_helper():
+    from workers.handlers.tiktok.search_tiktok import _should_warn_empty_text
+
+    assert _should_warn_empty_text({"normalized": 10, "dropped_empty_text": 8}, 0.7) == (True, 0.8)
+    assert _should_warn_empty_text({"normalized": 0, "dropped_empty_text": 8}, 0.7) == (False, 0.0)
+    assert _should_warn_empty_text({"normalized": 10, "dropped_empty_text": 3}, 0.7) == (False, 0.3)
+
+
 def test_search_filter_viral_bypass_and_low_relevance_drop():
     from workers.handlers.tiktok.search_tiktok import _filter_search_videos
 

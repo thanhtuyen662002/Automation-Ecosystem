@@ -8,6 +8,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 from urllib.parse import quote
@@ -86,6 +87,10 @@ def _env_float(name: str, default: float) -> float:
 
 def _default_search_min_views() -> int:
     return _env_int("TIKTOK_SEARCH_MIN_VIEWS", _env_int("TIKTOK_MIN_VIEWS", 10_000))
+
+
+def _empty_text_warn_ratio() -> float:
+    return max(0.0, min(1.0, _env_float("TIKTOK_SEARCH_EMPTY_TEXT_WARN_RATIO", 0.7)))
 
 
 def _ensure_browser_provider_tools() -> tuple[Any, Any, Any]:
@@ -415,6 +420,12 @@ async def _search_keyword_with_page(
         await _human_search_scroll(page)
 
     videos.sort(key=lambda video: int(video.get("views") or 0), reverse=True)
+    _warn_if_empty_text_high(
+        total_filter_stats,
+        account_id=account_id,
+        keyword=keyword,
+        threshold=_empty_text_warn_ratio(),
+    )
     LOGGER.info(
         "tiktok_search_keyword_done",
         extra={
@@ -520,6 +531,19 @@ def _keyword_terms(keyword: str) -> list[str]:
     return [term for term in terms if len(term) > 2 and term not in _STOP_WORDS]
 
 
+def _fold_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(text).lower())
+    folded = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return folded.replace("\u0111", "d")
+
+
+def _term_matches(term: str, raw_text: str, folded_text: str) -> bool:
+    if term in raw_text:
+        return True
+    folded = _fold_text(term)
+    return bool(folded and folded in folded_text)
+
+
 def _calculate_relevance_score(video: dict[str, Any], keyword: str) -> tuple[float, list[str]]:
     terms = _keyword_terms(keyword)
     if not terms:
@@ -529,15 +553,54 @@ def _calculate_relevance_score(video: dict[str, Any], keyword: str) -> tuple[flo
     description = str(video.get("description") or "").lower()
     author = str(video.get("author") or video.get("uploader") or "").lower()
     text = f"{title} {description} {author}"
-    matched_terms = [term for term in terms if term in text]
+    text_folded = _fold_text(text)
+    title_folded = _fold_text(title)
+    author_folded = _fold_text(author)
+
+    matched_terms = [term for term in terms if _term_matches(term, text, text_folded)]
     term_hits = len(matched_terms) / max(len(terms), 1)
 
     hashtags = re.findall(r"#([0-9a-zA-Z_\u00c0-\u1ef9]+)", description)
-    hashtag_bonus = 0.15 if any(any(term in tag for tag in hashtags) for term in terms) else 0.0
-    title_bonus = 0.15 if any(term in title for term in terms) else 0.0
-    author_bonus = 0.05 if any(term in author for term in terms) else 0.0
+    hashtags_raw = " ".join(hashtags).lower()
+    hashtags_folded = _fold_text(hashtags_raw)
+    hashtag_bonus = 0.15 if any(_term_matches(term, hashtags_raw, hashtags_folded) for term in terms) else 0.0
+    title_bonus = 0.15 if any(_term_matches(term, title, title_folded) for term in terms) else 0.0
+    author_bonus = 0.05 if any(_term_matches(term, author, author_folded) for term in terms) else 0.0
     score = min(1.0, term_hits * 0.7 + hashtag_bonus + title_bonus + author_bonus)
     return score, matched_terms
+
+
+def _should_warn_empty_text(stats: dict[str, int], threshold: float) -> tuple[bool, float]:
+    normalized = int(stats.get("normalized") or 0)
+    if normalized <= 0:
+        return False, 0.0
+    ratio = int(stats.get("dropped_empty_text") or 0) / normalized
+    return ratio >= threshold, ratio
+
+
+def _warn_if_empty_text_high(
+    stats: dict[str, int],
+    *,
+    account_id: str,
+    keyword: str,
+    threshold: float,
+) -> None:
+    should_warn, ratio = _should_warn_empty_text(stats, threshold)
+    if not should_warn:
+        return
+    LOGGER.warning(
+        "tiktok_search_empty_text_high",
+        extra={
+            "event": "tiktok_search_empty_text_high",
+            "account_id": account_id,
+            "keyword": keyword,
+            "normalized": int(stats.get("normalized") or 0),
+            "dropped_empty_text": int(stats.get("dropped_empty_text") or 0),
+            "ratio": round(ratio, 4),
+            "message": "TikTok search extractor may need selector update",
+            "source": _SOURCE,
+        },
+    )
 
 
 async def _extract_raw_items(page: Any) -> list[dict[str, Any]]:

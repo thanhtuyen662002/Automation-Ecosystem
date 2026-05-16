@@ -43,3 +43,36 @@ def test_write_netscape_cookie_file_sanitizes_fields(tmp_path):
     ]
     assert "example.com" not in text
 
+
+def test_find_downloaded_file_ignores_temp_files(tmp_path):
+    from workers.handlers.tiktok.download_videos import _find_downloaded_file
+
+    part_file = tmp_path / "video_00.part"
+    part_file.write_bytes(b"partial")
+
+    assert _find_downloaded_file(tmp_path, 0) is None
+
+
+def test_find_downloaded_file_prefers_valid_mp4(tmp_path):
+    from workers.handlers.tiktok.download_videos import _find_downloaded_file
+
+    part_file = tmp_path / "video_00.part"
+    webm_file = tmp_path / "video_00.webm"
+    mp4_file = tmp_path / "video_00.mp4"
+
+    part_file.write_bytes(b"partial")
+    webm_file.write_bytes(b"webm")
+    mp4_file.write_bytes(b"mp4")
+
+    assert _find_downloaded_file(tmp_path, 0) == mp4_file
+
+
+def test_find_downloaded_file_ignores_empty_and_invalid_files(tmp_path):
+    from workers.handlers.tiktok.download_videos import _find_downloaded_file
+
+    (tmp_path / "video_00.mp4").write_bytes(b"")
+    (tmp_path / "video_00.info.json").write_text("{}", encoding="utf-8")
+    webm_file = tmp_path / "video_00.webm"
+    webm_file.write_bytes(b"webm")
+
+    assert _find_downloaded_file(tmp_path, 0) == webm_file

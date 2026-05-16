@@ -785,25 +785,9 @@ async def _verify_adspower_login_after_confirmation(
     try:
         async with async_playwright() as pw:
             async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_data_dir):
-                target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
+                platform_key = row["platform"].lower()
+                target_url = "https://www.tiktok.com/" if platform_key == "tiktok" else cfg.login_url
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
-
-                diagnostic_status = await classify_login_block(page)
-                if diagnostic_status in {
-                    LoginBlockStatus.RATE_LIMITED,
-                    LoginBlockStatus.CAPTCHA_REQUIRED,
-                    LoginBlockStatus.CHECKPOINT_REQUIRED,
-                }:
-                    LOGGER.warning(
-                        "account_manual_login_verify_blocked",
-                        extra={
-                            "event": "account_manual_login_verify_blocked",
-                            "account_id": account_id,
-                            "platform": row["platform"],
-                            "diagnostic_status": diagnostic_status,
-                        }
-                    )
-                    await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
 
                 runtime = await collect_runtime_diagnostics(page, context)
 
@@ -812,13 +796,71 @@ async def _verify_adspower_login_after_confirmation(
                 except Exception:
                     cookies = []
 
+                cookie_names = {str(c.get("name", "")).lower() for c in cookies}
+                auth_cookie_keys = {
+                    "tiktok": {"sessionid", "sid_guard", "uid_tt", "passport_csrf_token"},
+                    "facebook": {"c_user", "xs", "fr"},
+                    "youtube": {"sid", "hsid", "ssid", "sapisisid", "apisid"},
+                }
+                platform_auth_keys = auth_cookie_keys.get(platform_key, set())
+                auth_cookie_names_present = sorted(cookie_names & platform_auth_keys)
+                profile_snapshot = {}
+                profile_url_checked = None
+
+                if platform_key == "tiktok" and auth_cookie_names_present:
+                    profile_url = row.get("profile_url") or _derive_profile_url("tiktok", row.get("account_handle"))
+                    if profile_url:
+                        profile_url_checked = profile_url
+                        try:
+                            await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
+                            profile_snapshot = await _extract_tiktok_profile_snapshot(page)
+                        except Exception:
+                            pass
+
                 logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
+
+                LOGGER.info(
+                    "account_manual_login_verify_state",
+                    extra={
+                        "event": "account_manual_login_verify_state",
+                        "account_id": account_id,
+                        "home_url": target_url,
+                        "profile_url_checked": profile_url_checked,
+                        "current_url": getattr(page, "url", ""),
+                        "auth_cookie_names_present": auth_cookie_names_present,
+                        "logged_in_before_classify": logged_in,
+                        "profile_marker_found": profile_snapshot.get("profile_marker_found", False),
+                        "avatar_url_present": bool(profile_snapshot.get("avatar_url")),
+                        "display_name_present": bool(profile_snapshot.get("display_name")),
+                    },
+                )
+
+                if not logged_in:
+                    diagnostic_status = await classify_login_block(page)
+                    if diagnostic_status in {
+                        LoginBlockStatus.RATE_LIMITED,
+                        LoginBlockStatus.CAPTCHA_REQUIRED,
+                        LoginBlockStatus.CHECKPOINT_REQUIRED,
+                    }:
+                        LOGGER.warning(
+                            "account_manual_login_verify_blocked",
+                            extra={
+                                "event": "account_manual_login_verify_blocked",
+                                "account_id": account_id,
+                                "platform": row["platform"],
+                                "diagnostic_status": diagnostic_status,
+                            }
+                        )
+                        await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
 
                 diagnostic = {
                     "status": "verified" if logged_in else "not_connected",
                     "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
                     "verified_at": datetime.now(UTC).isoformat(),
                     "verification_mode": "cdp_after_confirmation",
+                    "profile_url_checked": profile_url_checked,
+                    "profile_snapshot": profile_snapshot,
+                    "auth_cookie_names_present": auth_cookie_names_present,
                     "cookies_captured": bool(cookies),
                     "session_source": "adspower_profile",
                     "runtime": runtime,
@@ -868,6 +910,15 @@ async def _verify_adspower_login_after_confirmation(
                         viewport_height=fingerprint.get("height") or row.get("viewport_height") or 720,
                         timezone=fingerprint.get("timezone") or row.get("timezone") or "Asia/Ho_Chi_Minh",
                         locale=fingerprint.get("locale") or row.get("locale") or "vi-VN",
+                    )
+
+                if logged_in and profile_snapshot.get("profile_marker_found"):
+                    await database.update_account_profile(
+                        account_id,
+                        avatar_url=profile_snapshot.get("avatar_url") or None,
+                        display_name=profile_snapshot.get("display_name") or None,
+                        profile_url=profile_url_checked or None,
+                        account_handle=profile_snapshot.get("account_handle") or None,
                     )
 
                 LOGGER.info(
@@ -1073,6 +1124,37 @@ def _derive_profile_url(platform: str, account_handle: str | None) -> str | None
     return None
 
 
+async def _extract_tiktok_profile_snapshot(page) -> dict[str, Any]:
+    import re
+    snapshot: dict[str, Any] = {
+        "current_url": page.url,
+        "avatar_url": "",
+        "display_name": "",
+        "account_handle": "",
+        "profile_marker_found": False
+    }
+    
+    try:
+        match = re.search(r'@([^/?]+)', page.url)
+        if match:
+            snapshot["account_handle"] = match.group(1)
+            
+        profile_marker = page.locator('span[data-e2e="user-title"], [data-e2e="user-title"], h1[data-e2e="user-title"]').first
+        snapshot["profile_marker_found"] = await profile_marker.is_visible(timeout=1000)
+
+        avatar = page.locator('[data-e2e="user-avatar"] img, img[class*="Avatar"]').first
+        if await avatar.is_visible(timeout=500):
+            snapshot["avatar_url"] = await avatar.get_attribute("src") or ""
+            
+        if snapshot["profile_marker_found"]:
+            snapshot["display_name"] = (await profile_marker.inner_text()).strip()
+            
+    except Exception:
+        pass
+        
+    return snapshot
+
+
 async def _looks_logged_in(page, context, platform: str, success_url_fragment: str) -> bool:
     from core.platform_config import is_login_page
 
@@ -1092,7 +1174,11 @@ async def _looks_logged_in(page, context, platform: str, success_url_fragment: s
         return True
     if platform_key == "tiktok":
         try:
-            avatar = page.locator('[data-e2e="header-avatar"], [data-e2e="nav-avatar"]').first
+            if "/@" in current_url:
+                profile_marker = page.locator('span[data-e2e="user-title"], [data-e2e="user-title"], h1[data-e2e="user-title"]').first
+                if await profile_marker.is_visible(timeout=500):
+                    return True
+            avatar = page.locator('[data-e2e="header-avatar"], [data-e2e="nav-avatar"], button[data-e2e*="profile"], a[href^="/@"]').first
             return await avatar.is_visible(timeout=500)
         except Exception:
             return False

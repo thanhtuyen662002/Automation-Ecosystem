@@ -4,6 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -67,9 +68,31 @@ class AdsPowerClient:
         )
         self._ensure_success(payload, default_code=ADSPOWER_START_FAILED)
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        
+        endpoint, source = _extract_debug_endpoint(data)
+        
+        ws_keys = list(data.get("ws").keys()) if isinstance(data.get("ws"), dict) else []
+        safe_endpoint = endpoint
+        if safe_endpoint:
+            parsed = urlparse(safe_endpoint)
+            if parsed.query:
+                safe_endpoint = safe_endpoint.replace(parsed.query, "TOKEN_HIDDEN")
+                
+        LOGGER.info(
+            "adspower_debug_endpoint_selected",
+            extra={
+                "event": "adspower_debug_endpoint_selected",
+                "profile_id": profile_id,
+                "data_keys": list(data.keys()),
+                "ws_keys": ws_keys,
+                "selected_source": source,
+                "selected_endpoint": safe_endpoint,
+            }
+        )
+
         return AdsPowerProfileStartResult(
             profile_id=profile_id,
-            debug_endpoint=_extract_debug_endpoint(data),
+            debug_endpoint=endpoint,
             debug_port=_to_optional_str(data.get("debug_port") or data.get("debugPort")),
             webdriver=_to_optional_str(data.get("webdriver")),
             raw_status=str(payload.get("msg") or payload.get("message") or "success"),
@@ -187,15 +210,72 @@ def _to_optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _extract_debug_endpoint(data: dict[str, Any]) -> str | None:
+def _is_cdp_endpoint(endpoint: str) -> bool:
+    text = str(endpoint or "").strip()
+    if not text.startswith(("ws://", "wss://", "http://", "https://")):
+        return False
+
+    parsed = urlparse(text)
+    path = (parsed.path or "").lower()
+
+    # AdsPower sometimes returns Playwright/Selenium endpoint like /session.
+    # This is NOT a Chrome DevTools Protocol endpoint for connect_over_cdp().
+    if path.rstrip("/") == "/session" or "/session/" in path:
+        return False
+
+    # Strong CDP signal.
+    if "/devtools/browser/" in path:
+        return True
+
+    # HTTP host:port is accepted by Playwright connect_over_cdp;
+    # Playwright will resolve /json/version internally.
+    if text.startswith(("http://", "https://")) and parsed.hostname and parsed.port:
+        return True
+
+    # Some AdsPower versions return ws://host:port without explicit devtools path.
+    # Allow it only if it is not /session.
+    if text.startswith(("ws://", "wss://")) and parsed.hostname and parsed.port and path in ("", "/"):
+        return True
+
+    return False
+
+
+def _endpoint_host_port_only(endpoint: str) -> str:
+    parsed = urlparse(endpoint)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _extract_debug_endpoint(data: dict[str, Any]) -> tuple[str | None, str]:
     ws = data.get("ws")
+
+    candidates: list[tuple[str, Any]] = []
+
     if isinstance(ws, dict):
-        for key in ("playwright", "puppeteer", "selenium"):
-            endpoint = _to_optional_str(ws.get(key))
-            if endpoint:
-                return endpoint
-    for key in ("ws", "debug_endpoint", "debugEndpoint", "cdp", "puppeteer"):
-        endpoint = _to_optional_str(data.get(key))
-        if endpoint and endpoint.startswith(("ws://", "wss://", "http://", "https://")):
-            return endpoint
-    return None
+        # Prefer CDP/Puppeteer endpoint over Playwright/Selenium session endpoint.
+        for key in ("puppeteer", "cdp", "debug_endpoint", "debugEndpoint"):
+            candidates.append((f"ws.{key}", ws.get(key)))
+
+    for key in ("puppeteer", "cdp", "debug_endpoint", "debugEndpoint"):
+        candidates.append((key, data.get(key)))
+
+    if isinstance(ws, str):
+        candidates.append(("ws", ws))
+
+    if isinstance(ws, dict):
+        # Only fallback to ws.playwright if it is actually CDP-like, not /session.
+        candidates.append(("ws.playwright", ws.get("playwright")))
+
+    for source, value in candidates:
+        endpoint = _to_optional_str(value)
+        if endpoint and _is_cdp_endpoint(endpoint):
+            return endpoint, source
+
+    debug_port = _to_optional_str(data.get("debug_port") or data.get("debugPort"))
+    if debug_port:
+        try:
+            port = int(debug_port)
+            return f"http://127.0.0.1:{port}", "debug_port"
+        except ValueError:
+            pass
+
+    return None, "none"

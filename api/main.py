@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -27,6 +29,8 @@ from database.database import (
     NotFoundError,
     ValidationError,
 )
+from workers.handlers import register_default_handlers
+from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
 
 
 LOGGER = logging.getLogger("api")
@@ -105,12 +109,25 @@ async def lifespan(app: FastAPI):
     # ── Auto-migration: ensure schema is up-to-date on every start ───────────
     await _run_auto_migrations(database)
     scheduler = None
+    worker_runtime = None
+    worker_task: asyncio.Task[None] | None = None
     if settings.scheduler_enabled:
         scheduler = AutoDispatchScheduler(
             WorkflowManager(database=database, worker_id=settings.dispatcher_worker_id),
             SchedulerSettings.from_env(),
         )
         scheduler.start()
+    existing_worker = getattr(app.state, "worker_runtime", None)
+    if settings.worker_enabled and existing_worker is None:
+        os.environ.setdefault("WORKER_ID", "api-embedded-worker")
+        worker_settings = WorkerRuntimeSettings.from_env()
+        worker_runtime = WorkerRuntime(worker_settings)
+        register_default_handlers(worker_runtime.registry)
+        app.state.worker_runtime = worker_runtime
+        worker_task = asyncio.create_task(
+            worker_runtime.run(install_signal_handlers=False),
+            name="api-embedded-worker",
+        )
     app.state.settings = settings
     app.state.database = database
     app.state.license_service = LicenseService.from_env()
@@ -120,6 +137,18 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if worker_runtime is not None:
+            worker_runtime.request_stop()
+        if worker_task is not None:
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception(
+                    "embedded_worker_stopped_with_error",
+                    extra={"event": "embedded_worker_stopped_with_error"},
+                )
         if scheduler is not None:
             await scheduler.stop()
         await database.close()

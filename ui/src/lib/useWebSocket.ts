@@ -6,7 +6,7 @@ import { useWSStore, type LiveEvent } from './store';
 //   dev  → wss?://localhost:5173/api/v1/ws/brain  (proxied by Vite → 8000)
 //   prod → wss?://<real-host>/api/v1/ws/brain
 const WS_URL = (() => {
-  const configured = import.meta.env.VITE_WS_BASE || import.meta.env.VITE_API_BASE || '';
+  const configured = import.meta.env.VITE_WS_BASE || import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '';
   if (configured) {
     const url = new URL(configured, window.location.origin);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -56,7 +56,9 @@ export function useWebSocket() {
               ts: payload.ts ?? Date.now() / 1000,
             };
             pushEvent(event);
-          } catch {}
+          } catch {
+            // Ignore malformed websocket events.
+          }
         };
 
         ws.onclose = () => {
@@ -69,7 +71,9 @@ export function useWebSocket() {
         ws.onerror = () => {
           ws.close();
         };
-      } catch {}
+      } catch {
+        // Connection failures retry through the normal reconnect loop.
+      }
     };
 
     connect();

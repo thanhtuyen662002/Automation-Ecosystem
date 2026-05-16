@@ -532,6 +532,43 @@ class AutomationDatabase:
                 (str(execution_id),)
             )
 
+    async def mark_task_waiting_for_retry(self, task_id: str, execution_id: str, error: Exception, delay_seconds: int) -> None:
+        """Park a running task for external readiness without consuming retry budget."""
+        async with self.connection() as conn:
+            next_run = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+
+            await conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'RETRY',
+                    next_retry_at = ?,
+                    next_run_at = ?,
+                    error_type = ?,
+                    error_message = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    next_run.isoformat(),
+                    next_run.isoformat(),
+                    type(error).__name__,
+                    str(error)[:4000],
+                    str(task_id),
+                ),
+            )
+
+            await conn.execute(
+                """
+                UPDATE task_executions
+                SET status = 'failed',
+                    error_type = ?,
+                    error_message = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (type(error).__name__, str(error)[:4000], str(execution_id)),
+            )
+
     async def get_task_result_by_key(self, job_id: str, task_key: str) -> dict:
         async with self.connection() as conn:
             result = await conn.execute(

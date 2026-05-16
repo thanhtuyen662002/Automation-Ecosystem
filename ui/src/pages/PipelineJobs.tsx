@@ -42,7 +42,7 @@ type PipelineJob = {
   status?: string;
   task_statuses?: Record<string, string>;
   metadata?: PipelineJobMetadata;
-  input?: { product_url?: string; [key: string]: unknown };
+  input?: { product_url?: string; product_image_path?: string; [key: string]: unknown };
   error_type?: string;
   error_message?: string;
   created_at?: string;
@@ -104,6 +104,7 @@ export function PipelineJobs() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showLaunch, setShowLaunch] = useState(false);
   const [productUrl, setProductUrl] = useState('');
+  const [productImagePath, setProductImagePath] = useState('');
   const [topN, setTopN] = useState(DEFAULT_TOP_N);
   const [autoPublish, setAutoPublish] = useState(false);
   const [accountId, setAccountId] = useState('');
@@ -136,20 +137,28 @@ export function PipelineJobs() {
   async function handleLaunch() {
     setLaunchError('');
     const normalizedTopN = clampTopN(topN);
+    const trimmedProductUrl = productUrl.trim();
+    const trimmedProductImagePath = productImagePath.trim();
     setTopN(normalizedTopN);
+    if (!trimmedProductUrl && !trimmedProductImagePath) {
+      setLaunchError(t('job.product_source_error'));
+      return;
+    }
     if (!accountId) {
       setLaunchError(t('job.select_account_error'));
       return;
     }
     try {
       await launch.mutateAsync({
-        product_url: productUrl,
+        ...(trimmedProductUrl ? { product_url: trimmedProductUrl } : {}),
+        ...(trimmedProductImagePath ? { product_image_path: trimmedProductImagePath } : {}),
         top_n: normalizedTopN,
         auto_publish: autoPublish,
         account_id: accountId,
       });
       setShowLaunch(false);
       setProductUrl('');
+      setProductImagePath('');
       setAutoPublish(false);
       setAccountId('');
     } catch (e: unknown) {
@@ -234,7 +243,11 @@ export function PipelineJobs() {
                   {jobStatus === 'failed' && (
                     <button className="btn btn-ghost btn-icon btn-sm" title={t('job.retry_tooltip')} onClick={e => {
                       e.stopPropagation();
-                      if (job.input?.product_url) { setProductUrl(job.input.product_url); setShowLaunch(true); }
+                      if (job.input?.product_url || job.input?.product_image_path) {
+                        setProductUrl(job.input.product_url ?? '');
+                        setProductImagePath(job.input.product_image_path ?? '');
+                        setShowLaunch(true);
+                      }
                     }}>
                       <RefreshCw size={12} />
                     </button>
@@ -269,6 +282,7 @@ export function PipelineJobs() {
                     </div>
                     <div style={{ marginTop: '0.75rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                       {job.input?.product_url && <span>{t('job.lbl_url')} {job.input.product_url}</span>}
+                      {job.input?.product_image_path && <span>{t('job.lbl_product_image_path')} {job.input.product_image_path}</span>}
                       {job.metadata?.top_n !== undefined && <span>{t('job.lbl_topn')} {job.metadata.top_n}</span>}
                       {job.metadata?.min_views !== undefined && <span>{t('job.lbl_min_views')} {(job.metadata.min_views / 1000).toFixed(0)}K</span>}
                       {job.metadata?.account_id && <span>{t('job.lbl_publish_account')} {job.metadata.account_id}</span>}
@@ -293,6 +307,13 @@ export function PipelineJobs() {
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('job.lbl_prod_url')}</label>
             <input className="input" placeholder="https://shopee.vn/product/..." value={productUrl} onChange={e => setProductUrl(e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('job.lbl_product_image_path')}</label>
+            <input className="input" placeholder="C:\\path\\to\\product.jpg" value={productImagePath} onChange={e => setProductImagePath(e.target.value)} />
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              {t('job.product_source_helper')}
+            </div>
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
@@ -334,7 +355,7 @@ export function PipelineJobs() {
               {launchError}
             </div>
           )}
-          <button className="btn btn-primary" disabled={!productUrl.trim() || !accountId || launch.isPending} onClick={handleLaunch} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', justifyContent: 'center' }}>
+          <button className="btn btn-primary" disabled={(!productUrl.trim() && !productImagePath.trim()) || !accountId || launch.isPending} onClick={handleLaunch} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', justifyContent: 'center' }}>
             <GlassIcon name="play-circle" size={15} style={{ filter: 'brightness(0) invert(1)' }} />
             {launch.isPending ? t('job.launching') : t('job.launch')}
           </button>

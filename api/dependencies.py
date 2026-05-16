@@ -15,6 +15,7 @@ class ApiSettings:
     database_url: str
     dispatcher_worker_id: str = "api-dispatcher"
     scheduler_enabled: bool = True
+    worker_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -30,10 +31,17 @@ class ApiSettings:
             "no",
             "off",
         }
+        worker_enabled = os.getenv("API_WORKER_ENABLED", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         return cls(
             database_url=database_url,
             dispatcher_worker_id=dispatcher_worker_id,
             scheduler_enabled=scheduler_enabled,
+            worker_enabled=worker_enabled,
         )
 
 

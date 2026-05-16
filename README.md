@@ -1,14 +1,14 @@
 # Automation Ecosystem
 
-Postgres-first workflow orchestration and worker execution runtime for local automation.
+Local-first workflow orchestration and worker execution runtime for automation.
 
 ## Runtime Model
 
 - Python 3.11+
-- PostgreSQL/Supabase is the single source of truth
+- SQLite is the current local source of truth by default
 - `jobs`, `tasks`, `task_dependencies`, and `task_executions` hold orchestration and execution state
 - `WorkflowManager` promotes dependency-satisfied work and dispatches through batch DB acquisition
-- `WorkerRuntime` polls Postgres directly with bounded async concurrency
+- `WorkerRuntime` polls the configured database directly with bounded async concurrency
 - Heartbeats and leases are stored on `task_executions`
 - Retries are scheduled through task state: `RETRY` plus `next_retry_at`
 - Structured JSON logs are emitted by the worker runtime
@@ -18,7 +18,7 @@ No external queue participates in orchestration or execution flow.
 ## Required Environment
 
 ```powershell
-$env:DATABASE_URL="postgresql://..."
+$env:DATABASE_URL="sqlite+aiosqlite:///./data/app.db"
 $env:WORKER_ID="worker-1"
 ```
 
@@ -40,7 +40,20 @@ $env:WORKER_LOG_LEVEL="INFO"
 
 ## Database
 
-Use `database/schema.sql` as the canonical schema. It separates orchestration state in `tasks` from attempt state in `task_executions`.
+Use `database/schema.sql` as the canonical local SQLite schema. It separates orchestration state in `tasks` from attempt state in `task_executions`.
+
+Supabase is used by the license service and optional integrations. It is not the runtime source of truth for jobs/tasks in the current local-first app.
+
+## API And Worker
+
+For development, `uvicorn api.main:app` starts the API, scheduler, and embedded worker by default so submitted jobs continue through the pipeline:
+
+```powershell
+$env:PYTHONPATH="."
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Set `API_WORKER_ENABLED=false` only when you are running a separate worker process.
 
 ## Run A Worker
 
@@ -53,33 +66,35 @@ The default command registers real minimal handlers for `browser`, `media`, and 
 
 ## Dashboard UI
 
-The React dashboard uses Vite, TypeScript, TailwindCSS, shadcn-style local components, TanStack Query, and Axios.
+The React dashboard lives in `ui/` and uses Vite, TypeScript, local UI components, and TanStack Query.
 
 ```powershell
-copy .env.frontend.example .env.local
+cd ui
+copy .env.example .env.local
 npm install
 npm run dev
 ```
 
-Set `VITE_API_URL` in `.env.local` to the FastAPI backend URL. The production build is suitable for Electron or Tauri wrappers:
+Set `VITE_API_BASE` in `ui/.env.local` to the FastAPI backend URL. `VITE_API_URL` is still supported for backward compatibility, but `VITE_API_BASE` wins when both are set.
+
+The production build is:
 
 ```powershell
 npm run build
 ```
 
-## Desktop App
+## Desktop Packaging
 
-Electron packaging is configured for Windows.
+Windows packaging is documented in [PACKAGING.md](PACKAGING.md). The root `package.json` provides convenience wrappers for the UI:
 
 ```powershell
-npm install
-npm run electron:dev
-npm run electron:build
+npm run dev
+npm run build
 ```
 
-Desktop environment variables:
+Desktop/backend environment variables:
 
-- `VITE_API_URL` controls frontend API calls.
+- `VITE_API_BASE` controls frontend API calls. `VITE_API_URL` is accepted for backward compatibility.
 - `AE_BACKEND_COMMAND` and `AE_BACKEND_ARGS` control backend auto-start.
 - `AE_DISABLE_BACKEND_AUTOSTART=true` disables backend auto-start.
 

@@ -1,6 +1,10 @@
 {
   "scripts": {
-    "check:release-secrets": "python scripts/check_release_secrets.py"
+    "check:release-secrets": "python scripts/check_release_secrets.py",
+    "dev": "npm --prefix ui run dev",
+    "build": "npm --prefix ui run build",
+    "lint": "npm --prefix ui run lint",
+    "ui:install": "npm --prefix ui install"
   },
   "dependencies": {
     "supabase": "^2.98.2"

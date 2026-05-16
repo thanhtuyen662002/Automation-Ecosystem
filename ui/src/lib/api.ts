@@ -1,6 +1,10 @@
 import type { LicenseResponse } from '@/types/license';
 
-const BASE = import.meta.env.VITE_API_BASE ?? '';
+const RAW_BASE =
+  import.meta.env.VITE_API_BASE ??
+  import.meta.env.VITE_API_URL ??
+  '';
+const BASE = String(RAW_BASE).replace(/\/$/, '');
 
 function buildHeaders(adminSecret?: string): HeadersInit {
   return {
@@ -154,7 +158,7 @@ export const api = {
 
   jobs: () => request<any[]>('/jobs'),
 
-  launchPipeline: (payload: { product_url: string; top_n?: number; priority?: number; account_id: string; auto_publish?: boolean }) =>
+  launchPipeline: (payload: { product_url?: string; product_image_path?: string; top_n?: number; priority?: number; account_id: string; auto_publish?: boolean }) =>
     request<any>('/pipelines/tiktok', { method: 'POST', body: JSON.stringify(payload) }),
 
   artifacts: (limit = 50) =>

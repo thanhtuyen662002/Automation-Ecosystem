@@ -95,6 +95,11 @@ class RetryableDependencyError(Exception):
     pass
 
 
+class PendingApprovalError(RetryableDependencyError):
+    """External artifact approval is pending and must not consume retry budget."""
+    pass
+
+
 class FatalDependencyError(Exception):
     """Permanent failure — task will not be retried."""
     pass
@@ -280,7 +285,7 @@ class WorkerRuntime:
 
                         # ── Guard 4: artifact approval ──
                         # video_path is mandatory for all publish_* tasks.
-                        # A missing field or missing/unapproved artifact is always fatal.
+                        # Rejected artifacts are fatal; pending artifacts wait without consuming retry budget.
                         video_path = resolved_payload.get("video_path")
                         if not video_path:
                             raise FatalDependencyError(
@@ -310,7 +315,7 @@ class WorkerRuntime:
                                 })
                             )
                         if artifact["status"] != "approved":
-                            raise RetryableDependencyError(
+                            raise PendingApprovalError(
                                 json.dumps({
                                     "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
                                     "video_path": str(video_path),
@@ -334,6 +339,27 @@ class WorkerRuntime:
                 task_type=acquired_task.task.task_type,
                 status="success",
                 duration_ms=_duration_ms(started_at),
+            )
+        except PendingApprovalError as exc:
+            delay = min(
+                self.settings.retry_base_delay_seconds * (2 ** acquired_task.task.retry_count),
+                self.settings.retry_max_delay_seconds,
+            )
+            await self.database.mark_task_waiting_for_retry(
+                task_id=str(acquired_task.task.id),
+                execution_id=str(acquired_task.execution.id),
+                error=exc,
+                delay_seconds=delay,
+            )
+            log_event(
+                "task_waiting_for_artifact_approval",
+                self.settings.worker_id,
+                task_id=acquired_task.task.id,
+                execution_id=acquired_task.execution.id,
+                task_type=acquired_task.task.task_type,
+                status="retry",
+                retry_count=acquired_task.task.retry_count,
+                error=str(exc),
             )
         except RetryableDependencyError as exc:
             retry_count = acquired_task.task.retry_count

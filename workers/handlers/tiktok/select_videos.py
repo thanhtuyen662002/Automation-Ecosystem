@@ -124,6 +124,7 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     min_duration: float = float(payload.get("min_duration", _DEFAULT_MIN_DURATION))
     max_duration: float = float(payload.get("max_duration", _DEFAULT_MAX_DURATION))
     min_engagement_rate: float = float(payload.get("min_engagement_rate", _DEFAULT_MIN_ER))
+    # Keep TikTok pipeline bounded for download/remix stability.
     top_n: int = max(1, min(10, int(payload.get("top_n", _DEFAULT_TOP_N))))
     max_per_author: int = int(payload.get("max_per_author", _DEFAULT_MAX_PER_AUTHOR))
 

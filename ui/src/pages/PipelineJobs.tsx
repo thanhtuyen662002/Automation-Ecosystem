@@ -18,9 +18,52 @@ const DAG_STEPS = [
   { key: 'tiktok_publish',              label: 'Publish',         step: 8 },
 ];
 
+const TOP_N_MIN = 1;
+const TOP_N_MAX = 10;
+const DEFAULT_TOP_N = 5;
+
+function clampTopN(value: number) {
+  if (!Number.isFinite(value)) return TOP_N_MIN;
+  return Math.max(TOP_N_MIN, Math.min(TOP_N_MAX, Math.trunc(value)));
+}
+
+type PipelineJobMetadata = {
+  pipeline?: string;
+  top_n?: number;
+  min_views?: number;
+  auto_publish?: boolean;
+  account_id?: string;
+  [key: string]: unknown;
+};
+
+type PipelineJob = {
+  id: string;
+  workflow_name?: string;
+  status?: string;
+  task_statuses?: Record<string, string>;
+  metadata?: PipelineJobMetadata;
+  input?: { product_url?: string; [key: string]: unknown };
+  error_type?: string;
+  error_message?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+};
+
+type AccountSummary = {
+  id: string;
+  platform?: string;
+  browser_provider?: string | null;
+  metadata?: Record<string, unknown> | null;
+  session_valid?: unknown;
+  can_publish?: boolean;
+  display_name?: string | null;
+  account_handle?: string | null;
+};
+
 // Real per-task status from API (task_key → status string from DB)
 // Falls back to job-level heuristic if task_statuses is not populated.
-function statusForStep(job: any, stepKey: string, stepIndex: number): string {
+function statusForStep(job: PipelineJob, stepKey: string, stepIndex: number): string {
   const ts: Record<string, string> = job.task_statuses ?? {};
   if (Object.keys(ts).length > 0 && stepKey in ts) {
     const raw = (ts[stepKey] ?? '').toUpperCase();
@@ -30,9 +73,10 @@ function statusForStep(job: any, stepKey: string, stepIndex: number): string {
   }
   // Fallback: derive from job-level status (pre-task_statuses compatibility)
   const step = stepIndex + 1;
-  if (job.status === 'completed') return 'SUCCESS';
-  if (job.status === 'failed')    return step <= 3 ? 'SUCCESS' : step === 4 ? 'FAILED' : 'CANCELED';
-  if (job.status === 'running')   return step <= 2 ? 'SUCCESS' : step === 3 ? 'RUNNING' : 'PENDING';
+  const status = job.status ?? '';
+  if (status === 'completed') return 'SUCCESS';
+  if (status === 'failed')    return step <= 3 ? 'SUCCESS' : step === 4 ? 'FAILED' : 'CANCELED';
+  if (status === 'running')   return step <= 2 ? 'SUCCESS' : step === 3 ? 'RUNNING' : 'PENDING';
   return 'PENDING';
 }
 
@@ -60,28 +104,39 @@ export function PipelineJobs() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showLaunch, setShowLaunch] = useState(false);
   const [productUrl, setProductUrl] = useState('');
-  const [topN, setTopN] = useState(5);
+  const [topN, setTopN] = useState(DEFAULT_TOP_N);
   const [autoPublish, setAutoPublish] = useState(false);
   const [accountId, setAccountId] = useState('');
   const [launchError, setLaunchError] = useState('');
-  const browserProvider = (account: any) => String(account.browser_provider ?? account.metadata?.browser_provider ?? '').toLowerCase();
-  const searchAccounts = accounts.filter((account: any) =>
+  const jobList = jobs as PipelineJob[];
+  const accountList = accounts as AccountSummary[];
+  const browserProvider = (account: AccountSummary) => {
+    const metadataProvider = account.metadata?.browser_provider;
+    return String(account.browser_provider ?? (typeof metadataProvider === 'string' ? metadataProvider : '')).toLowerCase();
+  };
+  const searchAccounts = accountList.filter((account) =>
     account.platform === 'tiktok' && ['adspower_manual', 'adspower'].includes(browserProvider(account))
   );
-  const accountReady = (account: any) =>
+  const accountReady = (account: AccountSummary) =>
     Boolean(account.session_valid) && account.metadata?.manual_login_state === 'connected_by_confirmation';
-  const accountDisabled = (account: any) => autoPublish ? !account.can_publish : !accountReady(account);
+  const accountDisabled = (account: AccountSummary) => autoPublish ? !account.can_publish : !accountReady(account);
 
   function toggle(id: string) {
     setExpanded(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }
 
   async function handleLaunch() {
     setLaunchError('');
+    const normalizedTopN = clampTopN(topN);
+    setTopN(normalizedTopN);
     if (!accountId) {
       setLaunchError(t('job.select_account_error'));
       return;
@@ -89,7 +144,7 @@ export function PipelineJobs() {
     try {
       await launch.mutateAsync({
         product_url: productUrl,
-        top_n: topN,
+        top_n: normalizedTopN,
         auto_publish: autoPublish,
         account_id: accountId,
       });
@@ -97,8 +152,8 @@ export function PipelineJobs() {
       setProductUrl('');
       setAutoPublish(false);
       setAccountId('');
-    } catch (e: any) {
-      setLaunchError(e.message ?? 'Failed to launch pipeline');
+    } catch (e: unknown) {
+      setLaunchError(e instanceof Error ? e.message : 'Failed to launch pipeline');
     }
   }
 
@@ -132,17 +187,18 @@ export function PipelineJobs() {
             <RefreshCw size={13} /> {t('job.retry')}
           </button>
         </div>
-      ) : jobs.length === 0 ? (
+      ) : jobList.length === 0 ? (
         <EmptyState icon="play-circle" message={t('job.no_data')} />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          {jobs.map((job: any) => {
+          {jobList.map((job) => {
             const isExpanded = expanded.has(job.id);
             const taskStatuses: Record<string, string> = job.task_statuses ?? {};
             const hasTaskStatuses = Object.keys(taskStatuses).length > 0;
             const visibleSteps = hasTaskStatuses
               ? DAG_STEPS.filter(step => step.key in taskStatuses)
               : DAG_STEPS.filter(step => step.key !== 'tiktok_publish' || job.metadata?.auto_publish);
+            const jobStatus = job.status ?? 'pending';
             return (
               <div key={job.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {/* Job Header */}
@@ -155,7 +211,7 @@ export function PipelineJobs() {
                   </span>
                   {/* Status icon */}
                   <GlassIcon
-                    name={job.status === 'completed' ? 'check-circle' : job.status === 'failed' ? 'cross-circle' : job.status === 'running' ? 'arrows-square-up-down' : 'calendar'}
+                    name={jobStatus === 'completed' ? 'check-circle' : jobStatus === 'failed' ? 'cross-circle' : jobStatus === 'running' ? 'arrows-square-up-down' : 'calendar'}
                     size={18}
                     style={{ flexShrink: 0, opacity: 0.75 }}
                   />
@@ -164,7 +220,7 @@ export function PipelineJobs() {
                       <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>
                         {String(job.workflow_name ?? '').replace(/_/g, ' ')}
                       </span>
-                      <Badge status={job.status}>{job.status}</Badge>
+                      <Badge status={jobStatus}>{jobStatus}</Badge>
                       {job.metadata?.pipeline && <span className="badge badge-muted">{job.metadata.pipeline}</span>}
                     </div>
                     <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>{job.id}</div>
@@ -175,7 +231,7 @@ export function PipelineJobs() {
                     </div>
                     {job.error_type && <div style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{job.error_type}</div>}
                   </div>
-                  {job.status === 'failed' && (
+                  {jobStatus === 'failed' && (
                     <button className="btn btn-ghost btn-icon btn-sm" title={t('job.retry_tooltip')} onClick={e => {
                       e.stopPropagation();
                       if (job.input?.product_url) { setProductUrl(job.input.product_url); setShowLaunch(true); }
@@ -242,7 +298,18 @@ export function PipelineJobs() {
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
               {t('job.lbl_topn_val')} {topN}
             </label>
-            <input type="range" min={1} max={20} step={1} value={topN} onChange={e => setTopN(+e.target.value)} style={{ width: '100%', accentColor: 'var(--primary)' }} />
+            <input
+              type="range"
+              min={TOP_N_MIN}
+              max={TOP_N_MAX}
+              step={1}
+              value={topN}
+              onChange={e => setTopN(clampTopN(Number(e.target.value)))}
+              style={{ width: '100%', accentColor: 'var(--primary)' }}
+            />
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              {t('job.topn_helper')}
+            </div>
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
             <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
@@ -254,7 +321,7 @@ export function PipelineJobs() {
             </label>
             <select className="input" value={accountId} onChange={e => setAccountId(e.target.value)}>
               <option value="">{t('job.select_account')}</option>
-              {searchAccounts.map((account: any) => (
+              {searchAccounts.map((account) => (
                 <option key={account.id} value={account.id} disabled={accountDisabled(account)}>
                   {account.display_name || account.account_handle} {accountDisabled(account) ? `(${t('job.account_not_ready')})` : ''}
                 </option>

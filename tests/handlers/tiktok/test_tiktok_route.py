@@ -6,13 +6,33 @@ from uuid import UUID, uuid4
 import pytest
 
 
+def test_normalize_top_n_clamps_request_values() -> None:
+    from api.routes.tiktok import _normalize_top_n
+
+    assert _normalize_top_n(0) == 1
+    assert _normalize_top_n(1) == 1
+    assert _normalize_top_n(10) == 10
+    assert _normalize_top_n(20) == 10
+
+
+def test_normalize_top_n_clamps_env_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.routes.tiktok import _normalize_top_n
+
+    monkeypatch.setenv("TIKTOK_TOP_N", "20")
+
+    assert _normalize_top_n(None) == 10
+
+
 @pytest.mark.asyncio
-async def test_create_tiktok_pipeline_payload_includes_search_and_download_account():
+async def test_create_tiktok_pipeline_payload_includes_search_and_download_account(
+    monkeypatch: pytest.MonkeyPatch,
+):
     from api.routes.tiktok import create_tiktok_pipeline
     from api.schemas import TikTokPipelineRequest
     from database.database import JobDetailRecord, JobRecord, TaskRecord, TaskStatus
 
     account_id = uuid4()
+    monkeypatch.setenv("TIKTOK_TOP_N", "20")
 
     class FakeDatabase:
         def __init__(self) -> None:
@@ -102,11 +122,13 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     response = await create_tiktok_pipeline(request, database)  # type: ignore[arg-type]
 
     search_task = next(task for task in database.tasks if task["task_type"] == "tiktok.search_tiktok")
+    select_task = next(task for task in database.tasks if task["task_type"] == "tiktok.select_videos")
     download_task = next(task for task in database.tasks if task["task_type"] == "tiktok.download_videos")
 
     assert response.workflow_name == "tiktok_content_pipeline"
+    assert response.metadata["top_n"] == 10
     assert search_task["account_id"] == str(account_id)
     assert search_task["payload"]["account_id"] == str(account_id)
     assert search_task["payload"]["min_views"] == 12345
+    assert select_task["payload"]["top_n"] == 10
     assert download_task["payload"]["account_id"] == str(account_id)
-

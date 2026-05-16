@@ -184,8 +184,8 @@ class TikTokPipelineRequest(BaseModel):
     top_n: int | None = Field(
         default=None,
         ge=1,
-        le=20,
-        description="Number of videos to download and remix. Defaults to env TIKTOK_TOP_N.",
+        le=10,
+        description="Number of videos to download and remix, from 1 to 10. Defaults to env TIKTOK_TOP_N.",
     )
 
     # Video remake

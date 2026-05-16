@@ -6,7 +6,7 @@ Updated for the advanced viral-scoring engine:
   - engagement_rate formula
   - duration window 6–30 s
   - author de-duplication
-  - random pool jitter (top_n clamped 3–5)
+  - random pool jitter (top_n clamped 1-10)
 """
 
 from __future__ import annotations
@@ -181,6 +181,25 @@ async def test_select_videos_respects_top_n_two():
     )
 
     assert len(result["selected_videos"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_select_videos_clamps_top_n_above_ten():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    result = await select_videos_handler(
+        {
+            "videos": [_valid_video(idx) for idx in range(1, 13)],
+            "top_n": 20,
+            "min_views": 1000,
+            "min_likes": 10,
+            "min_engagement_rate": 0.0,
+            "max_per_author": 20,
+        }
+    )
+
+    assert len(result["selected_videos"]) == 10
+    assert result["filter_stats"]["selected"] == 10
 
 
 @pytest.mark.asyncio

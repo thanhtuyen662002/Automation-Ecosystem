@@ -48,6 +48,11 @@ _KEY_COMMENT = "tiktok_comment"
 _KEY_PUBLISH = "tiktok_publish"
 
 
+def _normalize_top_n(value: int | None) -> int:
+    raw = value if value is not None else int(os.environ.get("TIKTOK_TOP_N", "5"))
+    return max(1, min(10, int(raw)))
+
+
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 async def create_tiktok_pipeline(
     request: TikTokPipelineRequest,
@@ -70,7 +75,7 @@ async def create_tiktok_pipeline(
     """
     min_views = request.min_views or int(os.environ.get("TIKTOK_MIN_VIEWS", "10000"))
     min_likes = request.min_likes or int(os.environ.get("TIKTOK_MIN_LIKES", "500"))
-    top_n = request.top_n or int(os.environ.get("TIKTOK_TOP_N", "5"))
+    top_n = _normalize_top_n(request.top_n)
 
     if request.account_id is None:
         raise HTTPException(status_code=422, detail="account_id is required for TikTok search")

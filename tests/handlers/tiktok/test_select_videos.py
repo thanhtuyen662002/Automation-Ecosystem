@@ -16,6 +16,20 @@ import pytest
 from unittest.mock import patch
 
 
+def _valid_video(idx: int, *, author: str | None = None) -> dict:
+    author = author or f"author{idx}"
+    return {
+        "url": f"https://tiktok.com/@{author}/video/{idx}",
+        "title": f"Video {idx}",
+        "author": author,
+        "uploader": f"uploader_{idx}",
+        "uploader_id": f"uploader_id_{idx}",
+        "views": 50000 + idx,
+        "likes": 1000 + idx,
+        "duration": 0,
+    }
+
+
 @pytest.fixture()
 def sample_videos():
     # Durations adjusted to the new 6–30 s window
@@ -136,6 +150,40 @@ async def test_select_videos_respects_min_likes_when_known():
 
 
 @pytest.mark.asyncio
+async def test_select_videos_respects_top_n_one():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    result = await select_videos_handler(
+        {
+            "videos": [_valid_video(1), _valid_video(2), _valid_video(3)],
+            "top_n": 1,
+            "min_views": 1000,
+            "min_likes": 10,
+            "min_engagement_rate": 0.0,
+        }
+    )
+
+    assert len(result["selected_videos"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_select_videos_respects_top_n_two():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    result = await select_videos_handler(
+        {
+            "videos": [_valid_video(1), _valid_video(2), _valid_video(3)],
+            "top_n": 2,
+            "min_views": 1000,
+            "min_likes": 10,
+            "min_engagement_rate": 0.0,
+        }
+    )
+
+    assert len(result["selected_videos"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_select_videos_preserves_search_metadata():
     from workers.handlers.tiktok.select_videos import select_videos_handler
 
@@ -143,6 +191,8 @@ async def test_select_videos_preserves_search_metadata():
         {
             "url": f"https://tiktok.com/@a/video/{idx}",
             "title": "kem chong nang",
+            "uploader": "uploader_a",
+            "uploader_id": "uploader_id_a",
             "description": "caption here",
             "thumbnail": "https://example.com/thumb.jpg",
             "keyword": "kem ch\u1ed1ng n\u1eafng",
@@ -174,6 +224,9 @@ async def test_select_videos_preserves_search_metadata():
     assert len(selected) == 3
     for video in selected:
         assert video["description"] == "caption here"
+        assert video["author"] == "uploader_id_a"
+        assert video["uploader"] == "uploader_a"
+        assert video["uploader_id"] == "uploader_id_a"
         assert video["thumbnail"] == "https://example.com/thumb.jpg"
         assert video["keyword"] == "kem ch\u1ed1ng n\u1eafng"
         assert video["source"] == "tiktok_ads_power_search"

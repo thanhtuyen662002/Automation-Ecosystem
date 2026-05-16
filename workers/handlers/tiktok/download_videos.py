@@ -295,17 +295,40 @@ async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) ->
                 await asyncio.sleep(random.uniform(1.5, 3.0))
                 cookies = await context.cookies()
 
-        _write_netscape_cookie_file(cookies, cookie_file)
+        tiktok_cookies = _require_tiktok_cookies(cookies, account_id)
+        _write_netscape_cookie_file(tiktok_cookies, cookie_file)
         LOGGER.info(
             "download_cookie_file_exported",
             extra={
                 "event": "download_cookie_file_exported",
                 "account_id": account_id,
-                "cookie_count": len([cookie for cookie in cookies if "tiktok.com" in str(cookie.get("domain", ""))]),
+                "cookie_count": len(tiktok_cookies),
             },
         )
     finally:
         await database.close()
+
+
+def _filter_tiktok_cookies(cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        cookie
+        for cookie in cookies
+        if "tiktok.com" in str(cookie.get("domain", "")).lower()
+    ]
+
+
+def _require_tiktok_cookies(cookies: list[dict[str, Any]], account_id: str) -> list[dict[str, Any]]:
+    tiktok_cookies = _filter_tiktok_cookies(cookies)
+    if tiktok_cookies:
+        return tiktok_cookies
+    LOGGER.warning(
+        "download_cookie_export_no_tiktok_cookies",
+        extra={
+            "event": "download_cookie_export_no_tiktok_cookies",
+            "account_id": account_id,
+        },
+    )
+    raise RuntimeError("No TikTok cookies exported from AdsPower profile")
 
 
 def _write_netscape_cookie_file(cookies: list[dict[str, Any]], path: Path) -> None:

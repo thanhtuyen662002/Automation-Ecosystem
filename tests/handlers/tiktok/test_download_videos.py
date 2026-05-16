@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_write_netscape_cookie_file_sanitizes_fields(tmp_path):
     from workers.handlers.tiktok.download_videos import _write_netscape_cookie_file
@@ -42,6 +44,32 @@ def test_write_netscape_cookie_file_sanitizes_fields(tmp_path):
         "abc 123 456",
     ]
     assert "example.com" not in text
+
+
+def test_filter_tiktok_cookies_only_keeps_tiktok_domains():
+    from workers.handlers.tiktok.download_videos import _filter_tiktok_cookies
+
+    assert _filter_tiktok_cookies([]) == []
+    assert _filter_tiktok_cookies([{"domain": ".google.com"}]) == []
+    assert _filter_tiktok_cookies([{"domain": ".tiktok.com"}, {"domain": "www.tiktok.com"}]) == [
+        {"domain": ".tiktok.com"},
+        {"domain": "www.tiktok.com"},
+    ]
+
+
+def test_require_tiktok_cookies_raises_when_missing():
+    from workers.handlers.tiktok.download_videos import _require_tiktok_cookies
+
+    with pytest.raises(RuntimeError, match="No TikTok cookies exported"):
+        _require_tiktok_cookies([{"domain": ".google.com"}], "account-1")
+
+
+def test_require_tiktok_cookies_returns_tiktok_cookies():
+    from workers.handlers.tiktok.download_videos import _require_tiktok_cookies
+
+    cookies = [{"domain": ".tiktok.com", "name": "sessionid", "value": "dummy"}]
+
+    assert _require_tiktok_cookies(cookies, "account-1") == cookies
 
 
 def test_find_downloaded_file_ignores_temp_files(tmp_path):

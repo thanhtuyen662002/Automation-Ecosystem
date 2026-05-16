@@ -5,14 +5,22 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
+import {
+  artifactsRefetchInterval,
+  DASHBOARD_ANALYTICS_REFETCH_MS,
+  jobsRefetchInterval,
+  LIVE_STATS_REFETCH_MS,
+  queueRefetchInterval,
+} from './polling';
 
 // ── Content Queue ─────────────────────────────────────────────────────────────
 export function useQueue() {
   return useQuery({
     queryKey: ['queue'],
     queryFn: () => api.queue('all'),
-    staleTime: 15_000,
-    refetchInterval: 15_000,
+    staleTime: 1_000,
+    refetchInterval: (query) => queueRefetchInterval(query.state.data),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -91,8 +99,8 @@ export function useFleet() {
   return useQuery({
     queryKey: ['fleet'],
     queryFn: api.fleet,
-    staleTime: 20_000,
-    refetchInterval: 20_000,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   });
 }
 
@@ -101,8 +109,8 @@ export function useFleetAccounts() {
   return useQuery({
     queryKey: ['fleet', 'accounts'],
     queryFn: () => api.fleet().then(d => d.accounts ?? []),
-    staleTime: 20_000,
-    refetchInterval: 20_000,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   });
 }
 
@@ -111,8 +119,9 @@ export function useSystemStats() {
   return useQuery({
     queryKey: ['stats'],
     queryFn: api.stats,
-    staleTime: 10_000,
-    refetchInterval: 10_000,
+    staleTime: 2_000,
+    refetchInterval: LIVE_STATS_REFETCH_MS,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -121,8 +130,9 @@ export function useDeepHealth() {
   return useQuery({
     queryKey: ['deepHealth'],
     queryFn: api.deepHealth,
-    staleTime: 10_000,
-    refetchInterval: 15_000,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -131,8 +141,9 @@ export function useDecisions(limit = 5) {
   return useQuery({
     queryKey: ['decisions', limit],
     queryFn: () => api.decisions(limit),
-    staleTime: 10_000,
-    refetchInterval: 10_000,
+    staleTime: 2_000,
+    refetchInterval: LIVE_STATS_REFETCH_MS,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -177,6 +188,7 @@ export function useStrategyLog(limit = 50) {
     queryKey: ['strategyLog', limit],
     queryFn: () => api.strategyLog(limit),
     staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -195,6 +207,7 @@ export function usePolicyRules() {
     queryKey: ['policyRules'],
     queryFn: api.policyRules,
     staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -292,8 +305,9 @@ export function useArtifacts(limit = 50) {
   return useQuery({
     queryKey: ['artifacts', limit],
     queryFn: () => api.artifacts(limit),
-    staleTime: 20_000,
-    refetchInterval: 30_000,
+    staleTime: 1_000,
+    refetchInterval: (query) => artifactsRefetchInterval(query.state.data),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -311,8 +325,9 @@ export function useJobs() {
   return useQuery({
     queryKey: ['jobs'],
     queryFn: api.jobs,
-    staleTime: 15_000,
-    refetchInterval: 20_000,
+    staleTime: 1_000,
+    refetchInterval: (query) => jobsRefetchInterval(query.state.data),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -343,6 +358,7 @@ export function useBrainConfig() {
     queryKey: ['brainConfig'],
     queryFn: api.brainConfig,
     staleTime: 60_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -351,7 +367,7 @@ export function useAnalyticsOverview() {
   return useQuery({
     queryKey: ['analyticsOverview'],
     queryFn: api.analyticsOverview,
-    staleTime: 60_000,
-    refetchInterval: 60_000,
+    staleTime: 15_000,
+    refetchInterval: DASHBOARD_ANALYTICS_REFETCH_MS,
   });
 }

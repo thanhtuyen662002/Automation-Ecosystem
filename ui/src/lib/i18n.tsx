@@ -362,6 +362,8 @@ export const translations: Record<Lang, Record<string, string>> = {
     'fleet.loading':       'Đang tải...',
 
     'job.title':           'Pipeline Jobs',
+    'job.updating':        '\u0110ang c\u1eadp nh\u1eadt...',
+    'job.updated':         'C\u1eadp nh\u1eadt',
     'job.sub':             'Các tiến trình tự động hóa nội dung TikTok',
     'job.refresh':         'Làm Mới',
     'job.launch':          'Chạy Pipeline',
@@ -903,6 +905,8 @@ export const translations: Record<Lang, Record<string, string>> = {
     'fleet.loading':       'Loading...',
 
     'job.title':           'Pipeline Jobs',
+    'job.updating':        'Updating...',
+    'job.updated':         'Updated',
     'job.sub':             'TikTok content automation DAG runs',
     'job.refresh':         'Refresh',
     'job.launch':          'Launch Pipeline',

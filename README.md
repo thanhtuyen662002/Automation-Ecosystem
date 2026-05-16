@@ -81,6 +81,8 @@ npm run dev
 
 Set `VITE_API_BASE` in `ui/.env.local` to the FastAPI backend URL. `VITE_API_URL` is still supported for backward compatibility, but `VITE_API_BASE` wins when both are set.
 
+The dashboard uses smart polling: active pipeline jobs refresh every few seconds, then slow down when the system is idle. This avoids manual reloads while keeping API load modest. WebSocket push is reserved for a later phase.
+
 The production build is:
 
 ```powershell

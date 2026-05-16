@@ -98,7 +98,7 @@ function StepDot({ status, step }: { status: string; step: number }) {
 
 export function PipelineJobs() {
   const { t } = useI18n();
-  const { data: jobs = [], isLoading, error, refetch } = useJobs();
+  const { data: jobs = [], isLoading, error, refetch, dataUpdatedAt, isFetching } = useJobs();
   const { data: accounts = [] } = useAccounts();
   const { data: health } = useDeepHealth();
   const launch = useLaunchPipeline();
@@ -174,7 +174,14 @@ export function PipelineJobs() {
         title={t('job.title')}
         subtitle={t('job.sub')}
         action={
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+              {isFetching
+                ? t('job.updating')
+                : dataUpdatedAt
+                  ? `${t('job.updated')} ${fmtRelative(Math.floor(dataUpdatedAt / 1000))}`
+                  : null}
+            </span>
             <button className="btn btn-ghost btn-sm btn-icon" onClick={() => refetch()} title={t('job.refresh')}>
               <RefreshCw size={13} />
             </button>

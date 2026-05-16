@@ -159,7 +159,7 @@ export function SettingsAI() {
     provider_id: '',
     model_id: '',
     key_id: '',
-    prompt: 'Reply with one short sentence confirming this provider is working.',
+    prompt: 'Trả lời bằng một câu ngắn gọn để xác nhận nhà cung cấp này đang hoạt động.',
     max_tokens: '128',
     temperature: '0.2',
   });
@@ -233,13 +233,13 @@ export function SettingsAI() {
       delete next[provider.id];
       return next;
     });
-    setMessage('Provider saved.');
+    setMessage('Đã lưu nhà cung cấp.');
   }
 
   async function addProvider() {
     setError('');
     if (!newProvider.provider.trim() || !newProvider.display_name.trim()) {
-      setError('Provider and display name are required.');
+      setError('Tên nhà cung cấp và tên hiển thị là bắt buộc.');
       return;
     }
     await createProvider.mutateAsync({
@@ -251,14 +251,14 @@ export function SettingsAI() {
     });
     setNewProvider({ provider: '', display_name: '', base_url: '', enabled: true, priority: '100' });
     setShowProviderForm(false);
-    setMessage('Provider created.');
+    setMessage('Đã tạo nhà cung cấp.');
   }
 
   async function addKey(providerId: string) {
     const draft = newKeys[providerId];
     setError('');
     if (!draft?.label.trim() || !draft.raw_key.trim()) {
-      setError('Key label and API key are required.');
+      setError('Nhãn khóa và API key là bắt buộc.');
       return;
     }
     await createKey.mutateAsync({
@@ -271,7 +271,7 @@ export function SettingsAI() {
       },
     });
     setNewKeys((prev) => ({ ...prev, [providerId]: { ...draft, raw_key: '' } }));
-    setMessage('API key saved. Raw key was encrypted and cleared from the form.');
+    setMessage('Đã lưu API key. Khóa gốc đã được mã hóa và xóa khỏi biểu mẫu.');
   }
 
   async function saveKey(key: AiKey) {
@@ -291,14 +291,14 @@ export function SettingsAI() {
       delete next[key.id];
       return next;
     });
-    setMessage('API key updated. Raw replacement key was encrypted and cleared.');
+    setMessage('Đã cập nhật API key. Khóa mới đã được mã hóa và xóa khỏi biểu mẫu.');
   }
 
   async function addModel(providerId: string) {
     const draft = newModels[providerId];
     setError('');
     if (!draft?.model_name.trim() || !draft.display_name.trim()) {
-      setError('Model name and display name are required.');
+      setError('Tên mô hình và tên hiển thị là bắt buộc.');
       return;
     }
     await createModel.mutateAsync({
@@ -325,7 +325,7 @@ export function SettingsAI() {
         priority: '100',
       },
     }));
-    setMessage('Model saved.');
+    setMessage('Đã lưu mô hình.');
   }
 
   async function saveModel(model: AiModel) {
@@ -348,7 +348,7 @@ export function SettingsAI() {
       delete next[model.id];
       return next;
     });
-    setMessage('Model updated.');
+    setMessage('Đã cập nhật mô hình.');
   }
 
   async function runTest() {
@@ -362,13 +362,13 @@ export function SettingsAI() {
       max_tokens: numberValue(testState.max_tokens, 128),
       temperature: optionalFloat(testState.temperature) ?? 0.2,
     });
-    setMessage(`Test succeeded in ${result.elapsed_ms} ms: ${result.text}`);
+    setMessage(`Kiểm tra thành công trong ${result.elapsed_ms} ms: ${result.text}`);
   }
 
   if (providersQuery.isLoading) {
     return (
       <div>
-        <PageHeader title="AI Providers & API Keys" subtitle="Manage encrypted provider keys and model routing." />
+        <PageHeader title="AI Providers & API Keys" subtitle="Quản lý mã khóa bảo mật và định tuyến mô hình AI." />
         <div className="card"><Skeleton height={260} /></div>
       </div>
     );
@@ -377,7 +377,7 @@ export function SettingsAI() {
   if (providersQuery.error) {
     return (
       <div>
-        <PageHeader title="AI Providers & API Keys" subtitle="Manage encrypted provider keys and model routing." />
+        <PageHeader title="AI Providers & API Keys" subtitle="Quản lý mã khóa bảo mật và định tuyến mô hình AI." />
         <div className="card" style={{ color: 'var(--danger)' }}>
           {(providersQuery.error as Error).message}
           <button className="btn btn-secondary btn-sm" style={{ marginLeft: '0.75rem' }} onClick={() => providersQuery.refetch()}>
@@ -392,15 +392,15 @@ export function SettingsAI() {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.875rem' }}>
         <div>
-          <div className="page-title">AI Providers & API Keys</div>
-          <div className="page-subtitle">Encrypted local key store for AI routing, fallback, and model defaults.</div>
+          <div className="page-title">Nhà Cung Cấp AI & API Keys</div>
+          <div className="page-subtitle">Lưu trữ khóa bảo mật cục bộ dùng cho định tuyến AI, fallback và thiết lập mô hình mặc định.</div>
         </div>
         <button className="btn btn-primary btn-sm" onClick={() => setShowProviderForm((v) => !v)}>
-          <Plus size={14} /> Add Provider
+          <Plus size={14} /> Thêm Nhà Cung Cấp
         </button>
       </div>
 
-      <PageHeader title="AI Providers & API Keys" />
+      <PageHeader title="Nhà Cung Cấp AI & API Keys" />
 
       {(message || error || testAi.error) && (
         <div
@@ -422,22 +422,22 @@ export function SettingsAI() {
         <div className="card" style={{ marginBottom: '1.25rem' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1.4fr 0.7fr auto auto', gap: '0.75rem', alignItems: 'end' }}>
             <div>
-              <FieldLabel>Provider</FieldLabel>
+              <FieldLabel>Nhà cung cấp</FieldLabel>
               <input className="input" value={newProvider.provider} onChange={(e) => setNewProvider((p) => ({ ...p, provider: e.target.value }))} placeholder="openai" />
             </div>
             <div>
-              <FieldLabel>Display name</FieldLabel>
+              <FieldLabel>Tên hiển thị</FieldLabel>
               <input className="input" value={newProvider.display_name} onChange={(e) => setNewProvider((p) => ({ ...p, display_name: e.target.value }))} placeholder="OpenAI" />
             </div>
             <div>
-              <FieldLabel>Base URL</FieldLabel>
-              <input className="input" value={newProvider.base_url} onChange={(e) => setNewProvider((p) => ({ ...p, base_url: e.target.value }))} placeholder="Optional" />
+              <FieldLabel>URL Gốc</FieldLabel>
+              <input className="input" value={newProvider.base_url} onChange={(e) => setNewProvider((p) => ({ ...p, base_url: e.target.value }))} placeholder="Tùy chọn" />
             </div>
             <div>
-              <FieldLabel>Priority</FieldLabel>
+              <FieldLabel>Độ ưu tiên</FieldLabel>
               <input className="input" type="number" value={newProvider.priority} onChange={(e) => setNewProvider((p) => ({ ...p, priority: e.target.value }))} />
             </div>
-            {boolToggle(newProvider.enabled, (enabled) => setNewProvider((p) => ({ ...p, enabled })), 'Provider enabled')}
+            {boolToggle(newProvider.enabled, (enabled) => setNewProvider((p) => ({ ...p, enabled })), 'Bật nhà cung cấp')}
             <button className="btn btn-primary btn-sm" onClick={addProvider} disabled={createProvider.isPending}>
               <Save size={13} /> Save
             </button>
@@ -448,35 +448,35 @@ export function SettingsAI() {
       <div className="card" style={{ marginBottom: '1.25rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center', marginBottom: '0.875rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
-            <Play size={16} /> Test Routing
+            <Play size={16} /> Kiểm Tra Định Tuyến
           </div>
           <button className="btn btn-secondary btn-sm" onClick={runTest} disabled={testAi.isPending}>
-            <Play size={13} /> {testAi.isPending ? 'Testing' : 'Test'}
+            <Play size={13} /> {testAi.isPending ? 'Đang kiểm tra' : 'Kiểm tra'}
           </button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
           <div>
-            <FieldLabel>Provider</FieldLabel>
+            <FieldLabel>Nhà cung cấp</FieldLabel>
             <select className="select" value={testState.provider_id} onChange={(e) => setTestState((s) => ({ ...s, provider_id: e.target.value, model_id: '', key_id: '' }))}>
-              <option value="">Auto routing</option>
+              <option value="">Tự động định tuyến</option>
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>{provider.display_name}</option>
               ))}
             </select>
           </div>
           <div>
-            <FieldLabel>Model</FieldLabel>
+            <FieldLabel>Mô hình</FieldLabel>
             <select className="select" value={testState.model_id} onChange={(e) => setTestState((s) => ({ ...s, model_id: e.target.value }))}>
-              <option value="">Default enabled model</option>
+              <option value="">Mô hình mặc định đã bật</option>
               {visibleModels.map(({ provider, model }) => (
                 <option key={model.id} value={model.id}>{provider.display_name} / {model.model_name}</option>
               ))}
             </select>
           </div>
           <div>
-            <FieldLabel>Key</FieldLabel>
+            <FieldLabel>Khóa</FieldLabel>
             <select className="select" value={testState.key_id} onChange={(e) => setTestState((s) => ({ ...s, key_id: e.target.value }))}>
-              <option value="">Auto key fallback</option>
+              <option value="">Tự động fallback khóa</option>
               {visibleKeys.map(({ provider, key }) => (
                 <option key={key.id} value={key.id}>{provider.display_name} / {key.label} ({key.key_preview})</option>
               ))}
@@ -519,21 +519,21 @@ export function SettingsAI() {
                       <span className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{provider.provider}</span>
                     </div>
                     <div style={{ display: 'flex', gap: '1rem', marginTop: '0.35rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                      <span>{provider.keys.length} keys</span>
-                      <span>{provider.models.length} models</span>
-                      <span>priority {provider.priority}</span>
+                      <span>{provider.keys.length} khóa</span>
+                      <span>{provider.models.length} mô hình</span>
+                      <span>ưu tiên {provider.priority}</span>
                     </div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  {boolToggle(providerDraft.enabled, (enabled) => setProviderEdit(provider.id, { enabled }), 'Provider enabled')}
+                  {boolToggle(providerDraft.enabled, (enabled) => setProviderEdit(provider.id, { enabled }), 'Bật nhà cung cấp')}
                   <button className="btn btn-secondary btn-sm" onClick={() => saveProvider(provider)} disabled={updateProvider.isPending}>
                     <Save size={13} /> Save
                   </button>
                   <button
                     className="btn btn-danger btn-sm"
                     onClick={() => {
-                      if (window.confirm(`Delete provider ${provider.display_name}? This also deletes its keys and models.`)) {
+                      if (window.confirm(`Xóa nhà cung cấp ${provider.display_name}? Thao tác này cũng xóa các khóa và mô hình của nó.`)) {
                         deleteProvider.mutate(provider.id);
                       }
                     }}
@@ -545,26 +545,26 @@ export function SettingsAI() {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1.5fr 0.55fr', gap: '0.75rem', marginBottom: '0.875rem' }}>
                 <div>
-                  <FieldLabel>Provider</FieldLabel>
+                  <FieldLabel>Nhà cung cấp</FieldLabel>
                   <input className="input" value={providerDraft.provider} onChange={(e) => setProviderEdit(provider.id, { provider: e.target.value })} />
                 </div>
                 <div>
-                  <FieldLabel>Display name</FieldLabel>
+                  <FieldLabel>Tên hiển thị</FieldLabel>
                   <input className="input" value={providerDraft.display_name} onChange={(e) => setProviderEdit(provider.id, { display_name: e.target.value })} />
                 </div>
                 <div>
-                  <FieldLabel>Base URL</FieldLabel>
-                  <input className="input" value={providerDraft.base_url} onChange={(e) => setProviderEdit(provider.id, { base_url: e.target.value })} placeholder="Optional" />
+                  <FieldLabel>URL Gốc</FieldLabel>
+                  <input className="input" value={providerDraft.base_url} onChange={(e) => setProviderEdit(provider.id, { base_url: e.target.value })} placeholder="Tùy chọn" />
                 </div>
                 <div>
-                  <FieldLabel>Priority</FieldLabel>
+                  <FieldLabel>Độ ưu tiên</FieldLabel>
                   <input className="input" type="number" value={providerDraft.priority} onChange={(e) => setProviderEdit(provider.id, { priority: e.target.value })} />
                 </div>
               </div>
 
               <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-                {provider.enabled && needsKey && enabledKeys === 0 && <WarningText>No enabled key configured</WarningText>}
-                {provider.enabled && !hasDefaultModel && <WarningText>No default model</WarningText>}
+                {provider.enabled && needsKey && enabledKeys === 0 && <WarningText>Chưa cấu hình khóa nào được bật</WarningText>}
+                {provider.enabled && !hasDefaultModel && <WarningText>Chưa có mô hình mặc định</WarningText>}
               </div>
 
               <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem', marginBottom: '1.1rem' }}>
@@ -575,14 +575,14 @@ export function SettingsAI() {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>Label</th>
-                        <th>Preview</th>
-                        <th>Enabled</th>
-                        <th>Priority</th>
-                        <th>Last used</th>
-                        <th>Last error</th>
-                        <th>Failures</th>
-                        <th>Replace key</th>
+                        <th>Nhãn</th>
+                        <th>Xem trước</th>
+                        <th>Đã bật</th>
+                        <th>Độ ưu tiên</th>
+                        <th>Lần dùng cuối</th>
+                        <th>Lỗi cuối</th>
+                        <th>Lỗi</th>
+                        <th>Thay khóa</th>
                         <th />
                       </tr>
                     </thead>
@@ -593,16 +593,16 @@ export function SettingsAI() {
                           <tr key={key.id}>
                             <td><input className="input" style={cellInputStyle} value={draft.label} onChange={(e) => setKeyEdit(key, { label: e.target.value })} /></td>
                             <td className="mono">{key.key_preview}</td>
-                            <td>{boolToggle(draft.enabled, (enabled) => setKeyEdit(key, { enabled }), 'Key enabled')}</td>
+                            <td>{boolToggle(draft.enabled, (enabled) => setKeyEdit(key, { enabled }), 'Bật khóa')}</td>
                             <td><input className="input" style={{ ...cellInputStyle, width: 78 }} type="number" value={draft.priority} onChange={(e) => setKeyEdit(key, { priority: e.target.value })} /></td>
                             <td>{formatTime(key.last_used_at)}</td>
                             <td style={{ color: key.last_error ? 'var(--danger)' : 'var(--text-muted)', maxWidth: 220 }}>{key.last_error ?? '-'}</td>
                             <td>{key.failure_count}</td>
-                            <td><input className="input" style={cellInputStyle} type="password" value={draft.raw_key} onChange={(e) => setKeyEdit(key, { raw_key: e.target.value })} placeholder="New key" /></td>
+                            <td><input className="input" style={cellInputStyle} type="password" value={draft.raw_key} onChange={(e) => setKeyEdit(key, { raw_key: e.target.value })} placeholder="Khóa mới" /></td>
                             <td>
                               <div style={{ display: 'flex', gap: '0.35rem' }}>
                                 <button className="btn btn-secondary btn-sm" onClick={() => saveKey(key)}><Save size={12} /></button>
-                                <button className="btn btn-danger btn-sm" onClick={() => window.confirm(`Delete key ${key.label}?`) && deleteKey.mutate(key.id)}><Trash2 size={12} /></button>
+                                <button className="btn btn-danger btn-sm" onClick={() => window.confirm(`Xóa khóa ${key.label}?`) && deleteKey.mutate(key.id)}><Trash2 size={12} /></button>
                               </div>
                             </td>
                           </tr>
@@ -610,10 +610,10 @@ export function SettingsAI() {
                       })}
                       <tr>
                         <td><input className="input" style={cellInputStyle} value={newKey.label} onChange={(e) => setNewKeyDraft(provider.id, { label: e.target.value })} placeholder="Label" /></td>
-                        <td className="mono">Encrypted after save</td>
-                        <td>{boolToggle(newKey.enabled, (enabled) => setNewKeyDraft(provider.id, { enabled }), 'New key enabled')}</td>
+                        <td className="mono">Sẽ mã hóa sau khi lưu</td>
+                        <td>{boolToggle(newKey.enabled, (enabled) => setNewKeyDraft(provider.id, { enabled }), 'Bật khóa mới')}</td>
                         <td><input className="input" style={{ ...cellInputStyle, width: 78 }} type="number" value={newKey.priority} onChange={(e) => setNewKeyDraft(provider.id, { priority: e.target.value })} /></td>
-                        <td colSpan={3} style={{ color: 'var(--text-muted)' }}>Raw key is never returned after save</td>
+                        <td colSpan={3} style={{ color: 'var(--text-muted)' }}>Khóa gốc không bao giờ được trả về sau khi lưu</td>
                         <td><input className="input" style={cellInputStyle} type="password" value={newKey.raw_key} onChange={(e) => setNewKeyDraft(provider.id, { raw_key: e.target.value })} placeholder="API key" /></td>
                         <td><button className="btn btn-primary btn-sm" onClick={() => addKey(provider.id)} disabled={createKey.isPending}><Plus size={12} /></button></td>
                       </tr>
@@ -630,12 +630,12 @@ export function SettingsAI() {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>Model name</th>
-                        <th>Display name</th>
-                        <th>Enabled</th>
-                        <th>Default</th>
-                        <th>Priority</th>
-                        <th>Max tokens</th>
+                        <th>Tên mô hình</th>
+                        <th>Tên hiển thị</th>
+                        <th>Đã bật</th>
+                        <th>Mặc định</th>
+                        <th>Độ ưu tiên</th>
+                        <th>Token tối đa</th>
                         <th>Temperature</th>
                         <th />
                       </tr>
@@ -647,15 +647,15 @@ export function SettingsAI() {
                           <tr key={model.id}>
                             <td><input className="input" style={cellInputStyle} value={draft.model_name} onChange={(e) => setModelEdit(model, { model_name: e.target.value })} /></td>
                             <td><input className="input" style={cellInputStyle} value={draft.display_name} onChange={(e) => setModelEdit(model, { display_name: e.target.value })} /></td>
-                            <td>{boolToggle(draft.enabled, (enabled) => setModelEdit(model, { enabled }), 'Model enabled')}</td>
-                            <td>{boolToggle(draft.is_default, (is_default) => setModelEdit(model, { is_default }), 'Default model')}</td>
+                            <td>{boolToggle(draft.enabled, (enabled) => setModelEdit(model, { enabled }), 'Bật mô hình')}</td>
+                            <td>{boolToggle(draft.is_default, (is_default) => setModelEdit(model, { is_default }), 'Mô hình mặc định')}</td>
                             <td><input className="input" style={{ ...cellInputStyle, width: 78 }} type="number" value={draft.priority} onChange={(e) => setModelEdit(model, { priority: e.target.value })} /></td>
-                            <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" value={draft.max_tokens} onChange={(e) => setModelEdit(model, { max_tokens: e.target.value })} placeholder="Any" /></td>
-                            <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" step="0.1" value={draft.temperature_default} onChange={(e) => setModelEdit(model, { temperature_default: e.target.value })} placeholder="Call" /></td>
+                            <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" value={draft.max_tokens} onChange={(e) => setModelEdit(model, { max_tokens: e.target.value })} placeholder="Bất kỳ" /></td>
+                            <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" step="0.1" value={draft.temperature_default} onChange={(e) => setModelEdit(model, { temperature_default: e.target.value })} placeholder="Gọi API" /></td>
                             <td>
                               <div style={{ display: 'flex', gap: '0.35rem' }}>
                                 <button className="btn btn-secondary btn-sm" onClick={() => saveModel(model)}><Save size={12} /></button>
-                                <button className="btn btn-danger btn-sm" onClick={() => window.confirm(`Delete model ${model.model_name}?`) && deleteModel.mutate(model.id)}><Trash2 size={12} /></button>
+                                <button className="btn btn-danger btn-sm" onClick={() => window.confirm(`Xóa mô hình ${model.model_name}?`) && deleteModel.mutate(model.id)}><Trash2 size={12} /></button>
                               </div>
                             </td>
                           </tr>
@@ -664,11 +664,11 @@ export function SettingsAI() {
                       <tr>
                         <td><input className="input" style={cellInputStyle} value={newModel.model_name} onChange={(e) => setNewModelDraft(provider.id, { model_name: e.target.value })} placeholder="model-name" /></td>
                         <td><input className="input" style={cellInputStyle} value={newModel.display_name} onChange={(e) => setNewModelDraft(provider.id, { display_name: e.target.value })} placeholder="Display" /></td>
-                        <td>{boolToggle(newModel.enabled, (enabled) => setNewModelDraft(provider.id, { enabled }), 'New model enabled')}</td>
-                        <td>{boolToggle(newModel.is_default, (is_default) => setNewModelDraft(provider.id, { is_default }), 'New model default')}</td>
+                        <td>{boolToggle(newModel.enabled, (enabled) => setNewModelDraft(provider.id, { enabled }), 'Bật mô hình mới')}</td>
+                        <td>{boolToggle(newModel.is_default, (is_default) => setNewModelDraft(provider.id, { is_default }), 'Mô hình mới mặc định')}</td>
                         <td><input className="input" style={{ ...cellInputStyle, width: 78 }} type="number" value={newModel.priority} onChange={(e) => setNewModelDraft(provider.id, { priority: e.target.value })} /></td>
-                        <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" value={newModel.max_tokens} onChange={(e) => setNewModelDraft(provider.id, { max_tokens: e.target.value })} placeholder="Any" /></td>
-                        <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" step="0.1" value={newModel.temperature_default} onChange={(e) => setNewModelDraft(provider.id, { temperature_default: e.target.value })} placeholder="Call" /></td>
+                        <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" value={newModel.max_tokens} onChange={(e) => setNewModelDraft(provider.id, { max_tokens: e.target.value })} placeholder="Bất kỳ" /></td>
+                        <td><input className="input" style={{ ...cellInputStyle, width: 92 }} type="number" step="0.1" value={newModel.temperature_default} onChange={(e) => setNewModelDraft(provider.id, { temperature_default: e.target.value })} placeholder="Gọi API" /></td>
                         <td><button className="btn btn-primary btn-sm" onClick={() => addModel(provider.id)} disabled={createModel.isPending}><Plus size={12} /></button></td>
                       </tr>
                     </tbody>

@@ -141,7 +141,7 @@ function Topbar() {
       {/* Collapse Sidebar button — arrow rotates with sidebar state */}
       <button
         onClick={toggleSidebar}
-        title={sidebarCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
+        title={sidebarCollapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
         style={{ ...circleBtn, borderRadius: '0.5rem', width: 32, height: 32 }}
         onMouseEnter={hIn}
         onMouseLeave={hOut}
@@ -170,7 +170,7 @@ function Topbar() {
         </span>
         <input
           type="text"
-          placeholder="Search..."
+          placeholder="Tìm kiếm..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           style={{
@@ -194,23 +194,23 @@ function Topbar() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
         {/* Sun / theme */}
-        <button style={circleBtn} title="Theme" onMouseEnter={hIn} onMouseLeave={hOut}><Sun size={15} /></button>
+        <button style={circleBtn} title="Giao diện" onMouseEnter={hIn} onMouseLeave={hOut}><Sun size={15} /></button>
 
         {/* Messages badge 2 */}
-        <button style={circleBtn} title="Messages" onMouseEnter={hIn} onMouseLeave={hOut}>
+        <button style={circleBtn} title="Tin nhắn" onMouseEnter={hIn} onMouseLeave={hOut}>
           <MessageSquare size={15} />
           <span style={badgeDot}>2</span>
         </button>
 
         {/* Notifications badge 1 */}
-        <button style={circleBtn} title="Notifications" onMouseEnter={hIn} onMouseLeave={hOut}>
+        <button style={circleBtn} title="Thông báo" onMouseEnter={hIn} onMouseLeave={hOut}>
           <Bell size={15} />
           <span style={badgeDot}>1</span>
         </button>
 
         {/* Avatar */}
         <div
-          title="Licensed device"
+          title="Thiết bị được cấp phép"
           style={{
             width: 36, height: 36, borderRadius: '50%',
             background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)',

@@ -231,7 +231,7 @@ export function CommandDashboard() {
           { label: t('cmd.tasks_run'),  val: stats?.running ?? '—', icon: 'play-circle' },
           { label: t('cmd.tasks_pend'), val: stats?.pending ?? '—', icon: 'clock' },
           { label: t('cmd.tasks_fail'), val: stats?.failed  ?? '—', warn: (stats?.failed ?? 0) > 5, icon: 'cross-circle' },
-          { label: t('cmd.operator'),   val: 'Licensed device', icon: 'user' },
+          { label: t('cmd.operator'),   val: 'Thiết bị đã được cấp phép', icon: 'user' },
         ].map(({ label, val, warn, icon }) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <GlassIcon name={icon as any} size={14} style={{ opacity: 0.5 }} />

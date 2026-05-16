@@ -648,7 +648,7 @@ body,
 
 .toggle-thumb {
   position: absolute;
-  top: 3px;
+  top: 50%;
   left: 3px;
   width: 14px;
   height: 14px;
@@ -657,10 +657,11 @@ body,
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
   transition: transform 0.2s;
   pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .toggle input:checked~.toggle-thumb {
-  transform: translateX(1rem);
+  transform: translate(1rem, -50%);
 }
 
 /* ── Live Feed ───────────────────────────────────────────────────────────── */

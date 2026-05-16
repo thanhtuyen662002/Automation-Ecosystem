@@ -608,6 +608,8 @@ async def confirm_manual_login(account_id: str, database: DatabaseDependency) ->
 
     if _env_bool("ADSPOWER_VERIFY_AFTER_LOGIN", default=False):
         diagnostic = await _verify_adspower_login_after_confirmation(account_id, row, metadata, database)
+        if not isinstance(diagnostic, dict):
+            raise HTTPException(status_code=500, detail="AdsPower verification returned no diagnostic")
 
     updated = await database.mark_account_manual_login_confirmed(
         account_id,
@@ -766,28 +768,52 @@ async def _verify_adspower_login_after_confirmation(
 
     cfg = get_platform_config(row["platform"])
     session = await database.get_account_session(account_id) or {}
-    provider = make_browser_provider({**row, "account_id": account_id, "metadata": metadata}, session=session)
+    provider = make_browser_provider(
+        {**row, "account_id": account_id, "metadata": metadata},
+        session=session,
+    )
 
-    async with async_playwright() as pw:
-        try:
+    LOGGER.info(
+        "account_manual_login_verify_start",
+        extra={
+            "event": "account_manual_login_verify_start",
+            "account_id": account_id,
+            "platform": row["platform"],
+        }
+    )
+
+    try:
+        async with async_playwright() as pw:
             async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_data_dir):
                 target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+
                 diagnostic_status = await classify_login_block(page)
                 if diagnostic_status in {
                     LoginBlockStatus.RATE_LIMITED,
                     LoginBlockStatus.CAPTCHA_REQUIRED,
                     LoginBlockStatus.CHECKPOINT_REQUIRED,
                 }:
+                    LOGGER.warning(
+                        "account_manual_login_verify_blocked",
+                        extra={
+                            "event": "account_manual_login_verify_blocked",
+                            "account_id": account_id,
+                            "platform": row["platform"],
+                            "diagnostic_status": diagnostic_status,
+                        }
+                    )
                     await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
-    
+
                 runtime = await collect_runtime_diagnostics(page, context)
-                cookies: list[dict[str, Any]] = []
+
                 try:
                     cookies = await context.cookies()
                 except Exception:
                     cookies = []
+
                 logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
+
                 diagnostic = {
                     "status": "verified" if logged_in else "not_connected",
                     "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
@@ -797,7 +823,16 @@ async def _verify_adspower_login_after_confirmation(
                     "session_source": "adspower_profile",
                     "runtime": runtime,
                 }
+
                 if not logged_in:
+                    LOGGER.warning(
+                        "account_manual_login_verify_not_connected",
+                        extra={
+                            "event": "account_manual_login_verify_not_connected",
+                            "account_id": account_id,
+                            "platform": row["platform"],
+                        }
+                    )
                     await database.patch_account_metadata(
                         account_id,
                         {
@@ -806,40 +841,63 @@ async def _verify_adspower_login_after_confirmation(
                         },
                     )
                     raise HTTPException(status_code=409, detail="SESSION_NOT_CONNECTED")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            error_detail = getattr(exc, "detail", "")
-            raise HTTPException(
-                status_code=502,
-                detail=f"AdsPower returned no valid Chrome DevTools endpoint. Error: {exc} {error_detail}"
-            ) from exc
-            if cookies:
-                try:
-                    user_agent = await page.evaluate("navigator.userAgent")
-                except Exception:
-                    user_agent = ""
-                try:
-                    fingerprint = await page.evaluate("""
-                        () => ({
-                            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                            locale: navigator.language || 'vi-VN',
-                            width: window.screen.width,
-                            height: window.screen.height,
-                        })
-                    """)
-                except Exception:
-                    fingerprint = {}
-                await database.save_account_session(
-                    account_id,
-                    encrypt_cookies(cookies),
-                    user_agent,
-                    viewport_width=fingerprint.get("width") or row.get("viewport_width") or 1280,
-                    viewport_height=fingerprint.get("height") or row.get("viewport_height") or 720,
-                    timezone=fingerprint.get("timezone") or row.get("timezone") or "Asia/Ho_Chi_Minh",
-                    locale=fingerprint.get("locale") or row.get("locale") or "vi-VN",
+
+                if cookies:
+                    try:
+                        user_agent = await page.evaluate("navigator.userAgent")
+                    except Exception:
+                        user_agent = ""
+
+                    try:
+                        fingerprint = await page.evaluate("""
+                            () => ({
+                                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                                locale: navigator.language || 'vi-VN',
+                                width: window.screen.width,
+                                height: window.screen.height,
+                            })
+                        """)
+                    except Exception:
+                        fingerprint = {}
+
+                    await database.save_account_session(
+                        account_id,
+                        encrypt_cookies(cookies),
+                        user_agent,
+                        viewport_width=fingerprint.get("width") or row.get("viewport_width") or 1280,
+                        viewport_height=fingerprint.get("height") or row.get("viewport_height") or 720,
+                        timezone=fingerprint.get("timezone") or row.get("timezone") or "Asia/Ho_Chi_Minh",
+                        locale=fingerprint.get("locale") or row.get("locale") or "vi-VN",
+                    )
+
+                LOGGER.info(
+                    "account_manual_login_verify_success",
+                    extra={
+                        "event": "account_manual_login_verify_success",
+                        "account_id": account_id,
+                        "platform": row["platform"],
+                        "cookies_captured": bool(cookies),
+                    }
                 )
-            return diagnostic
+                return diagnostic
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        error_detail = getattr(exc, "detail", "")
+        LOGGER.error(
+            "account_manual_login_verify_error",
+            extra={
+                "event": "account_manual_login_verify_error",
+                "account_id": account_id,
+                "error": str(exc),
+                "error_detail": error_detail,
+            }
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"AdsPower returned no valid Chrome DevTools endpoint. Error: {exc} {error_detail}",
+        ) from exc
 
 
 def _metadata_dict(row: dict) -> dict:

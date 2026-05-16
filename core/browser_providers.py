@@ -267,7 +267,16 @@ class AdsPowerManualProvider:
                 "profile_id": self.profile_id,
             },
         )
-        browser = await pw.chromium.connect_over_cdp(debug_endpoint)
+        try:
+            browser = await pw.chromium.connect_over_cdp(debug_endpoint)
+        except Exception as exc:
+            from core.adspower_client import AdsPowerClientError, ADSPOWER_START_FAILED
+            raise AdsPowerClientError(
+                ADSPOWER_START_FAILED,
+                f"AdsPower returned an endpoint but Playwright failed to connect: {exc}",
+                detail={"debug_endpoint": debug_endpoint}
+            ) from exc
+            
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
         try:

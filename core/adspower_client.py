@@ -69,24 +69,33 @@ class AdsPowerClient:
         self._ensure_success(payload, default_code=ADSPOWER_START_FAILED)
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         
-        endpoint, source = _extract_debug_endpoint(data)
+        endpoint, source, rejected = await _resolve_cdp_endpoint(data, profile_id=profile_id)
+        if not endpoint:
+            ws_keys = list(data.get("ws").keys()) if isinstance(data.get("ws"), dict) else []
+            raise AdsPowerClientError(
+                ADSPOWER_START_FAILED,
+                "AdsPower profile started but did not return a valid CDP endpoint",
+                detail={
+                    "profile_id": profile_id,
+                    "data_keys": list(data.keys()),
+                    "ws_keys": ws_keys,
+                    "rejected_candidates": rejected,
+                },
+            )
         
         ws_keys = list(data.get("ws").keys()) if isinstance(data.get("ws"), dict) else []
-        safe_endpoint = endpoint
-        if safe_endpoint:
-            parsed = urlparse(safe_endpoint)
-            if parsed.query:
-                safe_endpoint = safe_endpoint.replace(parsed.query, "TOKEN_HIDDEN")
+        safe_endpoint = _safe_endpoint(endpoint)
                 
         LOGGER.info(
             "adspower_debug_endpoint_selected",
             extra={
                 "event": "adspower_debug_endpoint_selected",
                 "profile_id": profile_id,
+                "selected_source": source,
+                "selected_endpoint_safe": safe_endpoint,
                 "data_keys": list(data.keys()),
                 "ws_keys": ws_keys,
-                "selected_source": source,
-                "selected_endpoint": safe_endpoint,
+                "rejected_count": len(rejected),
             }
         )
 
@@ -210,72 +219,116 @@ def _to_optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _is_cdp_endpoint(endpoint: str) -> bool:
-    text = str(endpoint or "").strip()
-    if not text.startswith(("ws://", "wss://", "http://", "https://")):
-        return False
+async def _probe_http_cdp_endpoint(endpoint: str) -> str | None:
+    url = endpoint.rstrip("/") + "/json/version"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        ws_url = data.get("webSocketDebuggerUrl")
+        return ws_url if isinstance(ws_url, str) and ws_url.startswith(("ws://", "wss://")) else None
+    except Exception:
+        return None
 
-    parsed = urlparse(text)
-    path = (parsed.path or "").lower()
-
-    # AdsPower sometimes returns Playwright/Selenium endpoint like /session.
-    # This is NOT a Chrome DevTools Protocol endpoint for connect_over_cdp().
-    if path.rstrip("/") == "/session" or "/session/" in path:
-        return False
-
-    # Strong CDP signal.
-    if "/devtools/browser/" in path:
-        return True
-
-    # HTTP host:port is accepted by Playwright connect_over_cdp;
-    # Playwright will resolve /json/version internally.
-    if text.startswith(("http://", "https://")) and parsed.hostname and parsed.port:
-        return True
-
-    # Some AdsPower versions return ws://host:port without explicit devtools path.
-    # Allow it only if it is not /session.
-    if text.startswith(("ws://", "wss://")) and parsed.hostname and parsed.port and path in ("", "/"):
-        return True
-
-    return False
-
-
-def _endpoint_host_port_only(endpoint: str) -> str:
+def _safe_endpoint(endpoint: str | None) -> str | None:
+    if not endpoint:
+        return None
     parsed = urlparse(endpoint)
-    return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.query:
+        return endpoint.replace(parsed.query, "TOKEN_HIDDEN")
+    return endpoint
 
-
-def _extract_debug_endpoint(data: dict[str, Any]) -> tuple[str | None, str]:
+async def _resolve_cdp_endpoint(data: dict[str, Any], profile_id: str) -> tuple[str | None, str, list[dict[str, Any]]]:
     ws = data.get("ws")
+    
+    if isinstance(ws, dict):
+        puppeteer_val = _to_optional_str(ws.get("puppeteer"))
+        if puppeteer_val:
+            LOGGER.info(
+                "adspower_ws_puppeteer_debug",
+                extra={
+                    "event": "adspower_ws_puppeteer_debug",
+                    "ws_puppeteer_present": True,
+                    "ws_puppeteer_safe": _safe_endpoint(puppeteer_val)
+                }
+            )
 
     candidates: list[tuple[str, Any]] = []
 
     if isinstance(ws, dict):
-        # Prefer CDP/Puppeteer endpoint over Playwright/Selenium session endpoint.
-        for key in ("puppeteer", "cdp", "debug_endpoint", "debugEndpoint"):
-            candidates.append((f"ws.{key}", ws.get(key)))
-
-    for key in ("puppeteer", "cdp", "debug_endpoint", "debugEndpoint"):
-        candidates.append((key, data.get(key)))
-
+        candidates.append(("ws.puppeteer", ws.get("puppeteer")))
+    candidates.append(("puppeteer", data.get("puppeteer")))
+    if isinstance(ws, dict):
+        candidates.append(("ws.cdp", ws.get("cdp")))
+    candidates.append(("cdp", data.get("cdp")))
+    candidates.append(("debug_endpoint", data.get("debug_endpoint")))
+    candidates.append(("debugEndpoint", data.get("debugEndpoint")))
     if isinstance(ws, str):
         candidates.append(("ws", ws))
-
     if isinstance(ws, dict):
-        # Only fallback to ws.playwright if it is actually CDP-like, not /session.
         candidates.append(("ws.playwright", ws.get("playwright")))
-
-    for source, value in candidates:
-        endpoint = _to_optional_str(value)
-        if endpoint and _is_cdp_endpoint(endpoint):
-            return endpoint, source
-
+    
     debug_port = _to_optional_str(data.get("debug_port") or data.get("debugPort"))
     if debug_port:
         try:
             port = int(debug_port)
-            return f"http://127.0.0.1:{port}", "debug_port"
+            candidates.append(("debug_port", f"http://127.0.0.1:{port}"))
         except ValueError:
             pass
 
-    return None, "none"
+    rejected = []
+
+    for source, value in candidates:
+        endpoint = _to_optional_str(value)
+        if not endpoint:
+            continue
+
+        if source == "ws.selenium":
+            reason = "Selenium endpoints are not CDP compatible"
+            rejected.append({"source": source, "endpoint_safe": _safe_endpoint(endpoint), "reason": reason})
+            continue
+
+        text = endpoint.strip()
+        parsed = urlparse(text)
+        path = (parsed.path or "").lower()
+
+        if path.rstrip("/") == "/session" or "/session/" in path:
+            reason = "Endpoint has /session path (Playwright/Selenium style, not CDP)"
+            rejected.append({"source": source, "endpoint_safe": _safe_endpoint(endpoint), "reason": reason})
+            LOGGER.info(
+                "adspower_cdp_candidate_rejected",
+                extra={
+                    "event": "adspower_cdp_candidate_rejected",
+                    "profile_id": profile_id,
+                    "source": source,
+                    "endpoint_safe": _safe_endpoint(endpoint),
+                    "reason": reason,
+                }
+            )
+            continue
+
+        if text.startswith(("ws://", "wss://")):
+            return text, source, rejected
+
+        if text.startswith(("http://", "https://")):
+            ws_url = await _probe_http_cdp_endpoint(text)
+            if ws_url:
+                return ws_url, f"{source}.json_version", rejected
+            reason = "/json/version probe failed or did not return webSocketDebuggerUrl"
+            rejected.append({"source": source, "endpoint_safe": _safe_endpoint(endpoint), "reason": reason})
+            
+            LOGGER.info(
+                "adspower_cdp_candidate_rejected",
+                extra={
+                    "event": "adspower_cdp_candidate_rejected",
+                    "profile_id": profile_id,
+                    "source": source,
+                    "endpoint_safe": _safe_endpoint(endpoint),
+                    "reason": reason,
+                }
+            )
+            continue
+
+    return None, "none", rejected

@@ -663,17 +663,24 @@ async def get_browser_diagnostic(account_id: str, database: DatabaseDependency) 
     account_for_provider = {**row, "account_id": account_id, "metadata": metadata}
     provider = make_browser_provider(account_for_provider, session=session, identity_profile=None)
     async with async_playwright() as pw:
-        async with provider.open_publisher_context(pw, headless=False) as (context, page, opened_data_dir):
-            target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
-            runtime = await collect_runtime_diagnostics(page, context)
-            return {
-                "account_id": account_id,
-                "platform": row["platform"],
-                "browser_provider": browser_provider,
-                "profile": str(opened_data_dir),
-                "diagnostic": runtime,
-            }
+        try:
+            async with provider.open_publisher_context(pw, headless=False) as (context, page, opened_data_dir):
+                target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+                runtime = await collect_runtime_diagnostics(page, context)
+                return {
+                    "account_id": account_id,
+                    "platform": row["platform"],
+                    "browser_provider": browser_provider,
+                    "profile": str(opened_data_dir),
+                    "diagnostic": runtime,
+                }
+        except Exception as exc:
+            error_detail = getattr(exc, "detail", "")
+            raise HTTPException(
+                status_code=502,
+                detail=f"AdsPower returned no valid Chrome DevTools endpoint. Error: {exc} {error_detail}"
+            ) from exc
 
 
 async def _open_adspower_manual_login(
@@ -762,42 +769,51 @@ async def _verify_adspower_login_after_confirmation(
     provider = make_browser_provider({**row, "account_id": account_id, "metadata": metadata}, session=session)
 
     async with async_playwright() as pw:
-        async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_data_dir):
-            target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
-            diagnostic_status = await classify_login_block(page)
-            if diagnostic_status in {
-                LoginBlockStatus.RATE_LIMITED,
-                LoginBlockStatus.CAPTCHA_REQUIRED,
-                LoginBlockStatus.CHECKPOINT_REQUIRED,
-            }:
-                await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
-
-            runtime = await collect_runtime_diagnostics(page, context)
-            cookies: list[dict[str, Any]] = []
-            try:
-                cookies = await context.cookies()
-            except Exception:
-                cookies = []
-            logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
-            diagnostic = {
-                "status": "verified" if logged_in else "not_connected",
-                "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
-                "verified_at": datetime.now(UTC).isoformat(),
-                "verification_mode": "cdp_after_confirmation",
-                "cookies_captured": bool(cookies),
-                "session_source": "adspower_profile",
-                "runtime": runtime,
-            }
-            if not logged_in:
-                await database.patch_account_metadata(
-                    account_id,
-                    {
-                        "manual_login_state": "verification_failed",
-                        "last_login_diagnostic": diagnostic,
-                    },
-                )
-                raise HTTPException(status_code=409, detail="SESSION_NOT_CONNECTED")
+        try:
+            async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_data_dir):
+                target_url = "https://www.tiktok.com/" if row["platform"].lower() == "tiktok" else cfg.login_url
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+                diagnostic_status = await classify_login_block(page)
+                if diagnostic_status in {
+                    LoginBlockStatus.RATE_LIMITED,
+                    LoginBlockStatus.CAPTCHA_REQUIRED,
+                    LoginBlockStatus.CHECKPOINT_REQUIRED,
+                }:
+                    await _raise_login_block(account_id, row["platform"], diagnostic_status, database)
+    
+                runtime = await collect_runtime_diagnostics(page, context)
+                cookies: list[dict[str, Any]] = []
+                try:
+                    cookies = await context.cookies()
+                except Exception:
+                    cookies = []
+                logged_in = await _looks_logged_in(page, context, row["platform"], cfg.success_url_fragment)
+                diagnostic = {
+                    "status": "verified" if logged_in else "not_connected",
+                    "provider": BROWSER_PROVIDER_ADSPOWER_MANUAL,
+                    "verified_at": datetime.now(UTC).isoformat(),
+                    "verification_mode": "cdp_after_confirmation",
+                    "cookies_captured": bool(cookies),
+                    "session_source": "adspower_profile",
+                    "runtime": runtime,
+                }
+                if not logged_in:
+                    await database.patch_account_metadata(
+                        account_id,
+                        {
+                            "manual_login_state": "verification_failed",
+                            "last_login_diagnostic": diagnostic,
+                        },
+                    )
+                    raise HTTPException(status_code=409, detail="SESSION_NOT_CONNECTED")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            error_detail = getattr(exc, "detail", "")
+            raise HTTPException(
+                status_code=502,
+                detail=f"AdsPower returned no valid Chrome DevTools endpoint. Error: {exc} {error_detail}"
+            ) from exc
             if cookies:
                 try:
                     user_agent = await page.evaluate("navigator.userAgent")

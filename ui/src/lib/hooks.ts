@@ -116,6 +116,16 @@ export function useSystemStats() {
   });
 }
 
+// ── System Deep Health ────────────────────────────────────────────────────────
+export function useDeepHealth() {
+  return useQuery({
+    queryKey: ['deepHealth'],
+    queryFn: api.deepHealth,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+}
+
 // ── Decision Feed (Command Dashboard primary data source) ─────────────────────
 export function useDecisions(limit = 5) {
   return useQuery({

@@ -39,6 +39,18 @@ async function request<T>(
   return res.json();
 }
 
+export type DeepHealthResponse = {
+  status: string;
+  database: { ok: boolean; error: string | null };
+  scheduler: { running: boolean };
+  worker: { running: boolean };
+  execution: {
+    can_execute_tasks: boolean;
+    worker_required: boolean;
+    mode: string;
+  };
+};
+
 export const api = {
   licenseStatus: () =>
     request<LicenseResponse>('/api/license/status'),
@@ -124,6 +136,7 @@ export const api = {
     request(`/api/v1/fleet-health/${id}/clear-cooldown`, { method: 'POST', body: '{}' }),
 
   stats: () => request<any>('/system/stats'),
+  deepHealth: () => request<DeepHealthResponse>('/system/health/deep'),
 
   decisions: (limit = 5) =>
     request<any[]>(`/api/v1/system/decisions?limit=${limit}`),

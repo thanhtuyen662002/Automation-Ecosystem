@@ -25,6 +25,7 @@ $env:WORKER_ID="worker-1"
 Optional worker settings:
 
 ```powershell
+$env:API_WORKER_ENABLED="true"
 $env:WORKER_MAX_CONCURRENCY="4"
 $env:WORKER_BATCH_SIZE="10"
 $env:WORKER_POLL_INTERVAL_SECONDS="2"
@@ -36,6 +37,7 @@ $env:WORKER_RETRY_MAX_DELAY_SECONDS="300"
 $env:WORKER_MAX_PER_TASK_TYPE="2"
 $env:WORKER_MAX_PER_ACCOUNT="1"
 $env:WORKER_LOG_LEVEL="INFO"
+$env:PUBLISH_WAIT_APPROVAL_MAX_RETRIES="288"
 ```
 
 ## Database
@@ -53,7 +55,9 @@ $env:PYTHONPATH="."
 uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Set `API_WORKER_ENABLED=false` only when you are running a separate worker process.
+`API_WORKER_ENABLED=true` is the default. Set `API_WORKER_ENABLED=false` only when you are running a separate worker process.
+
+`PUBLISH_WAIT_APPROVAL_MAX_RETRIES` controls how many times an auto-publish task waits for artifact approval before exhausting its task retry budget. The default is `288`.
 
 ## Run A Worker
 

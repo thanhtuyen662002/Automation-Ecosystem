@@ -19,7 +19,12 @@ from database.database import (
     TaskRecord,
     TaskStatus,
 )
-from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
+from workers.worker_runtime import (
+    RetryableDependencyError,
+    WorkerRuntime,
+    WorkerRuntimeSettings,
+    _retry_exhausted,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +100,49 @@ def _make_settings(**overrides) -> WorkerRuntimeSettings:
     return WorkerRuntimeSettings(**defaults)
 
 
+def _make_publish_task(
+    account_id,
+    *,
+    retry_count: int = 4,
+    max_retries: int = 5,
+) -> TaskRecord:
+    task = _make_task(task_type="publish_tiktok", retry_count=retry_count, max_retries=max_retries)
+    return TaskRecord(
+        **{
+            **task.__dict__,
+            "payload": {
+                "account_id": str(account_id),
+                "video_path": "media/output.mp4",
+                "caption": "caption",
+            },
+        }
+    )
+
+
+def _fake_publish_account_connection():
+    class _Cursor:
+        async def fetchone(self):
+            return {
+                "platform": "tiktok",
+                "account_handle": "@acct",
+                "proxy_url": None,
+                "status": "healthy",
+            }
+
+    class _Conn:
+        async def execute(self, *_args, **_kwargs):
+            return _Cursor()
+
+    class _Connection:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    return lambda: _Connection()
+
+
 # ---------------------------------------------------------------------------
 # Tests: lease-expiry decision logic
 # ---------------------------------------------------------------------------
@@ -152,6 +200,14 @@ class TestRecoveryRetryDelay(unittest.TestCase):
         cfg = RetryConfig(base_delay_seconds=60, max_delay_seconds=120)
         for attempt in range(10):
             self.assertLessEqual(cfg.delay_for_attempt(attempt), 120)
+
+
+class TestWorkerRetryBudget(unittest.TestCase):
+    """Retryable dependency failures honor the per-task max_retries budget."""
+
+    def test_retry_exhaustion_uses_task_max_retries(self) -> None:
+        self.assertFalse(_retry_exhausted(6, 288))
+        self.assertTrue(_retry_exhausted(5, 5))
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +332,93 @@ class TestWorkerRuntimeRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_kwargs["task_id"], str(task.id))
         self.assertEqual(call_kwargs["execution_id"], str(execution.id))
         self.assertEqual(call_kwargs["delay_seconds"], 80)
+        mock_db.mark_task_for_retry.assert_not_awaited()
+
+    async def test_missing_artifact_registration_does_not_consume_retry_budget(self) -> None:
+        settings = _make_settings(retry_base_delay_seconds=5, retry_max_delay_seconds=300)
+        mock_db = AsyncMock()
+        mock_db.open = AsyncMock()
+        mock_db.close = AsyncMock()
+        mock_db.get_policy_rules = AsyncMock(return_value=[])
+        mock_db.get_artifact_by_storage_uri = AsyncMock(return_value=None)
+        mock_db.mark_task_waiting_for_retry = AsyncMock()
+        mock_db.mark_task_for_retry = AsyncMock()
+        mock_db.mark_task_failure = AsyncMock()
+        mock_db.update_execution_heartbeat = AsyncMock(return_value=True)
+        mock_db.connection = _fake_publish_account_connection()
+
+        runtime = WorkerRuntime(settings=settings, database=mock_db)
+
+        async def should_not_publish(_payload):
+            raise AssertionError("publish handler should wait for artifact registration")
+
+        runtime.register_task("publish_tiktok", should_not_publish)
+
+        account_id = uuid4()
+        task = _make_publish_task(account_id, retry_count=4, max_retries=5)
+        execution = _make_execution(task.id)
+        acquired = AcquiredTask(task=task, execution=execution)
+
+        await runtime._run_acquired_task(acquired)
+
+        mock_db.mark_task_waiting_for_retry.assert_awaited_once()
+        call_kwargs = mock_db.mark_task_waiting_for_retry.call_args.kwargs
+        self.assertEqual(call_kwargs["task_id"], str(task.id))
+        self.assertEqual(call_kwargs["execution_id"], str(execution.id))
+        self.assertEqual(call_kwargs["delay_seconds"], 80)
+        self.assertIn("not_found", str(call_kwargs["error"]))
+        mock_db.mark_task_for_retry.assert_not_awaited()
+        mock_db.mark_task_failure.assert_not_awaited()
+
+    async def test_retryable_dependency_uses_large_task_retry_budget(self) -> None:
+        settings = _make_settings(retry_base_delay_seconds=5, retry_max_delay_seconds=300)
+        mock_db = AsyncMock()
+        mock_db.open = AsyncMock()
+        mock_db.close = AsyncMock()
+        mock_db.mark_task_for_retry = AsyncMock()
+        mock_db.mark_task_failure = AsyncMock()
+        mock_db.update_execution_heartbeat = AsyncMock(return_value=True)
+
+        runtime = WorkerRuntime(settings=settings, database=mock_db)
+
+        async def dependency_not_ready(_payload):
+            raise RetryableDependencyError("dependency not ready")
+
+        runtime.register_task("ai", dependency_not_ready)
+
+        task = _make_task(task_type="ai", retry_count=6, max_retries=288)
+        execution = _make_execution(task.id)
+        acquired = AcquiredTask(task=task, execution=execution)
+
+        await runtime._run_acquired_task(acquired)
+
+        mock_db.mark_task_for_retry.assert_awaited_once()
+        self.assertEqual(mock_db.mark_task_for_retry.call_args.kwargs["delay_seconds"], 300)
+        mock_db.mark_task_failure.assert_not_awaited()
+
+    async def test_retryable_dependency_fails_when_task_retry_budget_exhausted(self) -> None:
+        settings = _make_settings(retry_base_delay_seconds=5, retry_max_delay_seconds=300)
+        mock_db = AsyncMock()
+        mock_db.open = AsyncMock()
+        mock_db.close = AsyncMock()
+        mock_db.mark_task_for_retry = AsyncMock()
+        mock_db.mark_task_failure = AsyncMock()
+        mock_db.update_execution_heartbeat = AsyncMock(return_value=True)
+
+        runtime = WorkerRuntime(settings=settings, database=mock_db)
+
+        async def dependency_not_ready(_payload):
+            raise RetryableDependencyError("dependency not ready")
+
+        runtime.register_task("ai", dependency_not_ready)
+
+        task = _make_task(task_type="ai", retry_count=5, max_retries=5)
+        execution = _make_execution(task.id)
+        acquired = AcquiredTask(task=task, execution=execution)
+
+        await runtime._run_acquired_task(acquired)
+
+        mock_db.mark_task_failure.assert_awaited_once()
         mock_db.mark_task_for_retry.assert_not_awaited()
 
 

@@ -12,6 +12,28 @@ LOGGER = logging.getLogger("api.system")
 router = APIRouter(prefix="/system", tags=["system"])
 
 
+def _deep_health_payload(
+    *,
+    db_ok: bool,
+    db_error: str | None,
+    scheduler_running: bool,
+    worker_running: bool,
+) -> dict[str, object]:
+    can_execute_tasks = worker_running
+    healthy = db_ok and scheduler_running and can_execute_tasks
+    return {
+        "status": "ok" if healthy else "degraded",
+        "database": {"ok": db_ok, "error": db_error},
+        "scheduler": {"running": scheduler_running},
+        "worker": {"running": worker_running},
+        "execution": {
+            "can_execute_tasks": can_execute_tasks,
+            "worker_required": True,
+            "mode": "all_in_one" if worker_running else "api_only_or_worker_missing",
+        },
+    }
+
+
 @router.post("/dispatch", response_model=DispatchResponse)
 async def dispatch_tasks(
     request: DispatchRequest,
@@ -63,7 +85,13 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
     worker_runtime = getattr(request.app.state, "worker_runtime", None)
     scheduler_running = bool(getattr(scheduler, "is_running", False))
     worker_running = bool(getattr(worker_runtime, "is_running", False))
-    healthy = db_ok and scheduler_running
+    payload = _deep_health_payload(
+        db_ok=db_ok,
+        db_error=db_error,
+        scheduler_running=scheduler_running,
+        worker_running=worker_running,
+    )
+    can_execute_tasks = worker_running
 
     LOGGER.info(
         "system_deep_health_read",
@@ -72,11 +100,7 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
             "db_ok": db_ok,
             "scheduler_running": scheduler_running,
             "worker_running": worker_running,
+            "can_execute_tasks": can_execute_tasks,
         },
     )
-    return {
-        "status": "ok" if healthy else "degraded",
-        "database": {"ok": db_ok, "error": db_error},
-        "scheduler": {"running": scheduler_running},
-        "worker": {"running": worker_running},
-    }
+    return payload

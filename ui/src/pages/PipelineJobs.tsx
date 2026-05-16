@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import { PageHeader, Badge, SlideOver, EmptyState, Skeleton } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useAccounts, useJobs, useLaunchPipeline } from '@/lib/hooks';
+import { useAccounts, useDeepHealth, useJobs, useLaunchPipeline } from '@/lib/hooks';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 
@@ -100,6 +100,7 @@ export function PipelineJobs() {
   const { t } = useI18n();
   const { data: jobs = [], isLoading, error, refetch } = useJobs();
   const { data: accounts = [] } = useAccounts();
+  const { data: health } = useDeepHealth();
   const launch = useLaunchPipeline();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showLaunch, setShowLaunch] = useState(false);
@@ -121,6 +122,7 @@ export function PipelineJobs() {
   const accountReady = (account: AccountSummary) =>
     Boolean(account.session_valid) && account.metadata?.manual_login_state === 'connected_by_confirmation';
   const accountDisabled = (account: AccountSummary) => autoPublish ? !account.can_publish : !accountReady(account);
+  const workerWarning = health?.execution?.can_execute_tasks === false || health?.worker?.running === false;
 
   function toggle(id: string) {
     setExpanded(prev => {
@@ -183,6 +185,24 @@ export function PipelineJobs() {
           </div>
         }
       />
+
+      {workerWarning && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          border: '1px solid var(--warning, var(--border))',
+          background: 'var(--surface-2)',
+          borderRadius: 'var(--radius-sm)',
+          marginBottom: '1rem',
+          color: 'var(--text-secondary)',
+          fontSize: '0.8125rem',
+          display: 'flex',
+          gap: '0.5rem',
+          alignItems: 'flex-start',
+        }}>
+          <GlassIcon name="warning" size={14} style={{ flexShrink: 0, marginTop: '0.1rem' }} />
+          <span>{t('job.worker_not_running_warning')}</span>
+        </div>
+      )}
 
       {isLoading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

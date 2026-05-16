@@ -105,8 +105,12 @@ class FatalDependencyError(Exception):
     pass
 
 
-# Hard ceiling on automatic retries regardless of max_retries setting.
-MAX_PUBLISH_RETRY_LIMIT: int = 5
+def _retry_exhausted(retry_count: int, max_retries: int) -> bool:
+    return retry_count >= max_retries
+
+
+def _retry_delay(base_delay_seconds: int, max_delay_seconds: int, retry_count: int) -> int:
+    return min(base_delay_seconds * (2 ** retry_count), max_delay_seconds)
 
 
 class WorkerRuntime:
@@ -297,12 +301,12 @@ class WorkerRuntime:
                             )
                         artifact = await self.database.get_artifact_by_storage_uri(str(video_path))
                         if artifact is None:
-                            raise RetryableDependencyError(
+                            raise PendingApprovalError(
                                 json.dumps({
                                     "error_code": ErrorCode.ARTIFACT_NOT_APPROVED,
                                     "video_path": str(video_path),
                                     "artifact_status": "not_found",
-                                    "message": f"Artifact '{video_path}' is not registered yet; publish will retry.",
+                                    "message": f"Artifact '{video_path}' is not registered yet; publish will wait.",
                                 })
                             )
                         if artifact["status"] == "rejected":
@@ -341,9 +345,10 @@ class WorkerRuntime:
                 duration_ms=_duration_ms(started_at),
             )
         except PendingApprovalError as exc:
-            delay = min(
-                self.settings.retry_base_delay_seconds * (2 ** acquired_task.task.retry_count),
+            delay = _retry_delay(
+                self.settings.retry_base_delay_seconds,
                 self.settings.retry_max_delay_seconds,
+                acquired_task.task.retry_count,
             )
             await self.database.mark_task_waiting_for_retry(
                 task_id=str(acquired_task.task.id),
@@ -359,12 +364,14 @@ class WorkerRuntime:
                 task_type=acquired_task.task.task_type,
                 status="retry",
                 retry_count=acquired_task.task.retry_count,
+                max_retries=acquired_task.task.max_retries,
                 error=str(exc),
             )
         except RetryableDependencyError as exc:
             retry_count = acquired_task.task.retry_count
+            max_retries = acquired_task.task.max_retries
             # ── Max retry guard: stop infinite retry loops ──
-            if retry_count > MAX_PUBLISH_RETRY_LIMIT:
+            if _retry_exhausted(retry_count, max_retries):
                 log_event(
                     "task_retry_limit_exceeded",
                     self.settings.worker_id,
@@ -373,6 +380,7 @@ class WorkerRuntime:
                     task_type=acquired_task.task.task_type,
                     status="failed",
                     retry_count=retry_count,
+                    max_retries=max_retries,
                     error=str(exc),
                 )
                 await self.database.mark_task_failure(
@@ -382,9 +390,10 @@ class WorkerRuntime:
                     timed_out=False,
                 )
             else:
-                delay = min(
-                    self.settings.retry_base_delay_seconds * (2 ** retry_count),
-                    self.settings.retry_max_delay_seconds
+                delay = _retry_delay(
+                    self.settings.retry_base_delay_seconds,
+                    self.settings.retry_max_delay_seconds,
+                    retry_count,
                 )
                 await self.database.mark_task_for_retry(
                     task_id=str(acquired_task.task.id),

@@ -23,6 +23,19 @@ def test_normalize_top_n_clamps_env_default(monkeypatch: pytest.MonkeyPatch) -> 
     assert _normalize_top_n(None) == 10
 
 
+def test_publish_wait_approval_max_retries_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.routes.tiktok import _publish_wait_approval_max_retries
+
+    monkeypatch.delenv("PUBLISH_WAIT_APPROVAL_MAX_RETRIES", raising=False)
+    assert _publish_wait_approval_max_retries() == 288
+
+    monkeypatch.setenv("PUBLISH_WAIT_APPROVAL_MAX_RETRIES", "24")
+    assert _publish_wait_approval_max_retries() == 24
+
+    monkeypatch.setenv("PUBLISH_WAIT_APPROVAL_MAX_RETRIES", "0")
+    assert _publish_wait_approval_max_retries() == 1
+
+
 @pytest.mark.asyncio
 async def test_create_tiktok_pipeline_payload_includes_search_and_download_account(
     monkeypatch: pytest.MonkeyPatch,
@@ -33,6 +46,7 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
 
     account_id = uuid4()
     monkeypatch.setenv("TIKTOK_TOP_N", "20")
+    monkeypatch.setenv("PUBLISH_WAIT_APPROVAL_MAX_RETRIES", "24")
 
     class FakeDatabase:
         def __init__(self) -> None:
@@ -117,6 +131,7 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
         product_url="https://example.com/product",
         account_id=account_id,
         min_views=12345,
+        auto_publish=True,
     )
 
     response = await create_tiktok_pipeline(request, database)  # type: ignore[arg-type]
@@ -124,6 +139,7 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     search_task = next(task for task in database.tasks if task["task_type"] == "tiktok.search_tiktok")
     select_task = next(task for task in database.tasks if task["task_type"] == "tiktok.select_videos")
     download_task = next(task for task in database.tasks if task["task_type"] == "tiktok.download_videos")
+    publish_task = next(task for task in database.tasks if task["task_type"] == "publish_tiktok")
 
     assert response.workflow_name == "tiktok_content_pipeline"
     assert response.metadata["top_n"] == 10
@@ -132,3 +148,4 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     assert search_task["payload"]["min_views"] == 12345
     assert select_task["payload"]["top_n"] == 10
     assert download_task["payload"]["account_id"] == str(account_id)
+    assert publish_task["max_retries"] == 24

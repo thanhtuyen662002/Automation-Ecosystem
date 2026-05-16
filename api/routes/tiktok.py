@@ -53,6 +53,10 @@ def _normalize_top_n(value: int | None) -> int:
     return max(1, min(10, int(raw)))
 
 
+def _publish_wait_approval_max_retries() -> int:
+    return max(1, int(os.environ.get("PUBLISH_WAIT_APPROVAL_MAX_RETRIES", "288")))
+
+
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 async def create_tiktok_pipeline(
     request: TikTokPipelineRequest,
@@ -76,6 +80,7 @@ async def create_tiktok_pipeline(
     min_views = request.min_views or int(os.environ.get("TIKTOK_MIN_VIEWS", "10000"))
     min_likes = request.min_likes or int(os.environ.get("TIKTOK_MIN_LIKES", "500"))
     top_n = _normalize_top_n(request.top_n)
+    publish_wait_max_retries = _publish_wait_approval_max_retries()
 
     if request.account_id is None:
         raise HTTPException(status_code=422, detail="account_id is required for TikTok search")
@@ -211,7 +216,7 @@ async def create_tiktok_pipeline(
                     "caption": {"from_task": _KEY_CONTENT, "field": "caption"},
                 },
                 "metadata": {"pipeline": "tiktok", "step": 8, "requires_artifact_approval": True},
-                "max_retries": 5,
+                "max_retries": publish_wait_max_retries,
                 "depends_on": [_KEY_REMAKE, _KEY_CONTENT],
             }
         )

@@ -36,7 +36,11 @@ async function request<T>(
         : `API ${res.status}: ${path}`;
     throw new Error(message);
   }
-  return res.json();
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export type DeepHealthResponse = {
@@ -49,6 +53,83 @@ export type DeepHealthResponse = {
     worker_required: boolean;
     mode: string;
   };
+};
+
+export type AiKey = {
+  id: string;
+  provider_id: string;
+  label: string;
+  key_preview: string;
+  enabled: boolean;
+  priority: number;
+  last_used_at: number | null;
+  last_error: string | null;
+  failure_count: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type AiModel = {
+  id: string;
+  provider_id: string;
+  model_name: string;
+  display_name: string;
+  enabled: boolean;
+  is_default: boolean;
+  max_tokens: number | null;
+  temperature_default: number | null;
+  priority: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type AiProvider = {
+  id: string;
+  provider: string;
+  display_name: string;
+  base_url: string | null;
+  enabled: boolean;
+  priority: number;
+  created_at: number;
+  updated_at: number;
+  keys: AiKey[];
+  models: AiModel[];
+};
+
+export type AiProviderPayload = {
+  provider: string;
+  display_name: string;
+  base_url?: string | null;
+  enabled?: boolean;
+  priority?: number;
+};
+
+export type AiKeyPayload = {
+  label?: string;
+  raw_key?: string;
+  enabled?: boolean;
+  priority?: number;
+};
+
+export type AiModelPayload = {
+  model_name?: string;
+  display_name?: string;
+  enabled?: boolean;
+  is_default?: boolean;
+  max_tokens?: number | null;
+  temperature_default?: number | null;
+  priority?: number;
+};
+
+export type AiTestPayload = {
+  provider_id?: string | null;
+  provider?: string | null;
+  model_id?: string | null;
+  model_name?: string | null;
+  key_id?: string | null;
+  prompt?: string;
+  max_tokens?: number;
+  temperature?: number;
 };
 
 export const api = {
@@ -211,4 +292,58 @@ export const api = {
 
   deletePolicyRule: (id: string) =>
     request<void>(`/api/v1/policy-rules/${id}`, { method: 'DELETE' }),
+
+  aiProviders: () =>
+    request<{ items: AiProvider[] }>('/api/v1/admin/ai/providers'),
+
+  createAiProvider: (payload: AiProviderPayload) =>
+    request<AiProvider>('/api/v1/admin/ai/providers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAiProvider: (id: string, payload: Partial<AiProviderPayload>) =>
+    request<AiProvider>(`/api/v1/admin/ai/providers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteAiProvider: (id: string) =>
+    request<void>(`/api/v1/admin/ai/providers/${id}`, { method: 'DELETE' }),
+
+  createAiKey: (providerId: string, payload: Required<Pick<AiKeyPayload, 'label' | 'raw_key'>> & Pick<AiKeyPayload, 'enabled' | 'priority'>) =>
+    request<AiKey>(`/api/v1/admin/ai/providers/${providerId}/keys`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAiKey: (keyId: string, payload: AiKeyPayload) =>
+    request<AiKey>(`/api/v1/admin/ai/keys/${keyId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteAiKey: (keyId: string) =>
+    request<void>(`/api/v1/admin/ai/keys/${keyId}`, { method: 'DELETE' }),
+
+  createAiModel: (providerId: string, payload: Required<Pick<AiModelPayload, 'model_name' | 'display_name'>> & AiModelPayload) =>
+    request<AiModel>(`/api/v1/admin/ai/providers/${providerId}/models`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAiModel: (modelId: string, payload: AiModelPayload) =>
+    request<AiModel>(`/api/v1/admin/ai/models/${modelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteAiModel: (modelId: string) =>
+    request<void>(`/api/v1/admin/ai/models/${modelId}`, { method: 'DELETE' }),
+
+  testAiProvider: (payload: AiTestPayload) =>
+    request<{ ok: boolean; text: string; elapsed_ms: number }>('/api/v1/admin/ai/test', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };

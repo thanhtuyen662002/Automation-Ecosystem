@@ -498,7 +498,14 @@ async def generate_content_handler(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
             t0 = time.monotonic()
-            raw_text = await generate_text(prompt, max_tokens=600, temperature=1.1)
+            try:
+                raw_text = await generate_text(prompt, max_tokens=600, temperature=1.1)
+            except RuntimeError as exc:
+                if "No usable AI provider key configured" in str(exc):
+                    raise RuntimeError(
+                        "No usable AI provider key configured. Open Settings -> AI Providers and add an enabled key/model."
+                    ) from exc
+                raise
             elapsed_s = time.monotonic() - t0
 
             parsed = _parse_json_response(raw_text)

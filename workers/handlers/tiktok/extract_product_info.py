@@ -12,7 +12,7 @@ Output result:
   keywords:     list[str]
   ok:           bool
 
-AI provider: Google Gemini (GEMINI_API_KEY + GEMINI_MODEL env vars).
+AI provider: Google Gemini configured in Settings -> AI Providers.
 Vision supported: passes PIL.Image for product_image_path inputs.
 Runs Gemini SDK in thread executor to stay non-blocking.
 """
@@ -28,10 +28,9 @@ from typing import Any
 from workers.handlers.tiktok._base import (
     check_already_processed,
     fetch_url_text,
-    get_gemini_api_key,
-    get_gemini_model,
     random_jitter,
 )
+from core.ai_key_store import get_enabled_candidates, mark_key_failure, mark_key_success
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.extract_product_info")
 
@@ -70,15 +69,6 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
     # ── Lazy imports (keep startup fast) ─────────────────────────────────────
     import google.generativeai as genai  # type: ignore[import]
 
-    api_key = get_gemini_api_key()
-    model_name = get_gemini_model()
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=_SYSTEM_PROMPT,
-    )
-
     generation_config = genai.types.GenerationConfig(  # type: ignore[attr-defined]
         temperature=0.3,
         max_output_tokens=512,
@@ -115,13 +105,48 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
         content.append("Analyze the product and return the JSON.")
 
     # ── Call Gemini in thread executor (SDK is synchronous) ───────────────────
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: model.generate_content(content, generation_config=generation_config),
-    )
+    candidates = get_enabled_candidates(preferred_provider="gemini")
+    if not candidates:
+        raise RuntimeError(
+            "No usable AI provider key configured. Open Settings -> AI Providers and add an enabled Gemini key/model."
+        )
 
-    raw_text = (response.text or "").strip()
+    loop = asyncio.get_event_loop()
+    raw_text = ""
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            genai.configure(api_key=candidate.raw_key)
+            model = genai.GenerativeModel(
+                model_name=candidate.model_name,
+                system_instruction=_SYSTEM_PROMPT,
+            )
+            response = await loop.run_in_executor(
+                None,
+                lambda: model.generate_content(content, generation_config=generation_config),
+            )
+            raw_text = (response.text or "").strip()
+            if candidate.key_id:
+                mark_key_success(candidate.key_id)
+            break
+        except Exception as exc:
+            if candidate.key_id:
+                mark_key_failure(candidate.key_id, exc)
+            errors.append(f"{candidate.provider}/{candidate.model_name}: {exc}")
+            LOGGER.warning(
+                "extract_product_info_ai_candidate_failed",
+                extra={
+                    "event": "extract_product_info_ai_candidate_failed",
+                    "provider": candidate.provider,
+                    "model": candidate.model_name,
+                    "key_preview": candidate.key_preview,
+                    "error": str(exc)[:300],
+                },
+            )
+    else:
+        raise RuntimeError(
+            "All configured AI providers failed. Errors:\n" + "\n".join(f"  - {error}" for error in errors)
+        )
     parsed = _parse_json_response(raw_text)
 
     title: str = str(parsed.get("title", "")).strip() or "Unknown Product"

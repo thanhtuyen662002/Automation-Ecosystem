@@ -28,6 +28,7 @@ const ROUTE_META: Record<string, { title: string; section: string }> = {
   '/settings/general': { title: 'Cài Đặt Chung', section: 'Hệ Thống' },
   '/settings/advanced': { title: 'Nâng Cao', section: 'Hệ Thống' },
   '/settings/policy': { title: 'Chính Sách', section: 'Hệ Thống' },
+  '/settings/ai': { title: 'AI Providers', section: 'Hệ Thống' },
   '/admin/licenses': { title: 'Quản Lý License', section: 'Quản Trị' },
 };
 

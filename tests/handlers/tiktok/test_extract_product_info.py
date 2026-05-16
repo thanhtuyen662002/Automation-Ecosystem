@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_gemini_response(text: str) -> MagicMock:
@@ -22,10 +22,26 @@ def _make_gemini_response(text: str) -> MagicMock:
 def _gemini_patches(mock_response: MagicMock, page_text: str = "<html>product page</html>"):
     """
     Return a context-manager stack that patches:
-      - GEMINI_API_KEY / GEMINI_MODEL helpers
+      - AI key store Gemini candidates
       - google.generativeai.configure / GenerativeModel
       - fetch_url_text and random_jitter (async helpers)
     """
+    from core.ai_key_store import AICandidate
+
+    candidate = AICandidate(
+        provider_id="provider-gemini",
+        provider="gemini",
+        display_name="Google Gemini",
+        base_url=None,
+        model_id="model-gemini",
+        model_name="gemini-1.5-flash",
+        model_display_name="Gemini Flash",
+        max_tokens=None,
+        temperature_default=None,
+        key_id="key-gemini",
+        key_preview="tes...key",
+        raw_key="test-gemini-key",
+    )
     mock_model = MagicMock()
     mock_model.generate_content.return_value = mock_response
 
@@ -34,8 +50,9 @@ def _gemini_patches(mock_response: MagicMock, page_text: str = "<html>product pa
 
     from unittest.mock import patch as _patch
     return (
-        _patch("workers.handlers.tiktok.extract_product_info.get_gemini_api_key", return_value="test-gemini-key"),
-        _patch("workers.handlers.tiktok.extract_product_info.get_gemini_model", return_value="gemini-1.5-flash"),
+        _patch("workers.handlers.tiktok.extract_product_info.get_enabled_candidates", return_value=[candidate]),
+        _patch("workers.handlers.tiktok.extract_product_info.mark_key_success"),
+        _patch("workers.handlers.tiktok.extract_product_info.mark_key_failure"),
         _patch("workers.handlers.tiktok.extract_product_info.random_jitter", new=AsyncMock()),
         _patch("workers.handlers.tiktok.extract_product_info.fetch_url_text", new=AsyncMock(return_value=page_text)),
         _patch("google.generativeai.configure"),
@@ -56,7 +73,7 @@ async def test_extract_product_info_url():
     mock_response = _make_gemini_response(good_json)
 
     patches = _gemini_patches(mock_response)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
         payload = {"product_url": "https://example.com/product"}
         result = await extract_product_info_handler(payload)
 
@@ -92,7 +109,7 @@ async def test_extract_product_info_malformed_llm_response():
     mock_response = _make_gemini_response("sorry I cannot help with that")
 
     patches = _gemini_patches(mock_response, page_text="some page content")
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
         result = await extract_product_info_handler({"product_url": "https://example.com"})
 
     assert result["ok"] is True
@@ -112,7 +129,7 @@ async def test_extract_product_info_keywords_fallback():
     mock_response = _make_gemini_response(partial_json)
 
     patches = _gemini_patches(mock_response)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
         result = await extract_product_info_handler({"product_url": "https://example.com"})
 
     assert result["ok"] is True

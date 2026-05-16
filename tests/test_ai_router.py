@@ -1,162 +1,93 @@
-"""
-tests/test_ai_router.py
-────────────────────────
-Unit tests for core.ai_router.generate_text.
-
-All external I/O is mocked — no real API calls are made.
-Tests verify:
-  1. Gemini succeeds on first try → returned immediately
-  2. Gemini fails → HuggingFace succeeds → fallback logged
-  3. Gemini + HF fail → Pollinations succeeds → full fallback chain
-  4. All providers fail → RuntimeError raised
-  5. Gemini times out → fallback to HuggingFace
-"""
-
 from __future__ import annotations
 
-import asyncio
+import inspect
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+@pytest.fixture()
+def isolated_ai_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_KEY_STORE_DB", str(tmp_path / "ai_keys.db"))
+    monkeypatch.setenv("AI_KEYS_MASTER_KEY_PATH", str(tmp_path / "secrets" / "ai_keys_master.key"))
+    from core import ai_key_store
 
-GOOD_TEXT = '{"caption": "test", "hashtags": [], "hook": "h", "cta": "c"}'
+    ai_key_store.reset_store_for_tests()
+    yield ai_key_store
+    ai_key_store.reset_store_for_tests()
 
-
-def _make_hf_response(text: str):
-    """Minimal mock for an httpx Response returning HF JSON."""
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = [{"generated_text": text}]
-    return mock_resp
-
-
-def _make_pollinations_response(text: str):
-    """Minimal mock for an httpx Response returning plain text."""
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.text = text
-    return mock_resp
-
-
-# ── Test 1: Gemini succeeds ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_gemini_success():
-    """Router returns Gemini output without touching other providers."""
-    with (
-        patch("core.ai_router._get_env", return_value="fake-gemini-key"),
-        patch("core.ai_router._call_gemini", new=AsyncMock(return_value=GOOD_TEXT)) as mock_gemini,
-        patch("core.ai_router._call_huggingface", new=AsyncMock()) as mock_hf,
-        patch("core.ai_router._call_pollinations", new=AsyncMock()) as mock_poll,
-    ):
-        from core.ai_router import generate_text
-        result = await generate_text("test prompt")
+async def test_generate_text_ignores_env_keys_when_store_empty(isolated_ai_store, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "env-gemini-key")
+    monkeypatch.setenv("HF_API_KEY", "env-hf-key")
 
-    assert result == GOOD_TEXT
-    mock_gemini.assert_awaited_once()
-    mock_hf.assert_not_awaited()
-    mock_poll.assert_not_awaited()
+    from core.ai_router import generate_text
+
+    with pytest.raises(RuntimeError, match="No usable AI provider key configured"):
+        await generate_text("hello")
 
 
-# ── Test 2: Gemini fails → HuggingFace succeeds ───────────────────────────────
+def test_ai_router_source_does_not_read_provider_key_envs():
+    import core.ai_router as router
+
+    source = inspect.getsource(router)
+    assert "OPENAI_API_KEY" not in source
+    assert "GEMINI_API_KEY" not in source
+    assert "HF_API_KEY" not in source
+    assert "_get_env" not in source
+
 
 @pytest.mark.asyncio
-async def test_gemini_fail_hf_success(caplog):
-    """Fallback from Gemini to HuggingFace is triggered and logged."""
-    import logging
+async def test_generate_text_falls_back_to_next_key_and_marks_failure(isolated_ai_store, monkeypatch):
+    store = isolated_ai_store
+    openai = next(provider for provider in store.list_providers() if provider["provider"] == "openai")
+    default_model = next(model for model in openai["models"] if model["is_default"])
+    bad_key = store.create_key(openai["id"], "Bad key", "bad-key", enabled=True, priority=10)
+    good_key = store.create_key(openai["id"], "Good key", "good-key", enabled=True, priority=20)
 
-    async def _fail(*_a, **_kw):
-        raise RuntimeError("Gemini API error")
+    async def fake_openai(candidate, *_args):
+        if candidate.raw_key == "bad-key":
+            raise RuntimeError("rejected key")
+        return "ok from fallback"
 
-    with (
-        patch("core.ai_router._call_gemini", new=_fail),
-        patch("core.ai_router._call_huggingface", new=AsyncMock(return_value=GOOD_TEXT)) as mock_hf,
-        patch("core.ai_router._call_pollinations", new=AsyncMock()) as mock_poll,
-        patch("core.ai_router.asyncio.sleep", new=AsyncMock()),  # skip retry back-off
-    ):
-        with caplog.at_level(logging.WARNING, logger="core.ai_router"):
-            from core.ai_router import generate_text
-            result = await generate_text("test prompt")
+    import core.ai_router as router
 
-    assert result == GOOD_TEXT
-    mock_hf.assert_awaited()
-    mock_poll.assert_not_awaited()
-    # Fallback event must be logged
-    assert any("ai_router_fallback" in r.message or "fallback" in r.message.lower()
-               for r in caplog.records)
+    monkeypatch.setattr(router, "_PROVIDER_RETRIES", 0)
+    monkeypatch.setitem(router._PROVIDER_CALLS, "openai", fake_openai)
 
+    result = await router.generate_text(
+        "test",
+        preferred_provider=openai["id"],
+        preferred_model=default_model["id"],
+    )
 
-# ── Test 3: Gemini + HF fail → Pollinations succeeds ─────────────────────────
+    assert result == "ok from fallback"
+    keys = {key["id"]: key for key in store.list_providers()[0]["keys"]}
+    assert keys[bad_key["id"]]["failure_count"] == 1
+    assert keys[bad_key["id"]]["last_error"] == "rejected key"
+    assert keys[good_key["id"]]["failure_count"] == 0
+    assert keys[good_key["id"]]["last_used_at"] is not None
+
 
 @pytest.mark.asyncio
-async def test_full_fallback_chain():
-    """Full cascade: Gemini fail → HF fail → Pollinations success."""
+async def test_generate_text_raises_clear_error_when_every_key_fails(isolated_ai_store, monkeypatch):
+    store = isolated_ai_store
+    openai = next(provider for provider in store.list_providers() if provider["provider"] == "openai")
+    default_model = next(model for model in openai["models"] if model["is_default"])
+    store.create_key(openai["id"], "Only key", "bad-key", enabled=True, priority=10)
 
-    async def _fail(*_a, **_kw):
+    async def fake_openai(*_args):
         raise RuntimeError("provider down")
 
-    with (
-        patch("core.ai_router._call_gemini", new=_fail),
-        patch("core.ai_router._call_huggingface", new=_fail),
-        patch("core.ai_router._call_pollinations", new=AsyncMock(return_value=GOOD_TEXT)) as mock_poll,
-        patch("core.ai_router.asyncio.sleep", new=AsyncMock()),
-    ):
-        from core.ai_router import generate_text
-        result = await generate_text("test prompt")
+    import core.ai_router as router
 
-    assert result == GOOD_TEXT
-    mock_poll.assert_awaited()
+    monkeypatch.setattr(router, "_PROVIDER_RETRIES", 0)
+    monkeypatch.setitem(router._PROVIDER_CALLS, "openai", fake_openai)
 
-
-# ── Test 4: All providers fail → RuntimeError ─────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_all_providers_fail():
-    """RuntimeError is raised when every provider is exhausted."""
-
-    async def _fail(*_a, **_kw):
-        raise RuntimeError("total failure")
-
-    with (
-        patch("core.ai_router._call_gemini", new=_fail),
-        patch("core.ai_router._call_huggingface", new=_fail),
-        patch("core.ai_router._call_pollinations", new=_fail),
-        patch("core.ai_router.asyncio.sleep", new=AsyncMock()),
-    ):
-        from core.ai_router import generate_text
-        with pytest.raises(RuntimeError, match="All AI providers failed"):
-            await generate_text("test prompt")
-
-
-# ── Test 5: Gemini timeout → fallback to HuggingFace ─────────────────────────
-
-@pytest.mark.asyncio
-async def test_gemini_timeout_triggers_fallback():
-    """A provider that exceeds the timeout is treated as a failure and triggers fallback."""
-
-    # Simulate the TimeoutError that asyncio.wait_for raises when Gemini is too slow.
-    # We patch _call_with_retry to raise TimeoutError for gemini only.
-    original_call_with_retry = None
-
-    async def _selective_retry(provider_fn, provider_name, prompt, max_tokens, temperature):
-        """Let Gemini time out; let others succeed normally."""
-        if provider_name == "gemini":
-            raise asyncio.TimeoutError()
-        return await original_call_with_retry(provider_fn, provider_name, prompt, max_tokens, temperature)
-
-    import core.ai_router as router_module
-    original_call_with_retry = router_module._call_with_retry
-
-    with (
-        patch("core.ai_router._call_huggingface", new=AsyncMock(return_value=GOOD_TEXT)) as mock_hf,
-        patch("core.ai_router._call_pollinations", new=AsyncMock()) as mock_poll,
-        patch("core.ai_router._call_with_retry", side_effect=_selective_retry),
-        patch("core.ai_router.asyncio.sleep", new=AsyncMock()),
-    ):
-        from core.ai_router import generate_text
-        result = await generate_text("test prompt")
-
-    assert result == GOOD_TEXT
-    mock_poll.assert_not_awaited()
+    with pytest.raises(RuntimeError, match="All configured AI providers failed"):
+        await router.generate_text(
+            "test",
+            preferred_provider=openai["id"],
+            preferred_model=default_model["id"],
+        )

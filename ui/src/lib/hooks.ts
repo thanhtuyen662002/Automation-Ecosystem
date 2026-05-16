@@ -236,6 +236,99 @@ export function useDeletePolicyRule() {
   });
 }
 
+// AI Provider Settings
+export function useAiProviders() {
+  return useQuery({
+    queryKey: ['aiProviders'],
+    queryFn: api.aiProviders,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateAiProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createAiProvider,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useUpdateAiProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: Parameters<typeof api.updateAiProvider>[1] }) =>
+      api.updateAiProvider(id, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useDeleteAiProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteAiProvider,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useCreateAiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, payload }: { providerId: string; payload: Parameters<typeof api.createAiKey>[1] }) =>
+      api.createAiKey(providerId, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useUpdateAiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ keyId, payload }: { keyId: string; payload: Parameters<typeof api.updateAiKey>[1] }) =>
+      api.updateAiKey(keyId, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useDeleteAiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteAiKey,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useCreateAiModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, payload }: { providerId: string; payload: Parameters<typeof api.createAiModel>[1] }) =>
+      api.createAiModel(providerId, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useUpdateAiModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ modelId, payload }: { modelId: string; payload: Parameters<typeof api.updateAiModel>[1] }) =>
+      api.updateAiModel(modelId, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useDeleteAiModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteAiModel,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProviders'] }),
+  });
+}
+
+export function useTestAiProvider() {
+  return useMutation({
+    mutationFn: api.testAiProvider,
+  });
+}
+
 // ── Mutations ─────────────────────────────────────────────────────────────────
 export function useApproveContent() {
   const qc = useQueryClient();

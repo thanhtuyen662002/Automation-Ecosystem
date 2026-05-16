@@ -22,6 +22,7 @@ import { Overrides } from '@/pages/Overrides';
 import { SettingsGeneral } from '@/pages/SettingsGeneral';
 import { SettingsAdvanced } from '@/pages/SettingsAdvanced';
 import { SettingsPolicy } from '@/pages/SettingsPolicy';
+import { SettingsAI } from '@/pages/SettingsAI';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -97,6 +98,7 @@ export function App() {
               <Route path="settings/general" element={<SettingsGeneral />} />
               <Route path="settings/advanced" element={<SettingsAdvanced />} />
               <Route path="settings/policy" element={<SettingsPolicy />} />
+              <Route path="settings/ai" element={<SettingsAI />} />
               <Route path="*" element={<Navigate to="/dashboard/command" replace />} />
             </Route>
           </Routes>

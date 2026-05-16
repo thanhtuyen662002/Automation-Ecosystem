@@ -52,6 +52,7 @@ class LicenseGuard(BaseHTTPMiddleware):
         if response.status in {LicenseStatus.ACTIVE, LicenseStatus.ACTIVE_OFFLINE} and response.licensed:
             request.state.license_status = response.status.value
             request.state.license_id = (response.license or {}).get("id")
+            request.state.license_role = (response.license or {}).get("role")
             request.state.license_device_id = (response.device or {}).get("id")
             return await call_next(request)
 

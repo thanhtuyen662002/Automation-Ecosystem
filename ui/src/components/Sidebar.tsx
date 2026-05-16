@@ -128,6 +128,7 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         { to: '/settings/general', iconAsset: 'setting', label: t('nav.settings_gen') },
         { to: '/settings/advanced', iconAsset: 'puzzle', label: t('nav.settings_adv') },
         { to: '/settings/policy', iconAsset: 'shield', label: t('nav.settings_pol') },
+        { to: '/settings/ai', iconAsset: 'key', label: 'AI Providers' },
       ],
     },
   ];

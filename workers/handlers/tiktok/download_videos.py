@@ -32,12 +32,15 @@ from workers.handlers.tiktok._base import (
     resolve_parent_result,
     run_subprocess,
 )
+from workers.worker_runtime import FatalDependencyError
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.download_videos")
 
 _YTDLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 _TEMP_SUFFIXES = {".part", ".ytdl", ".temp", ".tmp", ".frag"}
 _VALID_MEDIA_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv"}
+_AUDIO_ONLY_SUFFIXES = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac"}
+_TRACKED_MEDIA_SUFFIXES = _VALID_MEDIA_SUFFIXES | _AUDIO_ONLY_SUFFIXES
 _PREVIEW_CHARS = 1200
 
 
@@ -82,6 +85,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     failed_downloads: list[dict[str, Any]] = []
     cookie_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     cookie_file: Path | None = None
+    cookie_user_agent: str | None = None
     cookie_export_attempted = False
 
     try:
@@ -144,7 +148,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     cookie_tmpdir = tempfile.TemporaryDirectory(prefix="ae_tiktok_cookies_")
                     cookie_file = Path(cookie_tmpdir.name) / "cookies.txt"
                     try:
-                        await _export_adspower_tiktok_cookies(account_id, cookie_file)
+                        cookie_user_agent = await _export_adspower_tiktok_cookies(account_id, cookie_file)
                     except Exception as cookie_exc:
                         attempt_errors.append({
                             "ok": False,
@@ -185,6 +189,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     index=idx,
                     mode="cookie_fallback",
                     cookies_file=cookie_file,
+                    user_agent=cookie_user_agent,
                 )
                 if fallback_attempt["ok"]:
                     downloaded = fallback_attempt["path"]
@@ -248,6 +253,11 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not video_paths:
         diagnostics = _format_download_failures(failed_downloads)
+        if _all_failures_are_permanent_download_failures(failed_downloads):
+            raise FatalDependencyError(
+                f"All {len(selected_videos)} videos failed permanently during download. "
+                f"URLs: {failed_urls[:3]}. {diagnostics}"
+            )
         raise RuntimeError(
             f"All {len(selected_videos)} videos failed to download. URLs: {failed_urls[:3]}. {diagnostics}"
         )
@@ -278,6 +288,7 @@ async def _attempt_ytdlp_download(
     index: int,
     mode: str,
     cookies_file: Path | None = None,
+    user_agent: str | None = None,
 ) -> dict[str, Any]:
     try:
         output = await _download_with_ytdlp(
@@ -285,6 +296,7 @@ async def _attempt_ytdlp_download(
             output_template,
             mode=mode,
             cookies_file=cookies_file,
+            user_agent=user_agent,
         )
     except SubprocessError as exc:
         matching_files = _matching_download_files(output_dir, index)
@@ -302,6 +314,7 @@ async def _attempt_ytdlp_download(
             "ok": False,
             "mode": mode,
             "error": str(exc),
+            "failure_kind": "http_403" if _is_http_403_error(str(exc), exc.stderr) else "yt_dlp_error",
             "returncode": exc.returncode,
             "stdout_preview": _preview(exc.stdout),
             "stderr_preview": _preview(exc.stderr),
@@ -322,7 +335,26 @@ async def _attempt_ytdlp_download(
 
     downloaded = _find_downloaded_file(output_dir, index)
     if downloaded is None:
-        error = "yt-dlp completed but output file was not found"
+        audio_files = _audio_only_download_files(matching_files)
+        if audio_files:
+            error = "yt-dlp produced audio-only file(s), no video file"
+            LOGGER.warning(
+                "download_video_audio_only",
+                extra={
+                    "event": "download_video_audio_only",
+                    "url": url,
+                    "index": index,
+                    "mode": mode,
+                    "output_template": output_template,
+                    "audio_files": audio_files,
+                    "stdout_preview": output["stdout_preview"],
+                    "stderr_preview": output["stderr_preview"],
+                    "printed_filepaths": output["printed_filepaths"],
+                    "matching_files": matching_files,
+                },
+            )
+        else:
+            error = "yt-dlp completed but output file was not found"
         LOGGER.warning(
             "download_video_missing_file_after_ytdlp",
             extra={
@@ -335,16 +367,19 @@ async def _attempt_ytdlp_download(
                 "stderr_preview": output["stderr_preview"],
                 "printed_filepaths": output["printed_filepaths"],
                 "matching_files": matching_files,
+                "audio_files": audio_files,
             },
         )
         return {
             "ok": False,
             "mode": mode,
             "error": error,
+            "failure_kind": "audio_only" if audio_files else "missing_output",
             "stdout_preview": output["stdout_preview"],
             "stderr_preview": output["stderr_preview"],
             "printed_filepaths": output["printed_filepaths"],
             "matching_files": matching_files,
+            "audio_files": audio_files,
         }
 
     return {
@@ -364,6 +399,7 @@ async def _download_with_ytdlp(
     *,
     mode: str,
     cookies_file: Path | None = None,
+    user_agent: str | None = None,
 ) -> dict[str, Any]:
     try:
         ytdlp_path = get_ytdlp_path()
@@ -371,6 +407,7 @@ async def _download_with_ytdlp(
         raise SubprocessError(str(exc)) from exc
 
     timeout = _download_timeout_seconds()
+    impersonate_target = _ytdlp_impersonate_target()
     args = [
         ytdlp_path,
         "--format", _YTDLP_FORMAT,
@@ -385,6 +422,10 @@ async def _download_with_ytdlp(
         "--print", "after_move:filepath",
         "--output", output_template,
     ]
+    if impersonate_target:
+        args.extend(["--impersonate", impersonate_target])
+    if user_agent:
+        args.extend(["--add-header", f"User-Agent:{user_agent}"])
     if cookies_file is not None:
         args.extend(["--cookies", str(cookies_file)])
     args.append(url)
@@ -396,6 +437,8 @@ async def _download_with_ytdlp(
             "command_mode": mode,
             "output_template": output_template,
             "cookies_used": cookies_file is not None,
+            "user_agent_used": bool(user_agent),
+            "impersonate_target": impersonate_target,
             "timeout_seconds": timeout,
             "yt_dlp_path": ytdlp_path,
         },
@@ -411,6 +454,8 @@ async def _download_with_ytdlp(
                 "command_mode": mode,
                 "output_template": output_template,
                 "cookies_used": cookies_file is not None,
+                "user_agent_used": bool(user_agent),
+                "impersonate_target": impersonate_target,
                 "returncode": exc.returncode,
                 "error": str(exc)[:500],
                 "stdout_preview": _preview(exc.stdout),
@@ -428,6 +473,8 @@ async def _download_with_ytdlp(
             "command_mode": mode,
             "output_template": output_template,
             "cookies_used": cookies_file is not None,
+            "user_agent_used": bool(user_agent),
+            "impersonate_target": impersonate_target,
             "stdout_preview": _preview(stdout),
             "stderr_preview": _preview(stderr),
             "printed_filepaths": printed_filepaths,
@@ -474,6 +521,10 @@ def _download_timeout_seconds() -> float:
     return max(10.0, timeout)
 
 
+def _ytdlp_impersonate_target() -> str:
+    return os.environ.get("TIKTOK_YTDLP_IMPERSONATE", "").strip()
+
+
 def _preview(text: str, max_chars: int = _PREVIEW_CHARS) -> str:
     return str(text or "").replace("\r", "\n").strip()[:max_chars]
 
@@ -487,7 +538,7 @@ def _extract_printed_filepaths(stdout: str) -> list[str]:
         lower = value.lower()
         if lower.startswith("[") and "]" in lower:
             continue
-        if Path(value).suffix.lower() in _VALID_MEDIA_SUFFIXES:
+        if Path(value).suffix.lower() in _TRACKED_MEDIA_SUFFIXES:
             paths.append(value)
     return paths[:10]
 
@@ -503,6 +554,8 @@ def _matching_download_files(output_dir: Path, idx: int) -> list[dict[str, Any]]
                 "size": stat.st_size,
                 "is_file": path.is_file(),
                 "is_temp": _is_temp_download_file(path),
+                "suffix": path.suffix.lower(),
+                "media_kind": "audio" if path.suffix.lower() in _AUDIO_ONLY_SUFFIXES else "video",
             })
         except OSError as exc:
             matches.append({
@@ -511,6 +564,35 @@ def _matching_download_files(output_dir: Path, idx: int) -> list[dict[str, Any]]
                 "error": str(exc)[:200],
             })
     return matches
+
+
+def _audio_only_download_files(matching_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        file_info
+        for file_info in matching_files
+        if str(file_info.get("suffix") or "").lower() in _AUDIO_ONLY_SUFFIXES
+        and bool(file_info.get("is_file", True))
+        and not bool(file_info.get("is_temp", False))
+        and int(file_info.get("size") or 0) > 0
+    ]
+
+
+def _is_http_403_error(*parts: str) -> bool:
+    text = "\n".join(str(part or "") for part in parts).lower()
+    return "403" in text and ("forbidden" in text or "http error 403" in text)
+
+
+def _all_failures_are_permanent_download_failures(failed_downloads: list[dict[str, Any]]) -> bool:
+    if not failed_downloads:
+        return False
+    permanent_kinds = {"audio_only", "http_403"}
+    for item in failed_downloads:
+        errors = item.get("attempt_errors") or []
+        if not errors:
+            return False
+        if not any(str(error.get("failure_kind") or "") in permanent_kinds for error in errors):
+            return False
+    return True
 
 
 def _remove_existing_attempt_files(output_dir: Path, idx: int) -> None:
@@ -573,7 +655,7 @@ def _is_temp_download_file(path: Path) -> bool:
     return False
 
 
-async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) -> None:
+async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) -> str | None:
     from core.browser_providers import (
         BROWSER_PROVIDER_ADSPOWER_MANUAL,
         account_metadata,
@@ -609,6 +691,10 @@ async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) ->
             async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_profile):
                 await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30_000)
                 await asyncio.sleep(random.uniform(1.5, 3.0))
+                try:
+                    user_agent = str(await page.evaluate("() => navigator.userAgent") or "").strip()
+                except Exception:
+                    user_agent = None
                 cookies = await context.cookies()
 
         tiktok_cookies = _require_tiktok_cookies(cookies, account_id)
@@ -619,8 +705,10 @@ async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) ->
                 "event": "download_cookie_file_exported",
                 "account_id": account_id,
                 "cookie_count": len(tiktok_cookies),
+                "user_agent_exported": bool(user_agent),
             },
         )
+        return user_agent
     finally:
         await database.close()
 
@@ -660,7 +748,7 @@ def _write_netscape_cookie_file(cookies: list[dict[str, Any]], path: Path) -> No
         include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
         cookie_path = _sanitize_cookie_field(cookie.get("path", "/")) or "/"
         secure = "TRUE" if bool(cookie.get("secure")) else "FALSE"
-        expires = int(float(cookie.get("expires") or 0))
+        expires = _normalize_cookie_expires(cookie.get("expires"))
         lines.append(
             "\t".join(
                 [
@@ -680,3 +768,11 @@ def _write_netscape_cookie_file(cookies: list[dict[str, Any]], path: Path) -> No
 
 def _sanitize_cookie_field(value: Any) -> str:
     return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _normalize_cookie_expires(value: Any) -> int:
+    try:
+        expires = int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, expires)

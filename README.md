@@ -40,6 +40,18 @@ $env:WORKER_LOG_LEVEL="INFO"
 $env:PUBLISH_WAIT_APPROVAL_MAX_RETRIES="288"
 ```
 
+TikTok video downloads use `yt-dlp`. Keep the extractor and impersonation
+dependency current, especially when TikTok starts returning 403 responses:
+
+```powershell
+python -m pip install -U yt-dlp curl-cffi
+$env:TIKTOK_DOWNLOAD_TIMEOUT_SECONDS="90"
+$env:TIKTOK_YTDLP_IMPERSONATE="chrome"
+```
+
+`TIKTOK_YTDLP_IMPERSONATE` is optional. Set it when yt-dlp logs
+`no impersonate target is available` or TikTok blocks non-browser requests.
+
 ## Database
 
 Use `database/schema.sql` as the canonical local SQLite schema. It separates orchestration state in `tasks` from attempt state in `task_executions`.

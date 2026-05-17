@@ -304,6 +304,8 @@ async def _attempt_ytdlp_download(
         )
     except SubprocessError as exc:
         matching_files = _matching_download_files(output_dir, index)
+        is_http_403 = _is_http_403_error(str(exc), exc.stderr)
+        error_message = _download_error_message(exc) if is_http_403 else str(exc)
         LOGGER.info(
             "download_video_attempt_files",
             extra={
@@ -317,8 +319,8 @@ async def _attempt_ytdlp_download(
         return {
             "ok": False,
             "mode": mode,
-            "error": str(exc),
-            "failure_kind": "http_403" if _is_http_403_error(str(exc), exc.stderr) else "yt_dlp_error",
+            "error": error_message,
+            "failure_kind": "http_403" if is_http_403 else "yt_dlp_error",
             "returncode": exc.returncode,
             "stdout_preview": _preview(exc.stdout),
             "stderr_preview": _preview(exc.stderr),
@@ -484,6 +486,7 @@ async def _download_with_ytdlp(
     try:
         stdout, stderr = await run_subprocess(*args, timeout=timeout)
     except SubprocessError as exc:
+        error_message = _download_error_message(exc)
         LOGGER.warning(
             "download_video_ytdlp_failed",
             extra={
@@ -496,7 +499,7 @@ async def _download_with_ytdlp(
                 "user_agent_used": bool(user_agent),
                 "impersonate_target": impersonate_target,
                 "returncode": exc.returncode,
-                "error": str(exc)[:500],
+                "error": error_message[:500],
                 "stdout_preview": _preview(exc.stdout),
                 "stderr_preview": _preview(exc.stderr),
             },
@@ -592,11 +595,11 @@ async def _probe_video_stream(path: Path) -> dict[str, Any]:
 
 
 def _download_timeout_seconds() -> float:
-    raw = os.environ.get("TIKTOK_DOWNLOAD_TIMEOUT_SECONDS", "90").strip()
+    raw = os.environ.get("TIKTOK_DOWNLOAD_TIMEOUT_SECONDS", "120").strip()
     try:
         timeout = float(raw)
     except ValueError:
-        timeout = 90.0
+        timeout = 120.0
     return max(10.0, timeout)
 
 
@@ -608,21 +611,37 @@ def _ytdlp_impersonate_target() -> str:
     return os.environ.get("TIKTOK_YTDLP_IMPERSONATE", "").strip()
 
 
+def get_ytdlp_impersonation_dependency_warning() -> dict[str, str] | None:
+    impersonate_target = _ytdlp_impersonate_target()
+    if not impersonate_target:
+        return None
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return None
+    return {
+        "code": "download_ytdlp_impersonate_dependency_missing",
+        "message": "TIKTOK_YTDLP_IMPERSONATE is enabled but curl_cffi is not installed.",
+        "impersonate_target": impersonate_target,
+        "install_command": "pip install -U yt-dlp curl-cffi",
+    }
+
+
 def _warn_if_impersonation_dependency_missing() -> None:
     global _IMPERSONATION_DEPENDENCY_WARNED
 
-    impersonate_target = _ytdlp_impersonate_target()
-    if not impersonate_target or _IMPERSONATION_DEPENDENCY_WARNED:
+    if _IMPERSONATION_DEPENDENCY_WARNED:
         return
-    if importlib.util.find_spec("curl_cffi") is not None:
+    warning = get_ytdlp_impersonation_dependency_warning()
+    if warning is None:
         return
     _IMPERSONATION_DEPENDENCY_WARNED = True
     LOGGER.warning(
         "download_ytdlp_impersonate_dependency_missing",
         extra={
             "event": "download_ytdlp_impersonate_dependency_missing",
-            "impersonate_target": impersonate_target,
-            "install_command": "pip install -U yt-dlp curl-cffi",
+            "code": warning["code"],
+            "warning_message": warning["message"],
+            "impersonate_target": warning["impersonate_target"],
+            "install_command": warning["install_command"],
         },
     )
 
@@ -682,6 +701,12 @@ def _audio_only_download_files(matching_files: list[dict[str, Any]]) -> list[dic
 def _is_http_403_error(*parts: str) -> bool:
     text = "\n".join(str(part or "") for part in parts).lower()
     return "403" in text and ("forbidden" in text or "http error 403" in text)
+
+
+def _download_error_message(exc: SubprocessError) -> str:
+    if _is_http_403_error(str(exc), exc.stderr):
+        return "TikTok blocked yt-dlp with HTTP 403 even with cookies/impersonation."
+    return str(exc)
 
 
 def _all_failures_are_permanent_download_failures(failed_downloads: list[dict[str, Any]]) -> bool:

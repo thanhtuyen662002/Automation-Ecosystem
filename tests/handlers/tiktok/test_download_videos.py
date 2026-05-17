@@ -298,7 +298,10 @@ async def test_download_all_http_403_is_fatal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "_download_with_ytdlp", fake_download)
 
-    with pytest.raises(FatalDependencyError, match="403"):
+    with pytest.raises(
+        FatalDependencyError,
+        match="TikTok blocked yt-dlp with HTTP 403 even with cookies/impersonation",
+    ):
         await module.download_videos_handler({
             "job_id": "job-1",
             "selected_videos": [{"url": "https://www.tiktok.com/@a/video/1"}],

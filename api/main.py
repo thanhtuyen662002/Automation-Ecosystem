@@ -30,6 +30,7 @@ from database.database import (
     ValidationError,
 )
 from workers.handlers import register_default_handlers
+from workers.handlers.tiktok.download_videos import _warn_if_impersonation_dependency_missing
 from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
 
 
@@ -103,6 +104,7 @@ def configure_json_logging(level: str = "INFO") -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_json_logging()
+    _warn_if_impersonation_dependency_missing()
     settings = ApiSettings.from_env()
     database = AutomationDatabase(settings.database_url)
     await database.open()

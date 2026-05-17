@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 
 from api.dependencies import DatabaseDependency, WorkflowManagerDependency
 from api.schemas import DispatchRequest, DispatchResponse, SystemStatsResponse
+from workers.handlers.tiktok.download_videos import get_ytdlp_impersonation_dependency_warning
 
 
 LOGGER = logging.getLogger("api.system")
@@ -21,6 +22,9 @@ def _deep_health_payload(
 ) -> dict[str, object]:
     can_execute_tasks = worker_running
     healthy = db_ok and scheduler_running and can_execute_tasks
+    warnings = []
+    if warning := get_ytdlp_impersonation_dependency_warning():
+        warnings.append(warning)
     return {
         "status": "ok" if healthy else "degraded",
         "database": {"ok": db_ok, "error": db_error},
@@ -31,6 +35,7 @@ def _deep_health_payload(
             "worker_required": True,
             "mode": "all_in_one" if worker_running else "api_only_or_worker_missing",
         },
+        "warnings": warnings,
     }
 
 
@@ -101,6 +106,7 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
             "scheduler_running": scheduler_running,
             "worker_running": worker_running,
             "can_execute_tasks": can_execute_tasks,
+            "warning_count": len(payload.get("warnings", [])),
         },
     )
     return payload

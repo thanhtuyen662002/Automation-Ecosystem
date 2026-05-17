@@ -16,6 +16,8 @@ Output result:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import json
 import logging
 import os
 import random
@@ -36,12 +38,13 @@ from workers.worker_runtime import FatalDependencyError
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.download_videos")
 
-_YTDLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+_DEFAULT_YTDLP_FORMAT = "bestvideo*+bestaudio/best[ext=mp4]/best"
 _TEMP_SUFFIXES = {".part", ".ytdl", ".temp", ".tmp", ".frag"}
 _VALID_MEDIA_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv"}
 _AUDIO_ONLY_SUFFIXES = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac"}
 _TRACKED_MEDIA_SUFFIXES = _VALID_MEDIA_SUFFIXES | _AUDIO_ONLY_SUFFIXES
 _PREVIEW_CHARS = 1200
+_IMPERSONATION_DEPENDENCY_WARNED = False
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +70,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     base_output_dir = get_media_output_dir()
     output_dir = base_output_dir / job_id / "downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
+    _warn_if_impersonation_dependency_missing()
 
     LOGGER.info(
         "download_videos_start",
@@ -382,6 +386,37 @@ async def _attempt_ytdlp_download(
             "audio_files": audio_files,
         }
 
+    probe = await _probe_video_stream(downloaded)
+    if not probe.get("has_video"):
+        error = "Downloaded media has no video stream"
+        LOGGER.warning(
+            "download_video_audio_only",
+            extra={
+                "event": "download_video_audio_only",
+                "url": url,
+                "index": index,
+                "mode": mode,
+                "path": str(downloaded),
+                "probe": probe,
+                "stdout_preview": output["stdout_preview"],
+                "stderr_preview": output["stderr_preview"],
+                "printed_filepaths": output["printed_filepaths"],
+                "matching_files": matching_files,
+            },
+        )
+        return {
+            "ok": False,
+            "mode": mode,
+            "error": error,
+            "failure_kind": "audio_only" if probe.get("ok") else "probe_failed",
+            "path": downloaded,
+            "stdout_preview": output["stdout_preview"],
+            "stderr_preview": output["stderr_preview"],
+            "printed_filepaths": output["printed_filepaths"],
+            "matching_files": matching_files,
+            "probe": probe,
+        }
+
     return {
         "ok": True,
         "mode": mode,
@@ -408,9 +443,11 @@ async def _download_with_ytdlp(
 
     timeout = _download_timeout_seconds()
     impersonate_target = _ytdlp_impersonate_target()
+    ytdlp_format = _ytdlp_format()
+    _warn_if_impersonation_dependency_missing()
     args = [
         ytdlp_path,
-        "--format", _YTDLP_FORMAT,
+        "--format", ytdlp_format,
         "--merge-output-format", "mp4",
         "--no-playlist",
         "--restrict-filenames",
@@ -436,6 +473,7 @@ async def _download_with_ytdlp(
             "url": url,
             "command_mode": mode,
             "output_template": output_template,
+            "format": ytdlp_format,
             "cookies_used": cookies_file is not None,
             "user_agent_used": bool(user_agent),
             "impersonate_target": impersonate_target,
@@ -453,6 +491,7 @@ async def _download_with_ytdlp(
                 "url": url,
                 "command_mode": mode,
                 "output_template": output_template,
+                "format": ytdlp_format,
                 "cookies_used": cookies_file is not None,
                 "user_agent_used": bool(user_agent),
                 "impersonate_target": impersonate_target,
@@ -472,6 +511,7 @@ async def _download_with_ytdlp(
             "url": url,
             "command_mode": mode,
             "output_template": output_template,
+            "format": ytdlp_format,
             "cookies_used": cookies_file is not None,
             "user_agent_used": bool(user_agent),
             "impersonate_target": impersonate_target,
@@ -512,6 +552,45 @@ def _find_downloaded_file(output_dir: Path, idx: int) -> Path | None:
     return candidates[0][2]
 
 
+async def _probe_video_stream(path: Path) -> dict[str, Any]:
+    try:
+        stdout, stderr = await run_subprocess(
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "json",
+            str(path),
+            timeout=30.0,
+        )
+        data = json.loads(stdout or "{}")
+        streams = data.get("streams") or []
+        has_video = any(str(stream.get("codec_type") or "").lower() == "video" for stream in streams)
+        return {
+            "ok": True,
+            "has_video": has_video,
+            "stream_count": len(streams),
+            "stdout_preview": _preview(stdout),
+            "stderr_preview": _preview(stderr),
+        }
+    except SubprocessError as exc:
+        return {
+            "ok": False,
+            "has_video": False,
+            "error": str(exc),
+            "stdout_preview": _preview(exc.stdout),
+            "stderr_preview": _preview(exc.stderr),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "has_video": False,
+            "error": str(exc),
+            "stdout_preview": "",
+            "stderr_preview": "",
+        }
+
+
 def _download_timeout_seconds() -> float:
     raw = os.environ.get("TIKTOK_DOWNLOAD_TIMEOUT_SECONDS", "90").strip()
     try:
@@ -521,8 +600,31 @@ def _download_timeout_seconds() -> float:
     return max(10.0, timeout)
 
 
+def _ytdlp_format() -> str:
+    return os.environ.get("TIKTOK_YTDLP_FORMAT", _DEFAULT_YTDLP_FORMAT).strip() or _DEFAULT_YTDLP_FORMAT
+
+
 def _ytdlp_impersonate_target() -> str:
     return os.environ.get("TIKTOK_YTDLP_IMPERSONATE", "").strip()
+
+
+def _warn_if_impersonation_dependency_missing() -> None:
+    global _IMPERSONATION_DEPENDENCY_WARNED
+
+    impersonate_target = _ytdlp_impersonate_target()
+    if not impersonate_target or _IMPERSONATION_DEPENDENCY_WARNED:
+        return
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return
+    _IMPERSONATION_DEPENDENCY_WARNED = True
+    LOGGER.warning(
+        "download_ytdlp_impersonate_dependency_missing",
+        extra={
+            "event": "download_ytdlp_impersonate_dependency_missing",
+            "impersonate_target": impersonate_target,
+            "install_command": "pip install -U yt-dlp curl-cffi",
+        },
+    )
 
 
 def _preview(text: str, max_chars: int = _PREVIEW_CHARS) -> str:

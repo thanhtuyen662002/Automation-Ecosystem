@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -131,12 +132,27 @@ def test_find_downloaded_file_ignores_empty_and_invalid_files(tmp_path):
     assert _find_downloaded_file(tmp_path, 0) == webm_file
 
 
+def test_ytdlp_format_default_and_env_override(monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    monkeypatch.delenv("TIKTOK_YTDLP_FORMAT", raising=False)
+    assert module._ytdlp_format() == "bestvideo*+bestaudio/best[ext=mp4]/best"
+
+    monkeypatch.setenv("TIKTOK_YTDLP_FORMAT", "best")
+    assert module._ytdlp_format() == "best"
+
+
 @pytest.mark.asyncio
 async def test_download_uses_cookie_fallback_when_primary_creates_no_file(tmp_path, monkeypatch):
     from workers.handlers.tiktok import download_videos as module
 
     monkeypatch.setattr(module, "random_jitter", AsyncMock())
     monkeypatch.setattr(module, "get_media_output_dir", lambda: tmp_path)
+
+    async def fake_probe(_path):
+        return {"ok": True, "has_video": True, "stream_count": 1}
+
+    monkeypatch.setattr(module, "_probe_video_stream", fake_probe)
 
     async def fake_export_cookies(_account_id, cookie_file):
         cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
@@ -217,6 +233,33 @@ async def test_attempt_ytdlp_download_reports_audio_only(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_attempt_ytdlp_download_rejects_mp4_without_video_stream(tmp_path, monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    async def fake_download(_url, output_template, **_kwargs):
+        Path(output_template.replace("%(ext)s", "mp4")).write_bytes(b"audio in mp4")
+        return {"stdout_preview": "", "stderr_preview": "", "printed_filepaths": []}
+
+    async def fake_probe(_path):
+        return {"ok": True, "has_video": False, "stream_count": 0}
+
+    monkeypatch.setattr(module, "_download_with_ytdlp", fake_download)
+    monkeypatch.setattr(module, "_probe_video_stream", fake_probe)
+
+    result = await module._attempt_ytdlp_download(
+        url="https://www.tiktok.com/@a/video/1",
+        output_template=str(tmp_path / "video_00.%(ext)s"),
+        output_dir=tmp_path,
+        index=0,
+        mode="primary",
+    )
+
+    assert result["ok"] is False
+    assert result["failure_kind"] == "audio_only"
+    assert result["error"] == "Downloaded media has no video stream"
+
+
+@pytest.mark.asyncio
 async def test_download_all_audio_only_is_fatal(tmp_path, monkeypatch):
     from workers.handlers.tiktok import download_videos as module
     from workers.worker_runtime import FatalDependencyError
@@ -267,6 +310,7 @@ async def test_download_with_ytdlp_adds_user_agent_and_impersonate(monkeypatch):
     from workers.handlers.tiktok import download_videos as module
 
     monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
+    monkeypatch.setenv("TIKTOK_YTDLP_FORMAT", "best")
     monkeypatch.setattr(module, "get_ytdlp_path", lambda: "yt-dlp")
 
     captured_args: tuple[str, ...] = ()
@@ -287,5 +331,20 @@ async def test_download_with_ytdlp_adds_user_agent_and_impersonate(monkeypatch):
 
     assert "--impersonate" in captured_args
     assert "chrome" in captured_args
+    assert "--format" in captured_args
+    assert "best" in captured_args
     assert "--add-header" in captured_args
     assert "User-Agent:Mozilla/5.0 AdsPower" in captured_args
+
+
+def test_warns_when_impersonate_enabled_without_curl_cffi(monkeypatch, caplog):
+    from workers.handlers.tiktok import download_videos as module
+
+    monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(module, "_IMPERSONATION_DEPENDENCY_WARNED", False)
+
+    with caplog.at_level(logging.WARNING):
+        module._warn_if_impersonation_dependency_missing()
+
+    assert "download_ytdlp_impersonate_dependency_missing" in caplog.text

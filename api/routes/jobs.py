@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from api.dependencies import DatabaseDependency
 from api.schemas import JobCreateRequest, JobResponse, JobSummaryResponse
+from database.database import ConflictError
 
 
 LOGGER = logging.getLogger("api.jobs")
@@ -37,6 +38,17 @@ async def get_job(job_id: UUID, database: DatabaseDependency) -> JobResponse:
         raise HTTPException(status_code=404, detail="Job not found")
     LOGGER.info("job_read", extra={"event": "job_read", "job_id": str(job_id)})
     return JobResponse.from_detail(detail)
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_job(job_id: UUID, database: DatabaseDependency) -> None:
+    try:
+        deleted = await database.delete_job(job_id)
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Job not found")
+    LOGGER.info("job_deleted", extra={"event": "job_deleted", "job_id": str(job_id)})
 
 
 @router.get("", response_model=list[JobSummaryResponse])

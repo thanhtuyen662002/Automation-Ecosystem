@@ -1,9 +1,10 @@
 // ── Pipeline Jobs ─────────────────────────────────────────────────────────────
 import React, { useState } from 'react';
-import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
-import { PageHeader, Badge, SlideOver, EmptyState, Skeleton } from '@/components/ui';
+import { RefreshCw, ChevronDown, ChevronRight, Upload, X, Trash2 } from 'lucide-react';
+import { PageHeader, Badge, SlideOver, EmptyState, Skeleton, ConfirmDialog } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useAccounts, useDeepHealth, useJobs, useLaunchPipeline } from '@/lib/hooks';
+import { useAccounts, useDeepHealth, useDeleteJob, useJobs, useLaunchPipeline, useUploadProductImage } from '@/lib/hooks';
+import { apiUrl } from '@/lib/api';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 
@@ -80,6 +81,10 @@ function statusForStep(job: PipelineJob, stepKey: string, stepIndex: number): st
   return 'PENDING';
 }
 
+function hasRunningTask(job: PipelineJob): boolean {
+  return Object.values(job.task_statuses ?? {}).some(status => String(status).toUpperCase() === 'RUNNING');
+}
+
 
 // Mini step icon inside the DAG circle
 function StepDot({ status, step }: { status: string; step: number }) {
@@ -102,10 +107,17 @@ export function PipelineJobs() {
   const { data: accounts = [] } = useAccounts();
   const { data: health } = useDeepHealth();
   const launch = useLaunchPipeline();
+  const deleteJob = useDeleteJob();
+  const uploadProductImage = useUploadProductImage();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [confirmDeleteJob, setConfirmDeleteJob] = useState<PipelineJob | null>(null);
+  const [deleteError, setDeleteError] = useState('');
   const [showLaunch, setShowLaunch] = useState(false);
   const [productUrl, setProductUrl] = useState('');
   const [productImagePath, setProductImagePath] = useState('');
+  const [productImagePreviewUrl, setProductImagePreviewUrl] = useState('');
+  const [uploadError, setUploadError] = useState('');
+  const [dragActive, setDragActive] = useState(false);
   const [topN, setTopN] = useState(DEFAULT_TOP_N);
   const [autoPublish, setAutoPublish] = useState(false);
   const [accountId, setAccountId] = useState('');
@@ -136,6 +148,47 @@ export function PipelineJobs() {
     });
   }
 
+  async function handleProductImageFile(file: File | undefined) {
+    if (!file) return;
+    setUploadError('');
+    if (!file.type.startsWith('image/')) {
+      setUploadError('File must be an image');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('Image must be 10MB or smaller');
+      return;
+    }
+    try {
+      const uploaded = await uploadProductImage.mutateAsync(file);
+      setProductImagePath(uploaded.path);
+      setProductImagePreviewUrl(uploaded.url ? apiUrl(uploaded.url) : URL.createObjectURL(file));
+    } catch (e: unknown) {
+      setUploadError(e instanceof Error ? e.message : 'Failed to upload image');
+    }
+  }
+
+  function clearProductImage() {
+    setProductImagePath('');
+    setProductImagePreviewUrl('');
+    setUploadError('');
+  }
+
+  async function handleDeleteJob(job: PipelineJob | null) {
+    if (!job) return;
+    setDeleteError('');
+    try {
+      await deleteJob.mutateAsync(job.id);
+      setExpanded(prev => {
+        const next = new Set(prev);
+        next.delete(job.id);
+        return next;
+      });
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : 'Failed to delete pipeline');
+    }
+  }
+
   async function handleLaunch() {
     setLaunchError('');
     const normalizedTopN = clampTopN(topN);
@@ -161,6 +214,8 @@ export function PipelineJobs() {
       setShowLaunch(false);
       setProductUrl('');
       setProductImagePath('');
+      setProductImagePreviewUrl('');
+      setUploadError('');
       setAutoPublish(false);
       setAccountId('');
     } catch (e: unknown) {
@@ -211,6 +266,27 @@ export function PipelineJobs() {
         </div>
       )}
 
+      {deleteError && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          border: '1px solid var(--danger)',
+          background: 'var(--danger-muted)',
+          borderRadius: 'var(--radius-sm)',
+          marginBottom: '1rem',
+          color: 'var(--danger)',
+          fontSize: '0.8125rem',
+          display: 'flex',
+          gap: '0.5rem',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
+          <span>{deleteError}</span>
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setDeleteError('')} title="Dismiss">
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {isLoading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {[1, 2, 3].map(i => <div key={i} className="card"><Skeleton height={52} /></div>)}
@@ -235,6 +311,7 @@ export function PipelineJobs() {
               ? DAG_STEPS.filter(step => step.key in taskStatuses)
               : DAG_STEPS.filter(step => step.key !== 'tiktok_publish' || job.metadata?.auto_publish);
             const jobStatus = job.status ?? 'pending';
+            const deleteDisabled = deleteJob.isPending || hasRunningTask(job);
             return (
               <div key={job.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {/* Job Header */}
@@ -279,6 +356,19 @@ export function PipelineJobs() {
                       <RefreshCw size={12} />
                     </button>
                   )}
+                  <button
+                    className="btn btn-ghost btn-icon btn-sm"
+                    title={hasRunningTask(job) ? t('job.delete_blocked_running') : t('job.delete_tooltip')}
+                    disabled={deleteDisabled}
+                    onClick={e => {
+                      e.stopPropagation();
+                      setDeleteError('');
+                      setConfirmDeleteJob(job);
+                    }}
+                    style={{ color: deleteDisabled ? 'var(--text-muted)' : 'var(--danger)' }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
 
                 {/* DAG Steps */}
@@ -337,10 +427,66 @@ export function PipelineJobs() {
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('job.lbl_product_image_path')}</label>
-            <input className="input" placeholder="C:\\path\\to\\product.jpg" value={productImagePath} onChange={e => setProductImagePath(e.target.value)} />
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              {t('job.product_source_helper')}
-            </div>
+            <label
+              onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
+              onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+              onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragActive(false);
+                void handleProductImageFile(e.dataTransfer.files?.[0]);
+              }}
+              style={{
+                display: 'flex',
+                minHeight: 128,
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'column',
+                gap: '0.5rem',
+                border: `1px dashed ${dragActive ? 'var(--primary)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius-sm)',
+                background: dragActive ? 'var(--surface-2)' : 'transparent',
+                cursor: 'pointer',
+                padding: '0.875rem',
+                textAlign: 'center',
+              }}
+            >
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                style={{ display: 'none' }}
+                onChange={(e) => void handleProductImageFile(e.target.files?.[0])}
+              />
+              {productImagePreviewUrl ? (
+                <img src={productImagePreviewUrl} alt="" style={{ maxWidth: '100%', maxHeight: 180, objectFit: 'contain', borderRadius: 'var(--radius-sm)' }} />
+              ) : (
+                <>
+                  <Upload size={20} />
+                  <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                    {uploadProductImage.isPending ? 'Uploading image...' : 'Drop product image or click to upload'}
+                  </span>
+                </>
+              )}
+            </label>
+            {productImagePath && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem' }}>
+                <input className="input" value={productImagePath} onChange={e => setProductImagePath(e.target.value)} style={{ fontSize: '0.72rem' }} />
+                <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={clearProductImage} title="Clear image">
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+            {!productImagePath && (
+              <details style={{ marginTop: '0.5rem' }}>
+                <summary style={{ fontSize: '0.7rem', color: 'var(--text-muted)', cursor: 'pointer' }}>Advanced path</summary>
+                <input className="input" placeholder="C:\\path\\to\\product.jpg" value={productImagePath} onChange={e => setProductImagePath(e.target.value)} style={{ marginTop: '0.4rem', fontSize: '0.72rem' }} />
+              </details>
+            )}
+            {(uploadError || productImagePath) && (
+              <div style={{ fontSize: '0.7rem', color: uploadError ? 'var(--danger)' : 'var(--text-muted)', marginTop: '0.25rem' }}>
+                {uploadError || t('job.product_source_helper')}
+              </div>
+            )}
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>
@@ -388,6 +534,17 @@ export function PipelineJobs() {
           </button>
         </div>
       </SlideOver>
+
+      <ConfirmDialog
+        open={!!confirmDeleteJob}
+        onClose={() => setConfirmDeleteJob(null)}
+        onConfirm={() => void handleDeleteJob(confirmDeleteJob)}
+        title={t('job.delete_title')}
+        message={t('job.delete_confirm_msg')
+          .replace('{workflow}', String(confirmDeleteJob?.workflow_name ?? 'pipeline'))
+          .replace('{id}', confirmDeleteJob?.id ?? '')}
+        danger
+      />
     </div>
   );
 }

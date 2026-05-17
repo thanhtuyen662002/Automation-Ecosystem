@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -23,12 +24,13 @@ from workers.worker_runtime import FatalDependencyError, RetryableDependencyErro
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.search_tiktok")
 
-_SEARCH_URL = "https://www.tiktok.com/search?q={keyword}"
+_SEARCH_URL = "https://www.tiktok.com/search/video?q={keyword}"
 _DEFAULT_MAX_RESULTS = int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50"))
 _DEFAULT_SCROLL_MAX = int(os.environ.get("TIKTOK_SEARCH_SCROLL_MAX", "12"))
-_DEFAULT_STAGNANT_LIMIT = int(os.environ.get("TIKTOK_SEARCH_STAGNANT_LIMIT", "3"))
+_DEFAULT_STAGNANT_LIMIT = int(os.environ.get("TIKTOK_SEARCH_STAGNANT_LIMIT", "5"))
 _SOURCE = "tiktok_ads_power_search"
 _STOP_WORDS = {"v\u00e0", "c\u1ee7a", "cho", "v\u1edbi", "the", "and", "for", "to"}
+_TIKTOK_VIDEO_URL_RE = re.compile(r"^https://www\.tiktok\.com/@[^/?#]+/video/\d+", re.IGNORECASE)
 BROWSER_PROVIDER_ADSPOWER_MANUAL = "adspower_manual"
 SEARCH_CARD_SELECTOR = (
     '[data-e2e="search_video-item"], '
@@ -93,6 +95,46 @@ def _empty_text_warn_ratio() -> float:
     return max(0.0, min(1.0, _env_float("TIKTOK_SEARCH_EMPTY_TEXT_WARN_RATIO", 0.7)))
 
 
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = list(value) if isinstance(value, tuple | set) else []
+    items: list[str] = []
+    for item in raw_items:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _is_valid_search_query(query: str) -> bool:
+    lowered = query.strip().lower()
+    junk_set = {"unknown", "product", "item", "shop", "tiktok", "tiktok shop", "s\u1ea3n ph\u1ea9m", "san pham", "h\u00e0ng hot", "hang hot"}
+    if lowered in junk_set:
+        return False
+    words = re.findall(r"[\w\u00c0-\u1ef9]+", lowered, flags=re.UNICODE)
+    return 2 <= len(words) <= 5
+
+
+def _selected_search_queries(search_queries: list[str], keywords: list[str]) -> list[str]:
+    selected: list[str] = []
+    for query in [*search_queries, *keywords]:
+        if not _is_valid_search_query(query):
+            continue
+        folded = _fold_text(query)
+        if folded in {_fold_text(item) for item in selected}:
+            continue
+        selected.append(query)
+        if len(selected) >= 5:
+            break
+    return selected
+
+
 def _ensure_browser_provider_tools() -> tuple[Any, Any, Any]:
     global account_metadata, make_browser_provider, resolve_browser_provider
 
@@ -139,21 +181,20 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
         raise FatalDependencyError("search_tiktok requires 'account_id' in payload")
 
     try:
-        keywords: list[str] = resolve_parent_result(payload, "keywords")
+        search_queries = _coerce_string_list(resolve_parent_result(payload, "search_queries"))
     except KeyError:
-        keywords_raw = payload.get("keywords")
-        if not keywords_raw:
-            raise FatalDependencyError("search_tiktok requires 'keywords' in payload or parent_results")
-        keywords = list(keywords_raw)
+        search_queries = _coerce_string_list(payload.get("search_queries"))
+    try:
+        keywords = _coerce_string_list(resolve_parent_result(payload, "keywords"))
+    except KeyError:
+        keywords = _coerce_string_list(payload.get("keywords"))
 
-    keywords = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
-    if not keywords:
-        raise FatalDependencyError("search_tiktok received an empty keyword list")
-
-    junk_set = {"unknown", "product", "item", "shop", "tiktok", "tiktok shop"}
-    meaningful_keywords = [k for k in keywords if k.lower() not in junk_set and len(k) > 2]
-    if not meaningful_keywords:
-        raise FatalDependencyError(f"search_tiktok received only generic/junk keywords: {keywords}. Pipeline blocked to prevent search pollution.")
+    selected_queries = _selected_search_queries(search_queries, keywords)
+    if not selected_queries:
+        raise FatalDependencyError(
+            f"search_tiktok requires valid search_queries or keywords. "
+            f"search_queries={search_queries}, keywords={keywords}"
+        )
     search_provider = _search_provider_from_env()
     if search_provider != "adspower":
         raise FatalDependencyError("TIKTOK_SEARCH_PROVIDER must be 'adspower' for tiktok.search_tiktok")
@@ -180,6 +221,9 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "event": "tiktok_ads_power_search_start",
             "account_id": account_id,
             "keyword_count": len(keywords),
+            "search_queries": search_queries,
+            "keywords": keywords,
+            "selected_queries": selected_queries,
             "max_results": max_results,
             "min_views": min_views,
             "min_relevance_score": min_relevance_score,
@@ -238,8 +282,9 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_profile):
                 await _confirm_tiktok_auth(page, context, account_id=account_id, require_login=require_login)
 
-                for keyword in keywords[:5]:
-                    keyword_videos = await _search_keyword_with_page(
+                search_diagnostics: dict[str, Any] = {"queries": selected_queries, "per_query": []}
+                for keyword in selected_queries:
+                    query_result = await _search_keyword_with_page(
                         page,
                         context,
                         keyword=keyword,
@@ -254,6 +299,8 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                         require_login=require_login,
                         allow_photo=allow_photo,
                     )
+                    keyword_videos = query_result["videos"]
+                    search_diagnostics["per_query"].append(query_result["diagnostics"])
                     for video in keyword_videos:
                         url = str(video.get("url") or "")
                         if url and url not in seen_urls:
@@ -282,9 +329,14 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             extra={
                 "event": "tiktok_search_no_results",
                 "account_id": account_id,
-                "keyword_count": len(keywords),
+                "search_queries": selected_queries,
+                "search_diagnostics": search_diagnostics,
                 "source": _SOURCE,
             },
+        )
+        raise FatalDependencyError(
+            f"TikTok search found no video links for queries={selected_queries}. "
+            f"diagnostics={json.dumps(search_diagnostics, ensure_ascii=False)[:2000]}"
         )
 
     LOGGER.info(
@@ -293,11 +345,12 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "event": "tiktok_search_done",
             "account_id": account_id,
             "total_videos": len(result_videos),
+            "search_queries": selected_queries,
             "source": _SOURCE,
         },
     )
 
-    return {"videos": result_videos, "ok": True, "source": _SOURCE}
+    return {"videos": result_videos, "search_diagnostics": search_diagnostics, "ok": True, "source": _SOURCE}
 
 
 async def _search_keyword_with_page(
@@ -315,7 +368,7 @@ async def _search_keyword_with_page(
     viral_bypass_views: int,
     require_login: bool,
     allow_photo: bool,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     search_url = _SEARCH_URL.format(keyword=quote(keyword, safe=""))
     started_at = time.monotonic()
     videos: list[dict[str, Any]] = []
@@ -323,12 +376,23 @@ async def _search_keyword_with_page(
     author_counts: dict[str, int] = {}
     stagnant_rounds = 0
     total_filter_stats = _empty_filter_stats()
+    diagnostics: dict[str, Any] = {
+        "query": keyword,
+        "search_url": search_url,
+        "video_tab": {},
+        "rounds": [],
+        "final_page_state": {},
+        "filter_stats": total_filter_stats,
+    }
 
     await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
     await asyncio.sleep(random.uniform(2.0, 4.0))
     await _dismiss_overlays(page)
+    diagnostics["video_tab"] = await _switch_to_video_tab(page)
+    await _dismiss_overlays(page)
 
     page_state = await _safe_page_state(page)
+    diagnostics["initial_page_state"] = page_state
     LOGGER.info(
         "tiktok_search_page_loaded",
         extra={
@@ -337,11 +401,18 @@ async def _search_keyword_with_page(
             "keyword": keyword,
             "url": getattr(page, "url", ""),
             "card_count": int(page_state.get("card_count") or 0),
+            "active_tab_text": page_state.get("active_tab_text") or "",
+            "video_link_count": int(page_state.get("video_link_count") or 0),
+            "live_link_count": int(page_state.get("live_link_count") or 0),
+            "user_link_count": int(page_state.get("user_link_count") or 0),
+            "shop_link_count": int(page_state.get("shop_link_count") or 0),
             "has_error": bool(page_state.get("has_error")),
             "needs_login": bool(page_state.get("needs_login")),
+            "video_tab": diagnostics["video_tab"],
             "source": _SOURCE,
         },
     )
+    _warn_if_wrong_tab_or_mixed_results(page_state, account_id=account_id, keyword=keyword)
 
     if require_login and bool(page_state.get("needs_login")) and not await _has_tiktok_auth_signal(page, context):
         raise FatalDependencyError(
@@ -355,6 +426,7 @@ async def _search_keyword_with_page(
         pass
 
     for scroll_round in range(1, scroll_max + 1):
+        page_state = await _safe_page_state(page)
         raw_items = await _extract_raw_items(page)
         _, _, normalize_items = _ensure_search_extractor()
         normalized = normalize_items(
@@ -391,10 +463,14 @@ async def _search_keyword_with_page(
                 "event": "tiktok_search_scroll_round",
                 "account_id": account_id,
                 "keyword": keyword,
-                "round": scroll_round,
+                "scroll_round": scroll_round,
                 "raw_items": len(raw_items),
                 "normalized": filter_stats["normalized"],
                 "accepted_new_videos": new_count,
+                "video_link_count_total": int(page_state.get("video_link_count") or 0),
+                "new_video_links": new_count,
+                "current_url": getattr(page, "url", ""),
+                "active_tab": page_state.get("active_tab_text") or "",
                 "dropped_low_views": filter_stats["dropped_low_views"],
                 "dropped_low_relevance": filter_stats["dropped_low_relevance"],
                 "collected": len(videos),
@@ -402,6 +478,17 @@ async def _search_keyword_with_page(
                 "source": _SOURCE,
             },
         )
+        diagnostics["rounds"].append({
+            "scroll_round": scroll_round,
+            "raw_items": len(raw_items),
+            "normalized": filter_stats["normalized"],
+            "accepted_new_videos": new_count,
+            "video_link_count_total": int(page_state.get("video_link_count") or 0),
+            "new_video_links": new_count,
+            "current_url": getattr(page, "url", ""),
+            "active_tab": page_state.get("active_tab_text") or "",
+            "stagnant_rounds": stagnant_rounds,
+        })
 
         if len(videos) >= max_results:
             break
@@ -421,9 +508,24 @@ async def _search_keyword_with_page(
             )
             break
 
-        await _human_search_scroll(page)
+        scroll_state = await _human_search_scroll(page)
+        if scroll_state.get("at_bottom"):
+            LOGGER.info(
+                "tiktok_search_scroll_bottom_detected",
+                extra={
+                    "event": "tiktok_search_scroll_bottom_detected",
+                    "account_id": account_id,
+                    "keyword": keyword,
+                    "scroll_round": scroll_round,
+                    "collected": len(videos),
+                    "source": _SOURCE,
+                },
+            )
+            break
 
     videos.sort(key=lambda video: int(video.get("views") or 0), reverse=True)
+    diagnostics["final_page_state"] = await _safe_page_state(page)
+    diagnostics["filter_stats"] = total_filter_stats
     _warn_if_empty_text_high(
         total_filter_stats,
         account_id=account_id,
@@ -437,12 +539,13 @@ async def _search_keyword_with_page(
             "account_id": account_id,
             "keyword": keyword,
             "collected": len(videos),
+            "page_state": diagnostics["final_page_state"],
             "filter_stats": total_filter_stats,
             "elapsed_seconds": round(time.monotonic() - started_at, 1),
             "source": _SOURCE,
         },
     )
-    return videos[:max_results]
+    return {"videos": videos[:max_results], "diagnostics": diagnostics}
 
 
 def _empty_filter_stats() -> dict[str, int]:
@@ -480,7 +583,7 @@ def _filter_search_videos(
 
     for video in normalized:
         url = str(video.get("url") or "")
-        if not url or "/video/" not in url or "tiktok.com" not in url:
+        if not _is_acceptable_tiktok_video_url(url):
             stats["dropped_non_video"] += 1
             continue
         if url in seen_urls:
@@ -515,6 +618,17 @@ def _filter_search_videos(
         stats["accepted"] += 1
 
     return accepted, stats
+
+
+def _is_acceptable_tiktok_video_url(url: str) -> bool:
+    if not url:
+        return False
+    if not _TIKTOK_VIDEO_URL_RE.match(url):
+        return False
+    banned_markers = ("/live", "/photo/", "/tag/", "/music/", "/shop")
+    if any(marker in url for marker in banned_markers) or "shop.tiktok.com" in url:
+        return False
+    return True
 
 
 def _has_meaningful_text(video: dict[str, Any], keyword: str) -> bool:
@@ -622,6 +736,67 @@ async def _safe_page_state(page: Any) -> dict[str, Any]:
         return {}
 
 
+async def _switch_to_video_tab(page: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "attempted": True,
+        "clicked": False,
+        "url_after": getattr(page, "url", ""),
+        "tab_text": "",
+    }
+    if "/search/video" in str(getattr(page, "url", "")):
+        result["url_after"] = getattr(page, "url", "")
+        result["tab_text"] = "Videos"
+        return result
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const candidates = [...document.querySelectorAll('[role="tab"], button, a, div')]
+                    .filter((el) => {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        return /^(Videos?|Video)$/i.test(text);
+                    });
+                const target = candidates[0];
+                if (!target) return { clicked: false, tab_text: '' };
+                target.scrollIntoView({ block: 'center', inline: 'center' });
+                target.click();
+                return { clicked: true, tab_text: (target.innerText || target.textContent || '').trim() };
+            }"""
+        )
+        if isinstance(clicked, dict):
+            result["clicked"] = bool(clicked.get("clicked"))
+            result["tab_text"] = str(clicked.get("tab_text") or "")
+            if result["clicked"]:
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+    except Exception as exc:
+        result["error"] = str(exc)[:200]
+    result["url_after"] = getattr(page, "url", "")
+    return result
+
+
+def _warn_if_wrong_tab_or_mixed_results(page_state: dict[str, Any], *, account_id: str, keyword: str) -> None:
+    video_link_count = int(page_state.get("video_link_count") or 0)
+    live_link_count = int(page_state.get("live_link_count") or 0)
+    user_link_count = int(page_state.get("user_link_count") or 0)
+    shop_link_count = int(page_state.get("shop_link_count") or 0)
+    if video_link_count > 0 or (live_link_count + user_link_count + shop_link_count) <= 0:
+        return
+    LOGGER.warning(
+        "tiktok_search_wrong_tab_or_mixed_results",
+        extra={
+            "event": "tiktok_search_wrong_tab_or_mixed_results",
+            "account_id": account_id,
+            "keyword": keyword,
+            "active_tab_text": page_state.get("active_tab_text") or "",
+            "video_link_count": video_link_count,
+            "live_link_count": live_link_count,
+            "user_link_count": user_link_count,
+            "shop_link_count": shop_link_count,
+            "current_url": page_state.get("url") or "",
+            "source": _SOURCE,
+        },
+    )
+
+
 async def _confirm_tiktok_auth(
     page: Any,
     context: Any,
@@ -661,13 +836,35 @@ async def _confirm_tiktok_auth(
     )
 
 
-async def _human_search_scroll(page: Any) -> None:
+async def _human_search_scroll(page: Any) -> dict[str, Any]:
+    before = await _scroll_metrics(page)
     await page.mouse.wheel(0, random.randint(1000, 1800))
     await asyncio.sleep(random.uniform(1.0, 2.3))
     await page.mouse.wheel(0, -random.randint(120, 360))
     await asyncio.sleep(random.uniform(0.7, 1.6))
     await page.mouse.wheel(0, random.randint(600, 1300))
     await asyncio.sleep(random.uniform(1.2, 2.8))
+    after = await _scroll_metrics(page)
+    return {
+        "before": before,
+        "after": after,
+        "at_bottom": bool(after.get("at_bottom")) and after.get("scroll_y") == before.get("scroll_y"),
+    }
+
+
+async def _scroll_metrics(page: Any) -> dict[str, Any]:
+    try:
+        metrics = await page.evaluate(
+            """() => ({
+                scroll_y: Math.round(window.scrollY || document.documentElement.scrollTop || 0),
+                inner_height: window.innerHeight || 0,
+                scroll_height: document.documentElement.scrollHeight || document.body.scrollHeight || 0,
+                at_bottom: (window.scrollY + window.innerHeight) >= ((document.documentElement.scrollHeight || document.body.scrollHeight || 0) - 24),
+            })"""
+        )
+        return metrics if isinstance(metrics, dict) else {}
+    except Exception:
+        return {}
 
 
 async def _dismiss_overlays(page: Any) -> None:

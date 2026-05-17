@@ -22,6 +22,7 @@ import logging
 import os
 import random
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,14 +46,24 @@ _AUDIO_ONLY_SUFFIXES = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac"
 _TRACKED_MEDIA_SUFFIXES = _VALID_MEDIA_SUFFIXES | _AUDIO_ONLY_SUFFIXES
 _PREVIEW_CHARS = 1200
 _IMPERSONATION_DEPENDENCY_WARNED = False
+_BROWSER_CAPTURE_MIN_BYTES = 100 * 1024
+
+
+@dataclass
+class BrowserDownloadResult:
+    ok: bool
+    path: Path | None = None
+    error: str = ""
+    failure_kind: str = "browser_capture_failed"
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    content_type: str = ""
+    file_size: int = 0
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
-    # ── Idempotency guard ─────────────────────────────────────────────────────
     if (cached := check_already_processed(payload)) is not None:
         return cached
 
-    # ── Resolve selected videos from parent result ────────────────────────────
     try:
         selected_videos: list[dict[str, Any]] = list(resolve_parent_result(payload, "selected_videos"))
     except KeyError:
@@ -62,15 +73,15 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         selected_videos = list(selected_videos_raw)
 
     if not selected_videos:
-        raise ValueError("selected_videos is empty — nothing to download")
+        raise ValueError("selected_videos is empty - nothing to download")
 
-    # ── Output directory ──────────────────────────────────────────────────────
     job_id: str = str(payload.get("job_id", "unknown_job"))
     account_id: str = str(payload.get("account_id") or "").strip()
     base_output_dir = get_media_output_dir()
     output_dir = base_output_dir / job_id / "downloads"
     output_dir.mkdir(parents=True, exist_ok=True)
     _warn_if_impersonation_dependency_missing()
+    download_provider = _download_provider_from_env()
 
     LOGGER.info(
         "download_videos_start",
@@ -79,6 +90,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "video_count": len(selected_videos),
             "has_account_id": bool(account_id),
             "output_dir": str(output_dir),
+            "download_provider": download_provider,
         },
     )
 
@@ -94,7 +106,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         for idx, video in enumerate(selected_videos):
-            url: str = video.get("url", "")
+            url: str = str(video.get("url") or "").strip()
             if not url:
                 LOGGER.warning(
                     "download_skip_empty_url",
@@ -103,124 +115,123 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
 
             output_template = str(output_dir / f"video_{idx:02d}.%(ext)s")
+            output_path = output_dir / f"video_{idx:02d}.mp4"
             LOGGER.info(
                 "download_video_start",
-                extra={"event": "download_video_start", "url": url, "index": idx},
+                extra={"event": "download_video_start", "url": url, "index": idx, "download_provider": download_provider},
             )
 
             _remove_existing_attempt_files(output_dir, idx)
-
             attempt_errors: list[dict[str, Any]] = []
-            primary_attempt = await _attempt_ytdlp_download(
-                url=url,
-                output_template=output_template,
-                output_dir=output_dir,
-                index=idx,
-                mode="primary",
-            )
-            if primary_attempt["ok"]:
-                downloaded = primary_attempt["path"]
-            else:
-                downloaded = None
-                attempt_errors.append(primary_attempt)
-                LOGGER.warning(
-                    "download_video_primary_failed",
-                    extra={
-                        "event": "download_video_primary_failed",
-                        "url": url,
-                        "error": primary_attempt.get("error", "")[:500],
-                        "stdout_preview": primary_attempt.get("stdout_preview", ""),
-                        "stderr_preview": primary_attempt.get("stderr_preview", ""),
-                    },
-                )
-                if not account_id:
-                    LOGGER.info(
-                        "download_cookie_fallback_skipped_no_account_id",
-                        extra={"event": "download_cookie_fallback_skipped_no_account_id", "url": url},
-                    )
-                    failed_urls.append(url)
-                    failed_downloads.append({
-                        "url": url,
-                        "index": idx,
-                        "attempt_errors": attempt_errors,
-                        "matching_files": _matching_download_files(output_dir, idx),
-                    })
-                    continue
+            downloaded: Path | None = None
 
-                if not cookie_export_attempted:
-                    cookie_export_attempted = True
-                    cookie_tmpdir = tempfile.TemporaryDirectory(prefix="ae_tiktok_cookies_")
-                    cookie_file = Path(cookie_tmpdir.name) / "cookies.txt"
-                    try:
-                        cookie_user_agent = await _export_adspower_tiktok_cookies(account_id, cookie_file)
-                    except Exception as cookie_exc:
-                        attempt_errors.append({
-                            "ok": False,
-                            "mode": "cookie_export",
-                            "error": str(cookie_exc),
-                            "stdout_preview": "",
-                            "stderr_preview": "",
+            if download_provider in {"browser_first", "browser_only"}:
+                browser_attempt = await _attempt_browser_download(
+                    account_id=account_id,
+                    url=url,
+                    output_path=output_path,
+                    index=idx,
+                )
+                if browser_attempt["ok"]:
+                    downloaded = browser_attempt["path"]
+                else:
+                    attempt_errors.append(browser_attempt)
+                    if download_provider == "browser_only":
+                        failed_urls.append(url)
+                        failed_downloads.append({
+                            "url": url,
+                            "index": idx,
+                            "attempt_errors": attempt_errors,
                             "matching_files": _matching_download_files(output_dir, idx),
                         })
-                        LOGGER.warning(
-                            "download_video_cookie_fallback_failed",
-                            extra={
-                                "event": "download_video_cookie_fallback_failed",
-                                "url": url,
-                                "error": str(cookie_exc)[:300],
-                            },
-                        )
-                        cookie_file = None
+                        continue
 
-                if cookie_file is None:
-                    failed_urls.append(url)
-                    failed_downloads.append({
-                        "url": url,
-                        "index": idx,
-                        "attempt_errors": attempt_errors,
-                        "matching_files": _matching_download_files(output_dir, idx),
-                    })
-                    continue
-
-                LOGGER.info(
-                    "download_video_cookie_fallback_start",
-                    extra={"event": "download_video_cookie_fallback_start", "url": url, "account_id": account_id},
-                )
-                fallback_attempt = await _attempt_ytdlp_download(
+            if downloaded is None and download_provider in {"browser_first", "ytdlp_only"}:
+                primary_attempt = await _attempt_ytdlp_download(
                     url=url,
                     output_template=output_template,
                     output_dir=output_dir,
                     index=idx,
-                    mode="cookie_fallback",
-                    cookies_file=cookie_file,
-                    user_agent=cookie_user_agent,
+                    mode="primary",
                 )
-                if fallback_attempt["ok"]:
-                    downloaded = fallback_attempt["path"]
-                    LOGGER.info(
-                        "download_video_cookie_fallback_done",
-                        extra={"event": "download_video_cookie_fallback_done", "url": url, "account_id": account_id},
-                    )
+                if primary_attempt["ok"]:
+                    downloaded = primary_attempt["path"]
                 else:
-                    attempt_errors.append(fallback_attempt)
+                    attempt_errors.append(primary_attempt)
                     LOGGER.warning(
-                        "download_video_cookie_fallback_failed",
+                        "download_video_primary_failed",
                         extra={
-                            "event": "download_video_cookie_fallback_failed",
+                            "event": "download_video_primary_failed",
                             "url": url,
-                            "error": fallback_attempt.get("error", "")[:500],
-                            "stdout_preview": fallback_attempt.get("stdout_preview", ""),
-                            "stderr_preview": fallback_attempt.get("stderr_preview", ""),
+                            "error": primary_attempt.get("error", "")[:500],
+                            "stdout_preview": primary_attempt.get("stdout_preview", ""),
+                            "stderr_preview": primary_attempt.get("stderr_preview", ""),
                         },
                     )
-                    failed_urls.append(url)
-                    failed_downloads.append({
-                        "url": url,
-                        "index": idx,
-                        "attempt_errors": attempt_errors,
-                        "matching_files": _matching_download_files(output_dir, idx),
-                    })
-                    continue
+
+                    if account_id:
+                        if not cookie_export_attempted:
+                            cookie_export_attempted = True
+                            cookie_tmpdir = tempfile.TemporaryDirectory(prefix="ae_tiktok_cookies_")
+                            cookie_file = Path(cookie_tmpdir.name) / "cookies.txt"
+                            try:
+                                cookie_user_agent = await _export_adspower_tiktok_cookies(account_id, cookie_file)
+                            except Exception as cookie_exc:
+                                attempt_errors.append({
+                                    "ok": False,
+                                    "mode": "cookie_export",
+                                    "error": str(cookie_exc),
+                                    "stdout_preview": "",
+                                    "stderr_preview": "",
+                                    "matching_files": _matching_download_files(output_dir, idx),
+                                })
+                                LOGGER.warning(
+                                    "download_video_cookie_fallback_failed",
+                                    extra={
+                                        "event": "download_video_cookie_fallback_failed",
+                                        "url": url,
+                                        "error": str(cookie_exc)[:300],
+                                    },
+                                )
+                                cookie_file = None
+
+                        if cookie_file is not None:
+                            LOGGER.info(
+                                "download_video_cookie_fallback_start",
+                                extra={"event": "download_video_cookie_fallback_start", "url": url, "account_id": account_id},
+                            )
+                            fallback_attempt = await _attempt_ytdlp_download(
+                                url=url,
+                                output_template=output_template,
+                                output_dir=output_dir,
+                                index=idx,
+                                mode="cookie_fallback",
+                                cookies_file=cookie_file,
+                                user_agent=cookie_user_agent,
+                            )
+                            if fallback_attempt["ok"]:
+                                downloaded = fallback_attempt["path"]
+                                LOGGER.info(
+                                    "download_video_cookie_fallback_done",
+                                    extra={"event": "download_video_cookie_fallback_done", "url": url, "account_id": account_id},
+                                )
+                            else:
+                                attempt_errors.append(fallback_attempt)
+                                LOGGER.warning(
+                                    "download_video_cookie_fallback_failed",
+                                    extra={
+                                        "event": "download_video_cookie_fallback_failed",
+                                        "url": url,
+                                        "error": fallback_attempt.get("error", "")[:500],
+                                        "stdout_preview": fallback_attempt.get("stdout_preview", ""),
+                                        "stderr_preview": fallback_attempt.get("stderr_preview", ""),
+                                    },
+                                )
+                    else:
+                        LOGGER.info(
+                            "download_cookie_fallback_skipped_no_account_id",
+                            extra={"event": "download_cookie_fallback_skipped_no_account_id", "url": url},
+                        )
 
             if downloaded:
                 video_path = str(downloaded)
@@ -247,7 +258,6 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     "matching_files": _matching_download_files(output_dir, idx),
                 })
 
-            # Anti-abuse delay between downloads
             if idx < len(selected_videos) - 1:
                 delay = random.uniform(3.0, 10.0)
                 await asyncio.sleep(delay)
@@ -282,6 +292,218 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "ok": True,
     }
+
+
+async def _attempt_browser_download(
+    *,
+    account_id: str,
+    url: str,
+    output_path: Path,
+    index: int,
+) -> dict[str, Any]:
+    if not account_id:
+        return {
+            "ok": False,
+            "mode": "browser_capture",
+            "error": "browser download requires account_id",
+            "failure_kind": "browser_account_missing",
+            "candidates": [],
+        }
+    result = await _download_with_browser_capture(account_id, url, output_path)
+    if result.ok and result.path:
+        return {
+            "ok": True,
+            "mode": "browser_capture",
+            "path": result.path,
+            "candidates": result.candidates,
+            "content_type": result.content_type,
+            "file_size": result.file_size,
+        }
+    LOGGER.warning(
+        "download_browser_capture_failed",
+        extra={
+            "event": "download_browser_capture_failed",
+            "url": url,
+            "index": index,
+            "error": result.error[:500],
+            "failure_kind": result.failure_kind,
+            "candidate_count": len(result.candidates),
+            "content_type": result.content_type,
+            "file_size": result.file_size,
+        },
+    )
+    return {
+        "ok": False,
+        "mode": "browser_capture",
+        "error": result.error,
+        "failure_kind": result.failure_kind,
+        "candidates": result.candidates,
+        "content_type": result.content_type,
+        "file_size": result.file_size,
+    }
+
+
+async def _download_with_browser_capture(account_id: str, video_url: str, output_path: Path) -> BrowserDownloadResult:
+    from core.browser_providers import (
+        BROWSER_PROVIDER_ADSPOWER_MANUAL,
+        account_metadata,
+        make_browser_provider,
+        resolve_browser_provider,
+    )
+    from database.database import AutomationDatabase, RetryConfig
+    from playwright.async_api import async_playwright
+
+    LOGGER.info(
+        "download_browser_capture_start",
+        extra={"event": "download_browser_capture_start", "account_id": account_id, "url": video_url, "output_path": str(output_path)},
+    )
+
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if not db_url:
+        return BrowserDownloadResult(ok=False, error="DATABASE_URL is required for browser download", failure_kind="browser_config_missing")
+
+    database = AutomationDatabase(db_url, retry_config=RetryConfig())
+    await database.open()
+    candidates: list[dict[str, Any]] = []
+    try:
+        account = await database.get_account(account_id)
+        if account is None:
+            return BrowserDownloadResult(ok=False, error=f"Account {account_id} not found", failure_kind="browser_account_missing")
+        if str(account.get("platform") or "").strip().lower() != "tiktok":
+            return BrowserDownloadResult(ok=False, error=f"Account {account_id} must be a TikTok account", failure_kind="browser_account_invalid")
+
+        metadata = account_metadata(account)
+        account_for_provider = {**account, "account_id": account_id, "metadata": metadata}
+        browser_provider = resolve_browser_provider(account_for_provider)
+        if browser_provider != BROWSER_PROVIDER_ADSPOWER_MANUAL:
+            return BrowserDownloadResult(ok=False, error="Browser capture requires AdsPower manual provider", failure_kind="browser_provider_invalid")
+
+        session = await database.get_account_session(account_id) or {}
+        provider = make_browser_provider(account_for_provider, session=session, identity_profile=None)
+
+        async with async_playwright() as pw:
+            async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_profile):
+                async def on_response(response: Any) -> None:
+                    try:
+                        content_type = str(response.headers.get("content-type") or "")
+                        candidate_url = str(response.url or "")
+                        if _is_browser_media_candidate(candidate_url, content_type):
+                            info = {"url": candidate_url, "content_type": content_type, "source": "network"}
+                            candidates.append(info)
+                            LOGGER.info(
+                                "download_browser_media_candidate",
+                                extra={
+                                    "event": "download_browser_media_candidate",
+                                    "url": video_url,
+                                    "media_url": candidate_url[:500],
+                                    "content_type": content_type,
+                                    "source": "network",
+                                    "candidate_count": len(candidates),
+                                },
+                            )
+                    except Exception:
+                        return
+
+                page.on("response", lambda response: asyncio.create_task(on_response(response)))
+                await page.goto(video_url, wait_until="domcontentloaded", timeout=30_000)
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+                if await _page_has_tiktok_verification(page):
+                    return BrowserDownloadResult(
+                        ok=False,
+                        error="TikTok verification required during browser download",
+                        failure_kind="verification_required",
+                        candidates=candidates,
+                    )
+                try:
+                    await page.wait_for_selector("video", timeout=10_000)
+                except Exception:
+                    pass
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+
+                dom_urls = await _extract_video_dom_urls(page)
+                for dom_url in dom_urls:
+                    if _is_browser_media_candidate(dom_url, ""):
+                        candidates.append({"url": dom_url, "content_type": "", "source": "dom"})
+                        LOGGER.info(
+                            "download_browser_media_candidate",
+                            extra={
+                                "event": "download_browser_media_candidate",
+                                "url": video_url,
+                                "media_url": dom_url[:500],
+                                "content_type": "",
+                                "source": "dom",
+                                "candidate_count": len(candidates),
+                            },
+                        )
+
+                media_candidates = _dedupe_browser_candidates(candidates)
+                if not media_candidates:
+                    return BrowserDownloadResult(
+                        ok=False,
+                        error="browser media URL not found",
+                        failure_kind="browser_media_not_found",
+                        candidates=candidates,
+                    )
+
+                try:
+                    user_agent = str(await page.evaluate("() => navigator.userAgent") or "").strip()
+                except Exception:
+                    user_agent = ""
+                headers = {"referer": video_url}
+                if user_agent:
+                    headers["user-agent"] = user_agent
+
+                last_error = ""
+                for candidate in media_candidates:
+                    media_url = str(candidate.get("url") or "")
+                    try:
+                        response = await context.request.get(media_url, headers=headers, timeout=_download_timeout_seconds() * 1000)
+                        content_type = str(response.headers.get("content-type") or candidate.get("content_type") or "")
+                        if not response.ok:
+                            last_error = f"browser media request failed with HTTP {response.status}"
+                            continue
+                        body = await response.body()
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        output_path.write_bytes(body)
+                        size = output_path.stat().st_size
+                        if size < _BROWSER_CAPTURE_MIN_BYTES:
+                            last_error = f"browser media download too small: {size} bytes"
+                            continue
+                        if not await _has_video_stream(output_path):
+                            last_error = "browser media download has no video stream"
+                            continue
+                        LOGGER.info(
+                            "download_browser_capture_success",
+                            extra={
+                                "event": "download_browser_capture_success",
+                                "url": video_url,
+                                "path": str(output_path),
+                                "candidate_count": len(media_candidates),
+                                "content_type": content_type,
+                                "file_size": size,
+                            },
+                        )
+                        return BrowserDownloadResult(
+                            ok=True,
+                            path=output_path,
+                            candidates=media_candidates,
+                            content_type=content_type,
+                            file_size=size,
+                        )
+                    except Exception as exc:
+                        last_error = str(exc)
+                        continue
+
+                return BrowserDownloadResult(
+                    ok=False,
+                    error=last_error or "browser media download failed",
+                    failure_kind="browser_download_failed",
+                    candidates=media_candidates,
+                )
+    except Exception as exc:
+        return BrowserDownloadResult(ok=False, error=str(exc), failure_kind="browser_capture_failed", candidates=candidates)
+    finally:
+        await database.close()
 
 
 async def _attempt_ytdlp_download(
@@ -594,6 +816,11 @@ async def _probe_video_stream(path: Path) -> dict[str, Any]:
         }
 
 
+async def _has_video_stream(path: Path) -> bool:
+    probe = await _probe_video_stream(path)
+    return bool(probe.get("has_video"))
+
+
 def _download_timeout_seconds() -> float:
     raw = os.environ.get("TIKTOK_DOWNLOAD_TIMEOUT_SECONDS", "120").strip()
     try:
@@ -605,6 +832,17 @@ def _download_timeout_seconds() -> float:
 
 def _ytdlp_format() -> str:
     return os.environ.get("TIKTOK_YTDLP_FORMAT", _DEFAULT_YTDLP_FORMAT).strip() or _DEFAULT_YTDLP_FORMAT
+
+
+def _download_provider_from_env() -> str:
+    provider = os.environ.get("TIKTOK_DOWNLOAD_PROVIDER", "browser_first").strip().lower()
+    if provider not in {"browser_first", "ytdlp_only", "browser_only"}:
+        LOGGER.warning(
+            "download_provider_invalid",
+            extra={"event": "download_provider_invalid", "provider": provider, "fallback": "browser_first"},
+        )
+        return "browser_first"
+    return provider
 
 
 def _ytdlp_impersonate_target() -> str:
@@ -709,10 +947,70 @@ def _download_error_message(exc: SubprocessError) -> str:
     return str(exc)
 
 
+def _is_browser_media_candidate(url: str, content_type: str) -> bool:
+    lowered_url = str(url or "").lower()
+    lowered_type = str(content_type or "").lower()
+    if "video/" in lowered_type or "video_mp4" in lowered_type:
+        return True
+    markers = ("tiktokcdn", "byteoversea", "mime_type=video", "playwm", "playaddr")
+    return any(marker in lowered_url for marker in markers)
+
+
+def _dedupe_browser_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        url = str(candidate.get("url") or "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(candidate)
+    deduped.sort(key=lambda item: ("video" in str(item.get("content_type") or "").lower(), "play" in str(item.get("url") or "").lower()), reverse=True)
+    return deduped[:8]
+
+
+async def _extract_video_dom_urls(page: Any) -> list[str]:
+    try:
+        urls = await page.evaluate(
+            """() => {
+                const urls = [];
+                for (const video of document.querySelectorAll('video')) {
+                    if (video.currentSrc) urls.push(video.currentSrc);
+                    if (video.src) urls.push(video.src);
+                    for (const source of video.querySelectorAll('source')) {
+                        if (source.src) urls.push(source.src);
+                    }
+                }
+                return urls.filter(Boolean);
+            }"""
+        )
+        return [str(url) for url in urls] if isinstance(urls, list) else []
+    except Exception:
+        return []
+
+
+async def _page_has_tiktok_verification(page: Any) -> bool:
+    try:
+        text = str(await page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
+    except Exception:
+        text = ""
+    url = str(getattr(page, "url", "") or "").lower()
+    markers = ("captcha", "verify", "verification", "security check", "x\u00e1c minh", "ki\u1ec3m tra b\u1ea3o m\u1eadt")
+    return any(marker in text or marker in url for marker in markers)
+
+
 def _all_failures_are_permanent_download_failures(failed_downloads: list[dict[str, Any]]) -> bool:
     if not failed_downloads:
         return False
-    permanent_kinds = {"audio_only", "http_403"}
+    permanent_kinds = {
+        "audio_only",
+        "http_403",
+        "verification_required",
+        "browser_media_not_found",
+        "browser_download_failed",
+        "browser_provider_invalid",
+        "browser_account_invalid",
+    }
     for item in failed_downloads:
         errors = item.get("attempt_errors") or []
         if not errors:

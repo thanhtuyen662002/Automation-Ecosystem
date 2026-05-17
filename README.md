@@ -45,6 +45,7 @@ dependency current, especially when TikTok starts returning 403 responses:
 
 ```powershell
 python -m pip install -U yt-dlp curl-cffi
+$env:TIKTOK_DOWNLOAD_PROVIDER="browser_first"
 $env:TIKTOK_YTDLP_FORMAT="bestvideo*+bestaudio/best[ext=mp4]/best"
 $env:TIKTOK_DOWNLOAD_TIMEOUT_SECONDS="120"
 $env:TIKTOK_YTDLP_IMPERSONATE="chrome"

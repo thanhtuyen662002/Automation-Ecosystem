@@ -10,6 +10,7 @@ Output result:
   title:        str
   description:  str
   keywords:     list[str]
+  search_queries:list[str]
   ok:           bool
 
 AI provider: Google Gemini configured in Settings -> AI Providers.
@@ -43,10 +44,103 @@ _SYSTEM_PROMPT = (
     "  title        (string, full product title, <=220 chars)\n"
     "  description  (string, 2–4 sentences)\n"
     "  keywords     (array of 5–10 short marketing keywords)\n"
+    "  search_queries (array of 1-5 natural TikTok video search phrases, 2-5 words each)\n"
     "Do not include any other text outside the JSON object."
 )
 
 _JUNK_KEYWORDS = {"unknown", "product", "item", "shop", "tiktok", "tiktok shop"}
+_JUNK_SEARCH_QUERIES = {
+    "unknown",
+    "product",
+    "item",
+    "shop",
+    "tiktok shop",
+    "san pham",
+    "s\u1ea3n ph\u1ea9m",
+    "hang hot",
+    "h\u00e0ng hot",
+}
+_MARKETING_SEARCH_WORDS = {
+    "sieu",
+    "si\u00eau",
+    "hot",
+    "xu",
+    "huong",
+    "h\u01b0\u1edbng",
+    "chinh",
+    "hang",
+    "ch\u00ednh",
+    "h\u00e3ng",
+    "uu",
+    "dai",
+    "\u01b0u",
+    "\u0111\u00e3i",
+    "tang",
+    "t\u1eb7ng",
+    "tiet",
+    "kiem",
+    "ti\u1ebft",
+    "ki\u1ec7m",
+    "sale",
+    "deal",
+    "trend",
+}
+_SEARCH_QUERY_STOPWORDS = _MARKETING_SEARCH_WORDS | {
+    "va",
+    "v\u00e0",
+    "cua",
+    "c\u1ee7a",
+    "cho",
+    "voi",
+    "v\u1edbi",
+    "mot",
+    "m\u1ed9t",
+    "cac",
+    "c\u00e1c",
+    "trong",
+    "la",
+    "l\u00e0",
+}
+_SEARCH_PRODUCT_NOUNS = {
+    "khan",
+    "giay",
+    "rut",
+    "day",
+    "thung",
+    "bich",
+    "ao",
+    "thun",
+    "serum",
+    "binh",
+    "nuoc",
+    "kem",
+    "son",
+    "sua",
+    "may",
+    "chai",
+    "hop",
+    "goi",
+    "combo",
+    "set",
+    "tui",
+    "quan",
+    "vay",
+    "blender",
+    "widget",
+    "gadget",
+    "bottle",
+    "shirt",
+}
+_SEARCH_QUERY_PHRASES: list[tuple[str, tuple[str, ...]]] = [
+    ("\u006b\u0068\u0103\u006e \u0067\u0069\u1ea5\u0079 \u0072\u00fa\u0074 \u0064\u00e2\u0079", ("khan", "giay", "rut", "day")),
+    ("\u006b\u0068\u0103\u006e \u0067\u0069\u1ea5\u0079 \u0072\u00fa\u0074 4 \u006c\u1edb\u0070", ("khan", "giay", "rut", "4", "lop")),
+    ("\u0074\u0068\u00f9\u006e\u0067 \u006b\u0068\u0103\u006e \u0067\u0069\u1ea5\u0079 \u0072\u00fa\u0074", ("thung", "khan", "giay", "rut")),
+    ("\u006b\u0068\u0103\u006e \u0067\u0069\u1ea5\u0079 topgia", ("khan", "giay", "topgia")),
+    ("\u0067\u0069\u1ea5\u0079 \u0072\u00fa\u0074 \u0064\u00e2\u0079", ("giay", "rut", "day")),
+    ("\u00e1o thun", ("ao", "thun")),
+    ("serum", ("serum",)),
+    ("\u0062\u00ec\u006e\u0068 \u006e\u01b0\u1edb\u0063", ("binh", "nuoc")),
+]
 _TITLE_GENERIC_RE = re.compile(
     r"^(?:tiktok\s*shop|tiktok|shop|product|unknown\s*product|item|not\s*found|access\s*denied|just\s*a\s*moment)$",
     re.IGNORECASE,
@@ -330,6 +424,112 @@ def _merge_keywords(primary: list[str], secondary: list[str], *, limit: int = 10
         if len(merged) >= limit:
             break
     return merged
+
+
+def _fold_vietnamese(text: Any) -> str:
+    normalized = unicodedata.normalize("NFD", str(text or "").lower())
+    folded = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return folded.replace("\u0111", "d")
+
+
+def _search_tokens(text: Any) -> list[str]:
+    folded = _fold_vietnamese(text)
+    folded = re.sub(r"[^\w\s]", " ", folded, flags=re.UNICODE)
+    tokens = [token for token in folded.split() if token]
+    return [token for token in tokens if token not in _SEARCH_QUERY_STOPWORDS]
+
+
+def _add_search_query(queries: list[str], query: Any) -> None:
+    cleaned = _clean_search_query(query)
+    if not cleaned:
+        return
+    folded = _fold_vietnamese(cleaned)
+    if folded in {_fold_vietnamese(item) for item in queries}:
+        return
+    queries.append(cleaned)
+
+
+def _clean_search_query(raw_query: Any) -> str:
+    query = re.sub(r"\s+", " ", str(raw_query or "")).strip(" -_|,.;:")
+    if not query:
+        return ""
+    query = re.sub(r"(?i)\btiktok\s*shop\b", " ", query)
+    query = re.sub(r"(?i)\b(?:unknown|product|item)\b", " ", query)
+    query = re.sub(r"\s+", " ", query).strip(" -_|,.;:")
+    folded = _fold_vietnamese(query)
+    folded = re.sub(r"[^\w\s]", " ", folded, flags=re.UNICODE)
+    raw_tokens = [token for token in folded.split() if token]
+    tokens = [token for token in raw_tokens if token not in _SEARCH_QUERY_STOPWORDS]
+    if len(tokens) < 2 or len(tokens) > 5:
+        return ""
+    folded_query = " ".join(tokens)
+    if folded_query in {_fold_vietnamese(item) for item in _JUNK_SEARCH_QUERIES}:
+        return ""
+    has_product_signal = any(token in _SEARCH_PRODUCT_NOUNS for token in tokens)
+    has_specific_signal = any(token.isdigit() or len(token) >= 5 for token in tokens)
+    if not has_product_signal and not has_specific_signal:
+        return ""
+    if len(tokens) == len(raw_tokens):
+        return query.lower()
+    return " ".join(tokens)
+
+
+def derive_search_queries(title: str, keywords: list[str] | None = None, description: str = "") -> list[str]:
+    """Build short deterministic TikTok search phrases from product metadata."""
+    keywords = keywords or []
+    source_text = " ".join([clean_product_title(title, max_length=260), description, " ".join(keywords)])
+    source_tokens = _search_tokens(source_text)
+    source_token_set = set(source_tokens)
+    queries: list[str] = []
+
+    for display, required_tokens in _SEARCH_QUERY_PHRASES:
+        if len(required_tokens) == 1:
+            continue
+        if all(token in source_token_set for token in required_tokens):
+            _add_search_query(queries, display)
+        if len(queries) >= 5:
+            return queries[:5]
+
+    for keyword in keywords:
+        _add_search_query(queries, keyword)
+        if len(queries) >= 5:
+            return queries[:5]
+
+    title_tokens = _search_tokens(title)
+    for size in range(5, 1, -1):
+        for index in range(0, max(0, len(title_tokens) - size + 1)):
+            phrase_tokens = title_tokens[index:index + size]
+            if not any(token in _SEARCH_PRODUCT_NOUNS or token.isdigit() for token in phrase_tokens):
+                continue
+            _add_search_query(queries, " ".join(phrase_tokens))
+            if len(queries) >= 5:
+                return queries[:5]
+
+    if len(queries) < 5:
+        for noun in _SEARCH_PRODUCT_NOUNS:
+            if noun not in source_token_set:
+                continue
+            nearby = [token for token in source_tokens if token == noun or token.isdigit() or len(token) >= 4]
+            if len(nearby) >= 2:
+                _add_search_query(queries, " ".join(nearby[:5]))
+            if len(queries) >= 5:
+                break
+
+    return queries[:5]
+
+
+def _validated_search_queries(raw_queries: Any, title: str, keywords: list[str], description: str) -> list[str]:
+    queries: list[str] = []
+    if isinstance(raw_queries, list):
+        for query in raw_queries:
+            _add_search_query(queries, query)
+            if len(queries) >= 5:
+                break
+    for query in derive_search_queries(title, keywords, description):
+        _add_search_query(queries, query)
+        if len(queries) >= 5:
+            break
+    return queries[:5]
 
 
 def _choose_tiktok_shop_title(shop_data: dict[str, Any]) -> str:
@@ -682,10 +882,16 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                 fetch_url_success = True
                 description = str(shop_data.get("description") or shop_data.get("meta_description") or "").strip()
                 deterministic_keywords = derive_keywords_from_title(shop_title)
+                deterministic_search_queries = derive_search_queries(shop_title, deterministic_keywords, description)
+                if not deterministic_search_queries:
+                    raise FatalDependencyError(
+                        f"Could not derive valid TikTok search queries from TikTok Shop title: {shop_title}"
+                    )
                 dom_result = {
                     "title": shop_title,
                     "description": description,
                     "keywords": deterministic_keywords,
+                    "search_queries": deterministic_search_queries,
                     "ok": True,
                     "source": "tiktok_shop_dom",
                 }
@@ -695,6 +901,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                         "event": "extract_product_info_using_dom_fallback",
                         "title": shop_title,
                         "keywords": deterministic_keywords,
+                        "search_queries": deterministic_search_queries,
                     },
                 )
 
@@ -762,6 +969,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                     "event": "extract_product_info_using_dom_fallback",
                     "title": dom_result["title"],
                     "keywords": dom_result["keywords"],
+                    "search_queries": dom_result["search_queries"],
                     "error": str(exc)[:300],
                 },
             )
@@ -774,6 +982,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                     "fetched_text_length": fetched_text_length,
                     "parsed_title": dom_result["title"],
                     "parsed_keywords": dom_result["keywords"],
+                    "search_queries": dom_result["search_queries"],
                     "source": dom_result["source"],
                     "raw_ai_text_preview": raw_text[:200] if raw_text else "",
                 },
@@ -783,12 +992,21 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
         refined_result = dict(dom_result)
         ai_description = str(parsed.get("description", "")).strip()
         ai_keywords = _meaningful_keywords(parsed.get("keywords"))
+        ai_search_queries = _validated_search_queries(
+            parsed.get("search_queries"),
+            refined_result["title"],
+            _merge_keywords(dom_result["keywords"], ai_keywords),
+            ai_description or refined_result["description"],
+        )
         changed = False
         if ai_description:
             refined_result["description"] = ai_description
             changed = True
         if ai_keywords:
             refined_result["keywords"] = _merge_keywords(dom_result["keywords"], ai_keywords)
+            changed = True
+        if ai_search_queries:
+            refined_result["search_queries"] = ai_search_queries
             changed = True
         refined_result["source"] = "tiktok_shop_dom_refined" if changed else dom_result["source"]
         LOGGER.info(
@@ -800,6 +1018,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                 "fetched_text_length": fetched_text_length,
                 "parsed_title": refined_result["title"],
                 "parsed_keywords": refined_result["keywords"],
+                "search_queries": refined_result["search_queries"],
                 "source": refined_result["source"],
                 "raw_ai_text_preview": raw_text[:200] if raw_text else "",
             },
@@ -820,6 +1039,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
 
     is_fallback_unknown = title.lower() == "unknown product" or not _is_meaningful_product_title(title)
     meaningful_keywords = _merge_keywords(keywords, [], limit=10)
+    search_queries = _validated_search_queries(parsed.get("search_queries"), title, meaningful_keywords, description)
     
     LOGGER.info(
         "extract_product_info_done",
@@ -830,6 +1050,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
             "fetched_text_length": fetched_text_length,
             "parsed_title": title,
             "parsed_keywords": keywords,
+            "search_queries": search_queries,
             "is_fallback_unknown": is_fallback_unknown,
             "raw_ai_text_preview": raw_text[:200] if raw_text else "",
         },
@@ -850,6 +1071,7 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                 "shop_data_error": shop_data.get("error") if shop_data else None,
                 "parsed_title": title,
                 "parsed_keywords": keywords,
+                "search_queries": search_queries,
                 "raw_ai_text_preview": raw_text[:500] if raw_text else "",
             },
         )
@@ -857,11 +1079,27 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
             f"Could not extract meaningful product title/keywords from product_url: {product_url}. "
             f"Got title='{title}', keywords={keywords}"
         )
+    if not search_queries:
+        LOGGER.error(
+            "extract_product_info_validation_failed",
+            extra={
+                "event": "extract_product_info_validation_failed",
+                "product_url": product_url,
+                "parsed_title": title,
+                "parsed_keywords": meaningful_keywords,
+                "search_queries": search_queries,
+                "raw_ai_text_preview": raw_text[:500] if raw_text else "",
+            },
+        )
+        raise FatalDependencyError(
+            f"Could not derive valid TikTok search queries from product info. title='{title}', keywords={meaningful_keywords}"
+        )
 
     result = {
         "title": title if not is_fallback_unknown else " ".join(meaningful_keywords),
         "description": description,
         "keywords": meaningful_keywords if len(meaningful_keywords) >= 3 else keywords,
+        "search_queries": search_queries,
         "ok": True,
     }
 

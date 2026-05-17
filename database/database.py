@@ -481,6 +481,80 @@ class AutomationDatabase:
             by_job.setdefault(jid, {})[key] = str(row["status"])
         return by_job
 
+    async def delete_job(self, job_id: UUID) -> bool:
+        """Delete a job with no active task execution and its task-owned records."""
+        job_id_str = str(job_id)
+        async with self.connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                job_result = await conn.execute("SELECT id FROM jobs WHERE id = ?", (job_id_str,))
+                job_row = await job_result.fetchone()
+                if job_row is None:
+                    await conn.execute("ROLLBACK")
+                    return False
+
+                running_result = await conn.execute(
+                    "SELECT COUNT(*) AS count FROM tasks WHERE job_id = ? AND status = ?",
+                    (job_id_str, TaskStatus.RUNNING.value),
+                )
+                running_row = await running_result.fetchone()
+                if int(running_row["count"] if running_row else 0) > 0:
+                    raise ConflictError("Cannot delete a job while one or more tasks are RUNNING")
+
+                task_result = await conn.execute("SELECT id FROM tasks WHERE job_id = ?", (job_id_str,))
+                task_ids = [str(row["id"]) for row in await task_result.fetchall()]
+
+                if task_ids:
+                    task_placeholders = ",".join("?" * len(task_ids))
+
+                    execution_result = await conn.execute(
+                        f"SELECT id FROM task_executions WHERE task_id IN ({task_placeholders})",
+                        task_ids,
+                    )
+                    execution_ids = [str(row["id"]) for row in await execution_result.fetchall()]
+
+                    if execution_ids:
+                        execution_placeholders = ",".join("?" * len(execution_ids))
+                        await conn.execute(
+                            f"UPDATE action_logs SET execution_id = NULL WHERE execution_id IN ({execution_placeholders})",
+                            execution_ids,
+                        )
+                        await conn.execute(
+                            f"DELETE FROM artifacts WHERE execution_id IN ({execution_placeholders})",
+                            execution_ids,
+                        )
+
+                    await conn.execute(
+                        f"""
+                        DELETE FROM task_dependencies
+                        WHERE task_id IN ({task_placeholders})
+                           OR depends_on_task_id IN ({task_placeholders})
+                        """,
+                        task_ids + task_ids,
+                    )
+                    await conn.execute(
+                        f"UPDATE action_logs SET task_id = NULL WHERE task_id IN ({task_placeholders})",
+                        task_ids,
+                    )
+                    await conn.execute(
+                        f"DELETE FROM task_executions WHERE task_id IN ({task_placeholders})",
+                        task_ids,
+                    )
+                    await conn.execute(
+                        f"DELETE FROM artifacts WHERE task_id IN ({task_placeholders})",
+                        task_ids,
+                    )
+
+                await conn.execute("DELETE FROM artifacts WHERE job_id = ?", (job_id_str,))
+                await conn.execute("UPDATE action_logs SET job_id = NULL WHERE job_id = ?", (job_id_str,))
+                await conn.execute("DELETE FROM tasks WHERE job_id = ?", (job_id_str,))
+                result = await conn.execute("DELETE FROM jobs WHERE id = ?", (job_id_str,))
+                await conn.execute("COMMIT")
+                return result.rowcount > 0
+            except Exception:
+                await conn.execute("ROLLBACK")
+                raise
+
 
     async def get_task(self, task_id: UUID) -> TaskRecord | None:
         async with self.connection() as conn:

@@ -54,6 +54,17 @@ def test_normalize_tiktok_search_items_filters_photos_by_default():
     assert normalize_tiktok_search_items(raw, "photo", source="tiktok_ads_power_search", allow_photo=True)
 
 
+def test_search_extractor_does_not_use_profile_links_as_video_urls():
+    from core.tiktok_search_extractor import JS_EXTRACT_SEARCH_CARDS, normalize_tiktok_search_items
+
+    assert 'const linkEl = el.querySelector(\'a[href*="/video/"]\');' in JS_EXTRACT_SEARCH_CARDS
+    assert normalize_tiktok_search_items(
+        [{"video_url": "https://www.tiktok.com/@alice", "caption": "profile"}],
+        "product demo",
+        source="tiktok_ads_power_search",
+    ) == []
+
+
 @pytest.mark.asyncio
 async def test_search_tiktok_handler_uses_adspower_profile(monkeypatch):
     import workers.handlers.tiktok.search_tiktok as handler
@@ -175,7 +186,7 @@ async def test_search_tiktok_handler_uses_adspower_profile(monkeypatch):
     assert result["source"] == "tiktok_ads_power_search"
     assert result["videos"][0]["url"] == "https://www.tiktok.com/@alice/video/123"
     assert result["videos"][0]["uploader_id"] == "alice"
-    assert page.url == "https://www.tiktok.com/search?q=product%20demo"
+    assert page.url == "https://www.tiktok.com/search/video?q=product%20demo"
     assert page.mouse.wheels
 
 

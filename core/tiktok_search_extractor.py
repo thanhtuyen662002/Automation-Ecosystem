@@ -12,6 +12,7 @@ SEARCH_CARD_SELECTOR = (
     'div[class*="DivItemContainerForSearch"], '
     'div[class*="DivItemContainer"]'
 )
+TIKTOK_VIDEO_URL_RE = re.compile(r"^https://www\.tiktok\.com/@[^/?#]+/video/\d+", re.IGNORECASE)
 
 
 JS_EXTRACT_SEARCH_CARDS = """
@@ -41,9 +42,7 @@ JS_EXTRACT_SEARCH_CARDS = """
 
     for (const el of unique) {
         try {
-            const linkEl = el.querySelector('a[href*="/video/"]')
-                        || el.querySelector('a[href*="/photo/"]')
-                        || el.querySelector('a[href*="/@"]');
+            const linkEl = el.querySelector('a[href*="/video/"]');
             const videoUrl = linkEl ? linkEl.href : '';
             if (!videoUrl || !videoUrl.includes('tiktok.com')) continue;
 
@@ -134,6 +133,17 @@ JS_SEARCH_PAGE_STATE = """
 () => {
     const errEl = document.querySelector('[data-e2e="search-error-title"]');
     const loginBtn = document.querySelector('[data-e2e="top-login-button"]');
+    const links = [...document.querySelectorAll('a[href]')].map((a) => a.href || '');
+    const tabs = [...document.querySelectorAll('[role="tab"], button, a')]
+        .map((el) => ({
+            text: (el.innerText || el.textContent || '').trim(),
+            selected: el.getAttribute('aria-selected') === 'true'
+                || el.className.toString().toLowerCase().includes('active')
+                || el.getAttribute('data-active') === 'true',
+        }))
+        .filter((item) => item.text && item.text.length <= 40);
+    const activeTab = tabs.find((item) => item.selected)
+        || tabs.find((item) => /videos?|video/i.test(item.text));
     return {
         has_error: !!errEl,
         needs_login: !!loginBtn,
@@ -141,6 +151,11 @@ JS_SEARCH_PAGE_STATE = """
         card_count: document.querySelectorAll(
             '[data-e2e="search_video-item"], div[class*="DivItemContainer"]'
         ).length,
+        active_tab_text: activeTab ? activeTab.text : '',
+        video_link_count: links.filter((href) => /\\/video\\/\\d+/.test(href)).length,
+        live_link_count: links.filter((href) => href.includes('/live')).length,
+        user_link_count: links.filter((href) => /tiktok\\.com\\/@[^/?#]+(?:[/?#].*)?$/.test(href)).length,
+        shop_link_count: links.filter((href) => href.includes('/shop') || href.includes('shop.tiktok.com')).length,
         title: document.title || '',
         url: location.href,
     };
@@ -218,6 +233,10 @@ def normalize_tiktok_search_items(
             continue
         is_video = "/video/" in url
         is_photo = "/photo/" in url
+        if is_video and not TIKTOK_VIDEO_URL_RE.match(url):
+            continue
+        if any(marker in url for marker in ("/live", "/tag/", "/music/", "/shop")) or "shop.tiktok.com" in url:
+            continue
         if not is_video and not (allow_photo and is_photo):
             continue
         if url in seen_urls:
@@ -253,4 +272,3 @@ def normalize_tiktok_search_items(
         )
 
     return videos
-

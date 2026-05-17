@@ -118,6 +118,7 @@ async def create_tiktok_pipeline(
                 "max_results": int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50")),
                 "min_views": min_views,
                 # {"from_task": ..., "field": ...} → resolved by worker before handler runs
+                "search_queries": {"from_task": _KEY_EXTRACT, "field": "search_queries"},
                 "keywords": {"from_task": _KEY_EXTRACT, "field": "keywords"},
             },
             "metadata": {"pipeline": "tiktok", "step": 2},

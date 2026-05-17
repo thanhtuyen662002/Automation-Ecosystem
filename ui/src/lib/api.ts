@@ -6,6 +6,11 @@ const RAW_BASE =
   '';
 const BASE = String(RAW_BASE).replace(/\/$/, '');
 
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${BASE}${path}`;
+}
+
 function buildHeaders(adminSecret?: string): HeadersInit {
   return {
     'Content-Type': 'application/json',
@@ -252,8 +257,26 @@ export const api = {
 
   jobs: () => request<any[]>('/jobs'),
 
+  deleteJob: (id: string) =>
+    request<void>(`/jobs/${id}`, { method: 'DELETE' }),
+
   launchPipeline: (payload: { product_url?: string; product_image_path?: string; top_n?: number; priority?: number; account_id: string; auto_publish?: boolean }) =>
     request<any>('/pipelines/tiktok', { method: 'POST', body: JSON.stringify(payload) }),
+
+  uploadProductImage: async (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(apiUrl('/api/v1/uploads/product-image'), {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const detail = body?.message ?? body?.detail ?? body?.error;
+      throw new Error(typeof detail === 'string' ? detail : `API ${res.status}: upload product image`);
+    }
+    return res.json() as Promise<{ path: string; url?: string; filename: string }>;
+  },
 
   artifacts: (limit = 50) =>
     request<{ items: any[] }>(`/api/v1/artifacts?limit=${limit}`).then(r => r.items ?? []),

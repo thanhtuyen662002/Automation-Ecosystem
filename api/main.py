@@ -15,7 +15,7 @@ import sqlite3
 from pythonjsonlogger import jsonlogger
 
 from api.dependencies import ApiSettings
-from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifacts, policy_rules, account_brain, identity, fleet_health, content_brain, ws, strategy, auth, decisions, ai_settings
+from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifacts, policy_rules, account_brain, identity, fleet_health, content_brain, ws, strategy, auth, decisions, ai_settings, uploads
 from api.routes import license as license_routes
 from api.middleware.license_guard import LicenseGuard
 from api.services.license_service import LicenseService
@@ -197,6 +197,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(decisions.router, prefix="/api/v1")
 app.include_router(ai_settings.router, prefix="/api/v1")
 app.include_router(license_routes.router)
+app.include_router(uploads.router)
 
 
 @app.middleware("http")

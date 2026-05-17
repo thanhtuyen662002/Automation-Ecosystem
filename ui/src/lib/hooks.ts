@@ -433,7 +433,21 @@ export function useLaunchPipeline() {
   });
 }
 
+export function useDeleteJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteJob(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+  });
+}
+
 // ── Niche Upsert ──────────────────────────────────────────────────────────────
+export function useUploadProductImage() {
+  return useMutation({
+    mutationFn: (file: File) => api.uploadProductImage(file),
+  });
+}
+
 export function useUpsertNiche() {
   const qc = useQueryClient();
   return useMutation({

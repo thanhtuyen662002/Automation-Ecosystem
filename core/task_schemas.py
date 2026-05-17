@@ -14,12 +14,12 @@ TASK_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
     "tiktok.extract_product_info": {
         "required": [],
         "optional": ["product_url", "product_image_path"],
-        "output": ["title", "description", "keywords", "ok"]
+        "output": ["title", "description", "keywords", "search_queries", "ok"]
     },
     "tiktok.search_tiktok": {
-        "required": ["account_id", "keywords", "max_results"],
-        "optional": ["min_views", "min_relevance_score", "max_per_author", "scroll_max", "stagnant_limit"],
-        "output": ["videos", "ok", "source"]
+        "required": ["account_id", "max_results"],
+        "optional": ["search_queries", "keywords", "min_views", "min_relevance_score", "max_per_author", "scroll_max", "stagnant_limit"],
+        "output": ["videos", "search_diagnostics", "ok", "source"]
     },
     "tiktok.select_videos": {
         "required": ["videos"],

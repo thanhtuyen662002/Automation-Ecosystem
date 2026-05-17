@@ -147,6 +147,8 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     assert search_task["account_id"] == str(account_id)
     assert search_task["payload"]["account_id"] == str(account_id)
     assert search_task["payload"]["min_views"] == 12345
+    assert search_task["payload"]["search_queries"] == {"from_task": "tiktok_extract_product_info", "field": "search_queries"}
+    assert search_task["payload"]["keywords"] == {"from_task": "tiktok_extract_product_info", "field": "keywords"}
     assert select_task["payload"]["top_n"] == 10
     assert download_task["payload"]["account_id"] == str(account_id)
     assert download_task["depends_on"] == ["tiktok_select"]

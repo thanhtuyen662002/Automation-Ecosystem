@@ -154,6 +154,25 @@ def test_derive_keywords_from_tiktok_shop_title():
     assert lowered.isdisjoint({"unknown", "product", "item", "shop"})
 
 
+def test_derive_search_queries_from_tiktok_shop_title():
+    from workers.handlers.tiktok.extract_product_info import derive_keywords_from_title, derive_search_queries
+
+    title = (
+        "Xu H\u01b0\u1edbng [SI\u00caU TI\u1ebeT KI\u1ec6M - SI\u00caU M\u1ec0M M\u1ecaN] "
+        "Th\u00f9ng 6 B\u1ecbch Kh\u0103n Gi\u1ea5y R\u00fat D\u00e2y "
+        "Ti\u1ec3u H\u1ea1 TOPGIA 4 L\u1edbp M\u1ec1m M\u1ecbn, Kh\u0103n Gi\u1ea5y V\u1ec7 Sinh 1000 t\u1edd"
+    )
+
+    queries = derive_search_queries(title, derive_keywords_from_title(title), "")
+    folded = {" ".join(query.lower().split()) for query in queries}
+
+    assert 1 <= len(queries) <= 5
+    assert "kh\u0103n gi\u1ea5y r\u00fat d\u00e2y" in folded or "khan giay rut day" in folded
+    assert "kh\u0103n gi\u1ea5y r\u00fat 4 l\u1edbp" in folded or "khan giay rut 4 lop" in folded
+    assert all(2 <= len(query.split()) <= 5 for query in queries)
+    assert not any("si\u00eau" in query.lower() or "xu h\u01b0\u1edbng" in query.lower() for query in queries)
+
+
 @pytest.mark.asyncio
 async def test_extract_product_info_tiktok_shop_dom_fallback_without_ai():
     from workers.handlers.tiktok.extract_product_info import extract_product_info_handler
@@ -190,8 +209,10 @@ async def test_extract_product_info_tiktok_shop_dom_fallback_without_ai():
         })
 
     lowered = {keyword.lower() for keyword in result["keywords"]}
+    folded_queries = {" ".join(query.lower().split()) for query in result["search_queries"]}
     assert result["ok"] is True
     assert result["source"] == "tiktok_shop_dom"
+    assert "kh\u0103n gi\u1ea5y r\u00fat d\u00e2y" in folded_queries or "khan giay rut day" in folded_queries
     assert "Thùng 6 Bịch Khăn Giấy Rút Dây" in result["title"]
     assert {"khăn giấy", "giấy rút dây", "thùng 6 bịch", "topgia", "4 lớp", "1000 tờ"} <= lowered
 

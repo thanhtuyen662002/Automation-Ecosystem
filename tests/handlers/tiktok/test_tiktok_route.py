@@ -139,6 +139,7 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     search_task = next(task for task in database.tasks if task["task_type"] == "tiktok.search_tiktok")
     select_task = next(task for task in database.tasks if task["task_type"] == "tiktok.select_videos")
     download_task = next(task for task in database.tasks if task["task_type"] == "tiktok.download_videos")
+    remake_task = next(task for task in database.tasks if task["task_type"] == "tiktok.remake_video")
     publish_task = next(task for task in database.tasks if task["task_type"] == "publish_tiktok")
 
     assert response.workflow_name == "tiktok_content_pipeline"
@@ -148,4 +149,9 @@ async def test_create_tiktok_pipeline_payload_includes_search_and_download_accou
     assert search_task["payload"]["min_views"] == 12345
     assert select_task["payload"]["top_n"] == 10
     assert download_task["payload"]["account_id"] == str(account_id)
+    assert download_task["depends_on"] == ["tiktok_select"]
+    assert download_task["max_retries"] == 2
+    assert remake_task["depends_on"] == ["tiktok_download", "tiktok_extract_product_info"]
+    assert remake_task["payload"]["video_paths"] == {"from_task": "tiktok_download", "field": "video_paths"}
+    assert remake_task["max_retries"] == 1
     assert publish_task["max_retries"] == 24

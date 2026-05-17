@@ -58,6 +58,7 @@ from workers.handlers.tiktok._base import (
     resolve_parent_result,
     run_subprocess,
 )
+from workers.worker_runtime import FatalDependencyError
 
 LOGGER = logging.getLogger("workers.handlers.tiktok.remake_video")
 
@@ -150,6 +151,7 @@ async def remake_video_handler(payload: dict[str, Any]) -> dict[str, Any]:
         if not video_paths_raw:
             raise ValueError("remake_video requires 'video_paths' in payload or parent_results")
         video_paths = list(video_paths_raw)
+    video_paths = _validate_existing_video_paths(video_paths)
 
     # hook_text: prefer explicit payload, then fall back to parent title
     hook_text: str = str(payload.get("hook_text", "")).strip()
@@ -232,6 +234,64 @@ async def remake_video_handler(payload: dict[str, Any]) -> dict[str, Any]:
         "segment_count": len(segment_files),
         "ok": True,
     }
+
+
+def _validate_existing_video_paths(video_paths: list[str]) -> list[str]:
+    valid_paths: list[str] = []
+    missing_paths: list[str] = []
+    empty_paths: list[str] = []
+    invalid_paths: list[str] = []
+
+    for raw_path in video_paths:
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            invalid_paths.append(path_text)
+            continue
+        path = Path(path_text)
+        try:
+            if not path.exists() or not path.is_file():
+                missing_paths.append(path_text)
+                continue
+            if path.stat().st_size <= 0:
+                empty_paths.append(path_text)
+                continue
+        except OSError:
+            missing_paths.append(path_text)
+            continue
+        valid_paths.append(str(path))
+
+    LOGGER.info(
+        "remake_video_validate_inputs",
+        extra={
+            "event": "remake_video_validate_inputs",
+            "input_count": len(video_paths),
+            "valid_count": len(valid_paths),
+            "missing_count": len(missing_paths),
+            "empty_count": len(empty_paths),
+            "invalid_count": len(invalid_paths),
+            "missing_paths": missing_paths[:10],
+            "empty_paths": empty_paths[:10],
+        },
+    )
+
+    if not valid_paths:
+        raise FatalDependencyError(
+            "Download step produced no existing files. "
+            f"received={len(video_paths)}, missing={missing_paths[:10]}, empty={empty_paths[:10]}, invalid={invalid_paths[:10]}"
+        )
+
+    if missing_paths or empty_paths or invalid_paths:
+        LOGGER.warning(
+            "remake_video_ignoring_missing_downloads",
+            extra={
+                "event": "remake_video_ignoring_missing_downloads",
+                "valid_paths": valid_paths,
+                "missing_paths": missing_paths[:10],
+                "empty_paths": empty_paths[:10],
+                "invalid_paths": invalid_paths[:10],
+            },
+        )
+    return valid_paths
 
 
 # ── Segment cutting ───────────────────────────────────────────────────────────

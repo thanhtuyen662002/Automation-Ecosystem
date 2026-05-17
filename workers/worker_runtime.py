@@ -106,7 +106,7 @@ class FatalDependencyError(Exception):
 
 
 def _retry_exhausted(retry_count: int, max_retries: int) -> bool:
-    return retry_count >= max_retries
+    return retry_count + 1 >= max_retries
 
 
 def _retry_delay(base_delay_seconds: int, max_delay_seconds: int, retry_count: int) -> int:
@@ -406,7 +406,8 @@ class WorkerRuntime:
                 acquired_task.task.id,
                 acquired_task.execution.id,
                 exc,
-                timed_out=False
+                timed_out=False,
+                force_final=True,
             )
         except asyncio.TimeoutError as exc:
             await self._mark_failed_safely(acquired_task, exc, timed_out=True, started_at=started_at)
@@ -493,10 +494,47 @@ class WorkerRuntime:
                                 "task_key": task_key,
                                 "field": field
                             }))
-                        return result[field]
+                        value = result[field]
+                        if field == "video_paths":
+                            LOGGER.info(
+                                "dependency_field_resolved",
+                                extra={
+                                    "event": "dependency_field_resolved",
+                                    "job_id": job_id,
+                                    "dependency_task_key": task_key,
+                                    "dependency_status": status,
+                                    "field": field,
+                                    "list_length": len(value) if isinstance(value, list) else None,
+                                },
+                            )
+                        return value
                     elif status == "FAILED":
+                        if field == "video_paths":
+                            LOGGER.warning(
+                                "dependency_field_resolve_blocked",
+                                extra={
+                                    "event": "dependency_field_resolve_blocked",
+                                    "job_id": job_id,
+                                    "dependency_task_key": task_key,
+                                    "dependency_status": status,
+                                    "field": field,
+                                    "list_length": None,
+                                },
+                            )
                         raise FatalDependencyError(f"Dependency task '{task_key}' failed permanently.")
                     else:
+                        if field == "video_paths":
+                            LOGGER.info(
+                                "dependency_field_resolve_blocked",
+                                extra={
+                                    "event": "dependency_field_resolve_blocked",
+                                    "job_id": job_id,
+                                    "dependency_task_key": task_key,
+                                    "dependency_status": status,
+                                    "field": field,
+                                    "list_length": None,
+                                },
+                            )
                         raise RetryableDependencyError(f"Dependency task '{task_key}' is not ready (status: {status}).")
 
                 return {k: await _resolve(v) for k, v in obj.items()}

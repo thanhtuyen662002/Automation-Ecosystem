@@ -27,6 +27,7 @@ from workers.handlers.tiktok._base import (
     SubprocessError,
     check_already_processed,
     get_media_output_dir,
+    get_ytdlp_path,
     random_jitter,
     resolve_parent_result,
     run_subprocess,
@@ -37,6 +38,7 @@ LOGGER = logging.getLogger("workers.handlers.tiktok.download_videos")
 _YTDLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 _TEMP_SUFFIXES = {".part", ".ytdl", ".temp", ".tmp", ".frag"}
 _VALID_MEDIA_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv"}
+_PREVIEW_CHARS = 1200
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +79,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
     video_paths: list[str] = []
     failed_urls: list[str] = []
+    failed_downloads: list[dict[str, Any]] = []
     cookie_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     cookie_file: Path | None = None
     cookie_export_attempted = False
@@ -97,12 +100,30 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 extra={"event": "download_video_start", "url": url, "index": idx},
             )
 
-            try:
-                await _download_with_ytdlp(url, output_template)
-            except SubprocessError as exc:
+            _remove_existing_attempt_files(output_dir, idx)
+
+            attempt_errors: list[dict[str, Any]] = []
+            primary_attempt = await _attempt_ytdlp_download(
+                url=url,
+                output_template=output_template,
+                output_dir=output_dir,
+                index=idx,
+                mode="primary",
+            )
+            if primary_attempt["ok"]:
+                downloaded = primary_attempt["path"]
+            else:
+                downloaded = None
+                attempt_errors.append(primary_attempt)
                 LOGGER.warning(
                     "download_video_primary_failed",
-                    extra={"event": "download_video_primary_failed", "url": url, "error": str(exc)[:300]},
+                    extra={
+                        "event": "download_video_primary_failed",
+                        "url": url,
+                        "error": primary_attempt.get("error", "")[:500],
+                        "stdout_preview": primary_attempt.get("stdout_preview", ""),
+                        "stderr_preview": primary_attempt.get("stderr_preview", ""),
+                    },
                 )
                 if not account_id:
                     LOGGER.info(
@@ -110,6 +131,12 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                         extra={"event": "download_cookie_fallback_skipped_no_account_id", "url": url},
                     )
                     failed_urls.append(url)
+                    failed_downloads.append({
+                        "url": url,
+                        "index": idx,
+                        "attempt_errors": attempt_errors,
+                        "matching_files": _matching_download_files(output_dir, idx),
+                    })
                     continue
 
                 if not cookie_export_attempted:
@@ -119,6 +146,14 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     try:
                         await _export_adspower_tiktok_cookies(account_id, cookie_file)
                     except Exception as cookie_exc:
+                        attempt_errors.append({
+                            "ok": False,
+                            "mode": "cookie_export",
+                            "error": str(cookie_exc),
+                            "stdout_preview": "",
+                            "stderr_preview": "",
+                            "matching_files": _matching_download_files(output_dir, idx),
+                        })
                         LOGGER.warning(
                             "download_video_cookie_fallback_failed",
                             extra={
@@ -131,31 +166,53 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
 
                 if cookie_file is None:
                     failed_urls.append(url)
+                    failed_downloads.append({
+                        "url": url,
+                        "index": idx,
+                        "attempt_errors": attempt_errors,
+                        "matching_files": _matching_download_files(output_dir, idx),
+                    })
                     continue
 
-                try:
-                    LOGGER.info(
-                        "download_video_cookie_fallback_start",
-                        extra={"event": "download_video_cookie_fallback_start", "url": url, "account_id": account_id},
-                    )
-                    await _download_with_ytdlp(url, output_template, cookies_file=cookie_file)
+                LOGGER.info(
+                    "download_video_cookie_fallback_start",
+                    extra={"event": "download_video_cookie_fallback_start", "url": url, "account_id": account_id},
+                )
+                fallback_attempt = await _attempt_ytdlp_download(
+                    url=url,
+                    output_template=output_template,
+                    output_dir=output_dir,
+                    index=idx,
+                    mode="cookie_fallback",
+                    cookies_file=cookie_file,
+                )
+                if fallback_attempt["ok"]:
+                    downloaded = fallback_attempt["path"]
                     LOGGER.info(
                         "download_video_cookie_fallback_done",
                         extra={"event": "download_video_cookie_fallback_done", "url": url, "account_id": account_id},
                     )
-                except SubprocessError as fallback_exc:
+                else:
+                    attempt_errors.append(fallback_attempt)
                     LOGGER.warning(
                         "download_video_cookie_fallback_failed",
                         extra={
                             "event": "download_video_cookie_fallback_failed",
                             "url": url,
-                            "error": str(fallback_exc)[:300],
+                            "error": fallback_attempt.get("error", "")[:500],
+                            "stdout_preview": fallback_attempt.get("stdout_preview", ""),
+                            "stderr_preview": fallback_attempt.get("stderr_preview", ""),
                         },
                     )
                     failed_urls.append(url)
+                    failed_downloads.append({
+                        "url": url,
+                        "index": idx,
+                        "attempt_errors": attempt_errors,
+                        "matching_files": _matching_download_files(output_dir, idx),
+                    })
                     continue
 
-            downloaded = _find_downloaded_file(output_dir, idx)
             if downloaded:
                 video_path = str(downloaded)
                 video_paths.append(video_path)
@@ -166,9 +223,20 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 LOGGER.warning(
                     "download_video_missing_file",
-                    extra={"event": "download_video_missing_file", "url": url},
+                    extra={
+                        "event": "download_video_missing_file",
+                        "url": url,
+                        "attempt_errors": attempt_errors,
+                        "matching_files": _matching_download_files(output_dir, idx),
+                    },
                 )
                 failed_urls.append(url)
+                failed_downloads.append({
+                    "url": url,
+                    "index": idx,
+                    "attempt_errors": attempt_errors,
+                    "matching_files": _matching_download_files(output_dir, idx),
+                })
 
             # Anti-abuse delay between downloads
             if idx < len(selected_videos) - 1:
@@ -179,8 +247,9 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             cookie_tmpdir.cleanup()
 
     if not video_paths:
+        diagnostics = _format_download_failures(failed_downloads)
         raise RuntimeError(
-            f"All {len(selected_videos)} videos failed to download. URLs: {failed_urls[:3]}"
+            f"All {len(selected_videos)} videos failed to download. URLs: {failed_urls[:3]}. {diagnostics}"
         )
 
     LOGGER.info(
@@ -195,8 +264,97 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_paths": video_paths,
         "failed_urls": failed_urls,
+        "failed_downloads": failed_downloads,
         "output_dir": str(output_dir),
         "ok": True,
+    }
+
+
+async def _attempt_ytdlp_download(
+    *,
+    url: str,
+    output_template: str,
+    output_dir: Path,
+    index: int,
+    mode: str,
+    cookies_file: Path | None = None,
+) -> dict[str, Any]:
+    try:
+        output = await _download_with_ytdlp(
+            url,
+            output_template,
+            mode=mode,
+            cookies_file=cookies_file,
+        )
+    except SubprocessError as exc:
+        matching_files = _matching_download_files(output_dir, index)
+        LOGGER.info(
+            "download_video_attempt_files",
+            extra={
+                "event": "download_video_attempt_files",
+                "url": url,
+                "index": index,
+                "mode": mode,
+                "matching_files": matching_files,
+            },
+        )
+        return {
+            "ok": False,
+            "mode": mode,
+            "error": str(exc),
+            "returncode": exc.returncode,
+            "stdout_preview": _preview(exc.stdout),
+            "stderr_preview": _preview(exc.stderr),
+            "matching_files": matching_files,
+        }
+
+    matching_files = _matching_download_files(output_dir, index)
+    LOGGER.info(
+        "download_video_attempt_files",
+        extra={
+            "event": "download_video_attempt_files",
+            "url": url,
+            "index": index,
+            "mode": mode,
+            "matching_files": matching_files,
+        },
+    )
+
+    downloaded = _find_downloaded_file(output_dir, index)
+    if downloaded is None:
+        error = "yt-dlp completed but output file was not found"
+        LOGGER.warning(
+            "download_video_missing_file_after_ytdlp",
+            extra={
+                "event": "download_video_missing_file_after_ytdlp",
+                "url": url,
+                "index": index,
+                "mode": mode,
+                "output_template": output_template,
+                "stdout_preview": output["stdout_preview"],
+                "stderr_preview": output["stderr_preview"],
+                "printed_filepaths": output["printed_filepaths"],
+                "matching_files": matching_files,
+            },
+        )
+        return {
+            "ok": False,
+            "mode": mode,
+            "error": error,
+            "stdout_preview": output["stdout_preview"],
+            "stderr_preview": output["stderr_preview"],
+            "printed_filepaths": output["printed_filepaths"],
+            "matching_files": matching_files,
+        }
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "path": downloaded,
+        "stdout_preview": output["stdout_preview"],
+        "stderr_preview": output["stderr_preview"],
+        "printed_filepaths": output["printed_filepaths"],
+        "matching_files": matching_files,
     }
 
 
@@ -204,20 +362,82 @@ async def _download_with_ytdlp(
     url: str,
     output_template: str,
     *,
+    mode: str,
     cookies_file: Path | None = None,
-) -> None:
+) -> dict[str, Any]:
+    try:
+        ytdlp_path = get_ytdlp_path()
+    except FileNotFoundError as exc:
+        raise SubprocessError(str(exc)) from exc
+
+    timeout = _download_timeout_seconds()
     args = [
-        "yt-dlp",
+        ytdlp_path,
         "--format", _YTDLP_FORMAT,
         "--merge-output-format", "mp4",
         "--no-playlist",
-        "--quiet",
+        "--restrict-filenames",
+        "--windows-filenames",
+        "--no-mtime",
+        "--force-overwrites",
+        "--retries", "2",
+        "--fragment-retries", "2",
+        "--print", "after_move:filepath",
         "--output", output_template,
     ]
     if cookies_file is not None:
         args.extend(["--cookies", str(cookies_file)])
     args.append(url)
-    await run_subprocess(*args, timeout=180.0)
+    LOGGER.info(
+        "download_video_ytdlp_start",
+        extra={
+            "event": "download_video_ytdlp_start",
+            "url": url,
+            "command_mode": mode,
+            "output_template": output_template,
+            "cookies_used": cookies_file is not None,
+            "timeout_seconds": timeout,
+            "yt_dlp_path": ytdlp_path,
+        },
+    )
+    try:
+        stdout, stderr = await run_subprocess(*args, timeout=timeout)
+    except SubprocessError as exc:
+        LOGGER.warning(
+            "download_video_ytdlp_failed",
+            extra={
+                "event": "download_video_ytdlp_failed",
+                "url": url,
+                "command_mode": mode,
+                "output_template": output_template,
+                "cookies_used": cookies_file is not None,
+                "returncode": exc.returncode,
+                "error": str(exc)[:500],
+                "stdout_preview": _preview(exc.stdout),
+                "stderr_preview": _preview(exc.stderr),
+            },
+        )
+        raise
+
+    printed_filepaths = _extract_printed_filepaths(stdout)
+    LOGGER.info(
+        "download_video_ytdlp_done",
+        extra={
+            "event": "download_video_ytdlp_done",
+            "url": url,
+            "command_mode": mode,
+            "output_template": output_template,
+            "cookies_used": cookies_file is not None,
+            "stdout_preview": _preview(stdout),
+            "stderr_preview": _preview(stderr),
+            "printed_filepaths": printed_filepaths,
+        },
+    )
+    return {
+        "stdout_preview": _preview(stdout),
+        "stderr_preview": _preview(stderr),
+        "printed_filepaths": printed_filepaths,
+    }
 
 
 def _find_downloaded_file(output_dir: Path, idx: int) -> Path | None:
@@ -243,6 +463,102 @@ def _find_downloaded_file(output_dir: Path, idx: int) -> Path | None:
 
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidates[0][2]
+
+
+def _download_timeout_seconds() -> float:
+    raw = os.environ.get("TIKTOK_DOWNLOAD_TIMEOUT_SECONDS", "90").strip()
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = 90.0
+    return max(10.0, timeout)
+
+
+def _preview(text: str, max_chars: int = _PREVIEW_CHARS) -> str:
+    return str(text or "").replace("\r", "\n").strip()[:max_chars]
+
+
+def _extract_printed_filepaths(stdout: str) -> list[str]:
+    paths: list[str] = []
+    for line in str(stdout or "").splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        lower = value.lower()
+        if lower.startswith("[") and "]" in lower:
+            continue
+        if Path(value).suffix.lower() in _VALID_MEDIA_SUFFIXES:
+            paths.append(value)
+    return paths[:10]
+
+
+def _matching_download_files(output_dir: Path, idx: int) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for path in sorted(output_dir.glob(f"video_{idx:02d}*")):
+        try:
+            stat = path.stat()
+            matches.append({
+                "name": path.name,
+                "path": str(path),
+                "size": stat.st_size,
+                "is_file": path.is_file(),
+                "is_temp": _is_temp_download_file(path),
+            })
+        except OSError as exc:
+            matches.append({
+                "name": path.name,
+                "path": str(path),
+                "error": str(exc)[:200],
+            })
+    return matches
+
+
+def _remove_existing_attempt_files(output_dir: Path, idx: int) -> None:
+    removed: list[str] = []
+    for path in output_dir.glob(f"video_{idx:02d}*"):
+        try:
+            if path.is_file():
+                path.unlink()
+                removed.append(path.name)
+        except OSError as exc:
+            LOGGER.warning(
+                "download_video_cleanup_failed",
+                extra={
+                    "event": "download_video_cleanup_failed",
+                    "index": idx,
+                    "path": str(path),
+                    "error": str(exc)[:200],
+                },
+            )
+    if removed:
+        LOGGER.info(
+            "download_video_cleanup_existing_files",
+            extra={
+                "event": "download_video_cleanup_existing_files",
+                "index": idx,
+                "output_dir": str(output_dir),
+                "removed_files": removed,
+            },
+        )
+
+
+def _format_download_failures(failed_downloads: list[dict[str, Any]]) -> str:
+    summaries: list[str] = []
+    for item in failed_downloads[:3]:
+        errors = item.get("attempt_errors") or []
+        last_error = errors[-1] if errors else {}
+        stderr = last_error.get("stderr_preview") or ""
+        stdout = last_error.get("stdout_preview") or ""
+        summaries.append(
+            "download_error("
+            f"index={item.get('index')}, "
+            f"url={item.get('url')}, "
+            f"error={last_error.get('error', '')[:500]}, "
+            f"stderr={stderr[:800]}, "
+            f"stdout={stdout[:400]}"
+            ")"
+        )
+    return " | ".join(summaries)
 
 
 def _is_temp_download_file(path: Path) -> bool:

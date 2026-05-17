@@ -108,6 +108,19 @@ def get_ytdlp_path() -> str:
 class SubprocessError(RuntimeError):
     """Raised when a subprocess exits with a non-zero code."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        returncode: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
 
 async def run_subprocess(
     *args: str,
@@ -136,7 +149,10 @@ async def run_subprocess(
 
     if proc.returncode != 0:
         raise SubprocessError(
-            f"Subprocess exited with code {proc.returncode}: {' '.join(args[:3])}\nstderr: {stderr[:500]}"
+            f"Subprocess exited with code {proc.returncode}: {' '.join(args[:3])}\nstderr: {stderr[:500]}",
+            stdout=stdout,
+            stderr=stderr,
+            returncode=proc.returncode,
         )
     return stdout, stderr
 

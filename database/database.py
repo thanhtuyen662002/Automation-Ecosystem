@@ -903,6 +903,7 @@ class AutomationDatabase:
         error: Exception | str,
         retry_logic: RetryConfig | None = None,
         timed_out: bool = False,
+        force_final: bool = False,
     ) -> TaskRecord:
         error_type = type(error).__name__ if isinstance(error, Exception) else "TaskError"
         error_message = str(error)
@@ -920,7 +921,8 @@ class AutomationDatabase:
                     raise InvalidStateTransition(f"Task must be RUNNING before failure: {current_status.value}")
 
                 retry_count = int(task_row["retry_count"])
-                should_retry = retry_count < int(task_row["max_retries"])
+                failure_count = retry_count + 1
+                should_retry = (not force_final) and failure_count < int(task_row["max_retries"])
                 target_status = TaskStatus.RETRY if should_retry else TaskStatus.FAILED
                 _ensure_task_transition(current_status, target_status)
                 next_run_at = (
@@ -941,13 +943,13 @@ class AutomationDatabase:
                 await conn.execute(
                     """
                     UPDATE tasks
-                    SET status = ?, next_run_at = ?, next_retry_at = ?,
+                    SET status = ?, retry_count = ?, next_run_at = ?, next_retry_at = ?,
                         completed_at = CASE WHEN ? = 'FAILED' THEN CURRENT_TIMESTAMP ELSE completed_at END,
                         updated_at = CURRENT_TIMESTAMP, error_type = ?, error_message = ?
                     WHERE id = ?
                     """,
                     (
-                        target_status.value, next_run_at, next_run_at if should_retry else None,
+                        target_status.value, failure_count, next_run_at, next_run_at if should_retry else None,
                         target_status.value, error_type, error_message[:4000], str(task_id)
                     ),
                 )

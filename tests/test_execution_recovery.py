@@ -20,6 +20,7 @@ from database.database import (
     TaskStatus,
 )
 from workers.worker_runtime import (
+    FatalDependencyError,
     RetryableDependencyError,
     WorkerRuntime,
     WorkerRuntimeSettings,
@@ -208,6 +209,7 @@ class TestWorkerRetryBudget(unittest.TestCase):
     def test_retry_exhaustion_uses_task_max_retries(self) -> None:
         self.assertFalse(_retry_exhausted(6, 288))
         self.assertTrue(_retry_exhausted(5, 5))
+        self.assertTrue(_retry_exhausted(4, 5))
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +268,32 @@ class TestWorkerRuntimeRecovery(unittest.IsolatedAsyncioTestCase):
         await runtime._run_acquired_task(acquired)
 
         mock_db.mark_task_success.assert_awaited_once()
+
+    async def test_fatal_dependency_error_is_final(self) -> None:
+        settings = _make_settings()
+        mock_db = AsyncMock()
+        mock_db.open = AsyncMock()
+        mock_db.close = AsyncMock()
+        mock_db.mark_task_failure = AsyncMock(return_value=_make_task(status=TaskStatus.FAILED))
+        mock_db.mark_task_for_retry = AsyncMock()
+        mock_db.update_execution_heartbeat = AsyncMock(return_value=True)
+
+        runtime = WorkerRuntime(settings=settings, database=mock_db)
+
+        async def fatal_handler(_payload):
+            raise FatalDependencyError("fatal")
+
+        runtime.register_task("ai", fatal_handler)
+
+        task = _make_task(task_type="ai", retry_count=0, max_retries=5)
+        execution = _make_execution(task.id)
+        acquired = AcquiredTask(task=task, execution=execution)
+
+        await runtime._run_acquired_task(acquired)
+
+        mock_db.mark_task_failure.assert_awaited_once()
+        self.assertTrue(mock_db.mark_task_failure.call_args.kwargs["force_final"])
+        mock_db.mark_task_for_retry.assert_not_awaited()
 
     async def test_pending_artifact_approval_does_not_consume_retry_budget(self) -> None:
         settings = _make_settings(retry_base_delay_seconds=5, retry_max_delay_seconds=300)

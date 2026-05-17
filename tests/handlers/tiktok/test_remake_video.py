@@ -38,6 +38,20 @@ async def test_remake_video_skips_decision_gate_without_signals(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_remake_video_missing_downloaded_files_is_fatal(tmp_path):
+    from workers.handlers.tiktok.remake_video import remake_video_handler
+    from workers.worker_runtime import FatalDependencyError
+
+    missing_file = tmp_path / "downloads" / "video_00.mp4"
+
+    with pytest.raises(FatalDependencyError, match="Download step produced no existing files"):
+        await remake_video_handler({
+            "job_id": "test-job",
+            "video_paths": [str(missing_file)],
+        })
+
+
+@pytest.mark.asyncio
 async def test_remake_video_idempotency():
     from workers.handlers.tiktok.remake_video import remake_video_handler
 

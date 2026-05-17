@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch as _patch
 
 
 def _make_gemini_response(text: str) -> MagicMock:
@@ -105,15 +105,13 @@ async def test_extract_product_info_idempotency():
 async def test_extract_product_info_malformed_llm_response():
     from workers.handlers.tiktok.extract_product_info import extract_product_info_handler
 
-    # Gemini returns garbage — handler should produce fallback title "Unknown Product"
+    # Gemini returns garbage — handler should fail validation instead of passing junk downstream.
     mock_response = _make_gemini_response("sorry I cannot help with that")
 
     patches = _gemini_patches(mock_response, page_text="some page content")
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
-        result = await extract_product_info_handler({"product_url": "https://example.com"})
-
-    assert result["ok"] is True
-    assert result["title"] == "Unknown Product"
+        with pytest.raises(RuntimeError, match="Could not extract meaningful product title/keywords"):
+            await extract_product_info_handler({"product_url": "https://example.com"})
 
 
 @pytest.mark.asyncio
@@ -134,3 +132,93 @@ async def test_extract_product_info_keywords_fallback():
 
     assert result["ok"] is True
     assert len(result["keywords"]) > 0  # derived from "Super Powerful Blender"
+
+
+def test_derive_keywords_from_tiktok_shop_title():
+    from workers.handlers.tiktok.extract_product_info import derive_keywords_from_title
+
+    title = (
+        "Xu Hướng [SIÊU TIẾT KIỆM - SIÊU MỀM MỊN] Thùng 6 Bịch Khăn Giấy Rút Dây "
+        "Tiểu Hạ TOPGIA 4 Lớp Mềm Mịn, Khăn Giấy Vệ Sinh 1000 tờ"
+    )
+
+    keywords = derive_keywords_from_title(title)
+    lowered = {keyword.lower() for keyword in keywords}
+
+    assert "khăn giấy" in lowered
+    assert "giấy rút dây" in lowered
+    assert "thùng 6 bịch" in lowered
+    assert "topgia" in lowered
+    assert "4 lớp" in lowered
+    assert "1000 tờ" in lowered
+    assert lowered.isdisjoint({"unknown", "product", "item", "shop"})
+
+
+@pytest.mark.asyncio
+async def test_extract_product_info_tiktok_shop_dom_fallback_without_ai():
+    from workers.handlers.tiktok.extract_product_info import extract_product_info_handler
+
+    title = (
+        "Xu Hướng [SIÊU TIẾT KIỆM - SIÊU MỀM MỊN] Thùng 6 Bịch Khăn Giấy Rút Dây "
+        "Tiểu Hạ TOPGIA 4 Lớp Mềm Mịn, Thành Phần Bột Gỗ Tự Nhiên Thân Thiện An Toàn, "
+        "Khăn Giấy Vệ Sinh 1000 tờ,4 lớp Tặng 2 móc treo tiện lợi"
+    )
+    shop_data = {
+        "ok": True,
+        "title": title,
+        "description": "Khăn giấy rút dây 4 lớp, thùng 6 bịch.",
+        "meta_description": "",
+        "page_title": "TikTok Shop",
+        "og_title": "",
+        "price": "₫99.000",
+        "sold_count": "1.2K đã được bán",
+        "rating": "4.7",
+        "shop_name": "TOPGIA",
+        "candidate_lines": [title],
+        "ld_json": None,
+    }
+
+    with (
+        _patch("workers.handlers.tiktok.extract_product_info.random_jitter", new=AsyncMock()),
+        _patch("workers.handlers.tiktok.extract_product_info.extract_tiktok_shop_product_info", new=AsyncMock(return_value=shop_data)),
+        _patch("workers.handlers.tiktok.extract_product_info.get_enabled_candidates", return_value=[]),
+        _patch("workers.handlers.tiktok.extract_product_info.fetch_url_text", new=AsyncMock(side_effect=AssertionError("should not fetch"))),
+    ):
+        result = await extract_product_info_handler({
+            "product_url": "https://shop.tiktok.com/view/product/1731773686751724630",
+            "account_id": "account-1",
+        })
+
+    lowered = {keyword.lower() for keyword in result["keywords"]}
+    assert result["ok"] is True
+    assert result["source"] == "tiktok_shop_dom"
+    assert "Thùng 6 Bịch Khăn Giấy Rút Dây" in result["title"]
+    assert {"khăn giấy", "giấy rút dây", "thùng 6 bịch", "topgia", "4 lớp", "1000 tờ"} <= lowered
+
+
+@pytest.mark.asyncio
+async def test_extract_product_info_tiktok_shop_missing_title_is_fatal():
+    from workers.handlers.tiktok.extract_product_info import extract_product_info_handler
+    from workers.worker_runtime import FatalDependencyError
+
+    shop_data = {
+        "ok": False,
+        "title": "",
+        "page_title": "TikTok Shop",
+        "og_title": "",
+        "meta_description": "generic",
+        "body_text_preview": "₫99.000\n1.2K đã được bán",
+        "candidate_lines": ["₫99.000", "1.2K đã được bán"],
+        "error": None,
+    }
+
+    with (
+        _patch("workers.handlers.tiktok.extract_product_info.random_jitter", new=AsyncMock()),
+        _patch("workers.handlers.tiktok.extract_product_info.extract_tiktok_shop_product_info", new=AsyncMock(return_value=shop_data)),
+        _patch("workers.handlers.tiktok.extract_product_info.fetch_url_text", new=AsyncMock(side_effect=AssertionError("should not fetch"))),
+    ):
+        with pytest.raises(FatalDependencyError, match="TikTok Shop page loaded but product title could not be extracted"):
+            await extract_product_info_handler({
+                "product_url": "https://shop.tiktok.com/view/product/1731773686751724630",
+                "account_id": "account-1",
+            })

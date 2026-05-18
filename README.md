@@ -63,6 +63,39 @@ TikTok Shop app-only videos require a logged-in Android device/emulator exposed
 through ADB; the pipeline will not bypass CAPTCHA, login, or disabled save
 controls.
 
+## Running TikTok Shop Mobile Fallback
+
+Install Android Platform Tools so `adb` is available on PATH. Android Emulator,
+LDPlayer, and Nox are all fine as long as `adb devices` shows a `device` entry.
+Install the TikTok app on that emulator/device, log in manually, and clear any
+captcha or checkpoint manually before running the pipeline.
+
+```env
+TIKTOK_DOWNLOAD_PROVIDER=auto
+TIKTOK_MOBILE_FALLBACK_ENABLED=true
+TIKTOK_MOBILE_PROVIDER=adb
+TIKTOK_MOBILE_DEVICE_ID=emulator-5554
+TIKTOK_ANDROID_TIKTOK_PACKAGE=com.zhiliaoapp.musically
+TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN=true
+TIKTOK_MOBILE_SCROLL_ROUNDS=10
+TIKTOK_MOBILE_SAVE_TIMEOUT_SECONDS=45
+TIKTOK_MOBILE_SAVE_SCAN_DIRS=/sdcard/DCIM,/sdcard/Movies,/sdcard/Download,/sdcard/Pictures
+TIKTOK_MOBILE_PULL_EXTENSIONS=.mp4,.mov,.mkv,.webm
+```
+
+Check the local tools:
+
+```powershell
+adb devices
+adb shell pm list packages | grep -i tiktok
+ffprobe -version
+```
+
+Limits: if the TikTok app does not show a legitimate Save video/Download button,
+the tool will not bypass that restriction. It only performs user-visible actions
+that the app permits, so not every TikTok Shop app-only video is guaranteed to
+download.
+
 ## Database
 
 Use `database/schema.sql` as the canonical local SQLite schema. It separates orchestration state in `tasks` from attempt state in `task_executions`.

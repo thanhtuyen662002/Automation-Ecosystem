@@ -19,6 +19,7 @@ from api.routes import jobs, system, tasks, tiktok, analytics, accounts, artifac
 from api.routes import license as license_routes
 from api.middleware.license_guard import LicenseGuard
 from api.services.license_service import LicenseService
+from core.runtime_env import bootstrap_runtime_env
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import (
@@ -29,8 +30,6 @@ from database.database import (
     NotFoundError,
     ValidationError,
 )
-from workers.handlers import register_default_handlers
-from workers.handlers.tiktok.download_videos import _warn_if_impersonation_dependency_missing
 from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
 
 
@@ -104,6 +103,9 @@ def configure_json_logging(level: str = "INFO") -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_json_logging()
+    runtime_env = bootstrap_runtime_env()
+    from workers.handlers.tiktok.download_videos import _warn_if_impersonation_dependency_missing
+
     _warn_if_impersonation_dependency_missing()
     settings = ApiSettings.from_env()
     database = AutomationDatabase(settings.database_url)
@@ -121,6 +123,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
     existing_worker = getattr(app.state, "worker_runtime", None)
     if settings.worker_enabled and existing_worker is None:
+        from workers.handlers import register_default_handlers
+
         os.environ.setdefault("WORKER_ID", "api-embedded-worker")
         worker_settings = WorkerRuntimeSettings.from_env()
         worker_runtime = WorkerRuntime(worker_settings)
@@ -131,6 +135,7 @@ async def lifespan(app: FastAPI):
             name="api-embedded-worker",
         )
     app.state.settings = settings
+    app.state.runtime_env = runtime_env
     app.state.database = database
     app.state.license_service = LicenseService.from_env()
     if scheduler is not None:

@@ -838,6 +838,46 @@ async def _attempt_mobile_download(
     save_video = getattr(provider, "save_video_if_available", None)
     saved_path = await save_video(output_dir, filename_prefix) if callable(save_video) else None
     if saved_path is not None:
+        saved_path = Path(saved_path)
+        file_size = saved_path.stat().st_size if saved_path.exists() else 0
+        if not saved_path.exists() or file_size <= _BROWSER_CAPTURE_MIN_BYTES:
+            return {
+                "ok": False,
+                "mode": "mobile",
+                "error": "Mobile fallback produced a file, but it is missing or too small to be a valid video.",
+                "failure_kind": "mobile_invalid_video_stream",
+                "status": "mobile_invalid_video_stream",
+                "path": str(saved_path),
+                "file_size": file_size,
+                "share_link": share_link,
+                "screenshot_path": str(screenshot_path) if screenshot_path else "",
+                "requires_mobile_app": requires_mobile_app,
+                "reason_failure_kinds": sorted(reason_failure_kinds),
+            }
+        if not await _has_video_stream(saved_path):
+            return {
+                "ok": False,
+                "mode": "mobile",
+                "error": "Mobile fallback produced a file, but ffprobe did not find a video stream.",
+                "failure_kind": "mobile_invalid_video_stream",
+                "status": "mobile_invalid_video_stream",
+                "path": str(saved_path),
+                "file_size": file_size,
+                "share_link": share_link,
+                "screenshot_path": str(screenshot_path) if screenshot_path else "",
+                "requires_mobile_app": requires_mobile_app,
+                "reason_failure_kinds": sorted(reason_failure_kinds),
+            }
+        LOGGER.info(
+            "download_mobile_fallback_success",
+            extra={
+                "event": "download_mobile_fallback_success",
+                "url": url,
+                "index": index,
+                "path": str(saved_path),
+                "file_size": file_size,
+            },
+        )
         return {
             "ok": True,
             "mode": "mobile",
@@ -847,15 +887,22 @@ async def _attempt_mobile_download(
             "screenshot_path": str(screenshot_path) if screenshot_path else "",
         }
 
+    save_failure_kind = str(getattr(provider, "last_save_failure_kind", "") or "mobile_download_not_available")
+    save_failure_message = str(getattr(provider, "last_save_message", "") or "").strip()
+    if save_failure_kind in {"mobile_save_failed", "mobile_open_failed"}:
+        save_failure_kind = "mobile_download_not_available"
+    error_message = save_failure_message or (
+        "TikTok app opened the video, but Save video/Download was not available or no file was created."
+    )
+    if save_failure_kind == "mobile_download_not_available":
+        error_message = "TikTok app opened the video, but Save video/Download was not available or no file was created."
+
     return {
         "ok": False,
         "mode": "mobile",
-        "error": (
-            "TikTok app opened the video, but no legitimate Save video/download file was available. "
-            "No CAPTCHA, login, or save restriction was bypassed."
-        ),
-        "failure_kind": "mobile_download_not_available",
-        "status": "mobile_download_not_available",
+        "error": error_message,
+        "failure_kind": save_failure_kind,
+        "status": save_failure_kind,
         "share_link": share_link,
         "screenshot_path": str(screenshot_path) if screenshot_path else "",
         "current_package": open_result.current_package,
@@ -1132,7 +1179,10 @@ def _is_no_retry_failure(attempt: dict[str, Any]) -> bool:
     return str(attempt.get("failure_kind") or "") in {
         "app_only_gate",
         "mobile_download_not_available",
+        "mobile_save_no_new_file",
+        "mobile_invalid_video_stream",
         "mobile_verification_required",
+        "mobile_login_required",
         "tiktok_web_403",
     }
 
@@ -1280,12 +1330,13 @@ def _build_failed_download(
 
 def _final_failure_kind(attempt_errors: list[dict[str, Any]]) -> str:
     kinds = _failure_kinds(attempt_errors)
-    if "app_only_gate" in kinds:
-        return "app_only_gate"
     for preferred in (
+        "mobile_fallback_disabled",
         "mobile_device_unavailable",
         "mobile_verification_required",
         "mobile_login_required",
+        "mobile_save_no_new_file",
+        "mobile_invalid_video_stream",
         "mobile_download_not_available",
         "tiktok_web_403",
         "http_403",
@@ -1293,6 +1344,8 @@ def _final_failure_kind(attempt_errors: list[dict[str, Any]]) -> str:
     ):
         if preferred in kinds:
             return preferred
+    if "app_only_gate" in kinds:
+        return "app_only_gate"
     return str((attempt_errors[-1] if attempt_errors else {}).get("failure_kind") or "download_failed")
 
 
@@ -1301,12 +1354,18 @@ def _failure_message(failure_kind: str, attempt_errors: list[dict[str, Any]]) ->
         return "This TikTok Shop video requires TikTok mobile app. Enable mobile fallback or choose another video."
     if failure_kind == "mobile_device_unavailable":
         return "Mobile fallback enabled but no Android device/emulator detected."
+    if failure_kind == "mobile_fallback_disabled":
+        return "This TikTok Shop video requires TikTok app. Set TIKTOK_MOBILE_FALLBACK_ENABLED=true to enable Android mobile fallback."
     if failure_kind == "mobile_verification_required":
         return "TikTok app requires manual verification; automation will not bypass it."
     if failure_kind == "mobile_login_required":
         return "TikTok app is not logged in on the Android device/emulator."
+    if failure_kind == "mobile_save_no_new_file":
+        return "TikTok app Save video was tapped, but no new media file was created on the Android device."
+    if failure_kind == "mobile_invalid_video_stream":
+        return "Mobile fallback produced a file, but ffprobe did not find a valid video stream."
     if failure_kind == "mobile_download_not_available":
-        return "TikTok app opened the video, but no legitimate Save video/download file was available."
+        return "TikTok app opened the video, but Save video/Download was not available or no file was created."
     last_error = str((attempt_errors[-1] if attempt_errors else {}).get("error") or "")
     return last_error or failure_kind
 
@@ -1482,6 +1541,8 @@ def _all_failures_are_permanent_download_failures(failed_downloads: list[dict[st
         "mobile_device_unavailable",
         "mobile_verification_required",
         "mobile_login_required",
+        "mobile_save_no_new_file",
+        "mobile_invalid_video_stream",
         "mobile_download_not_available",
         "browser_media_not_found",
         "browser_download_failed",

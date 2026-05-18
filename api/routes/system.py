@@ -9,8 +9,8 @@ from fastapi import APIRouter, Request
 
 from api.dependencies import DatabaseDependency, WorkflowManagerDependency
 from api.schemas import DispatchRequest, DispatchResponse, SystemStatsResponse
+from core.runtime_env import env_bool, runtime_dependency_warnings
 from workers.handlers.tiktok._base import get_media_output_dir
-from workers.handlers.tiktok.download_videos import get_ytdlp_impersonation_dependency_warning
 
 
 LOGGER = logging.getLogger("api.system")
@@ -26,9 +26,7 @@ def _deep_health_payload(
 ) -> dict[str, object]:
     can_execute_tasks = worker_running
     healthy = db_ok and scheduler_running and can_execute_tasks
-    warnings = []
-    if warning := get_ytdlp_impersonation_dependency_warning():
-        warnings.append(warning)
+    warnings = runtime_dependency_warnings()
     return {
         "status": "ok" if healthy else "degraded",
         "database": {"ok": db_ok, "error": db_error},
@@ -45,11 +43,11 @@ def _deep_health_payload(
 
 async def _mobile_tiktok_status_payload() -> dict[str, object]:
     payload: dict[str, object] = {
-        "mobile_fallback_enabled": os.environ.get("TIKTOK_MOBILE_FALLBACK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+        "mobile_fallback_enabled": env_bool("TIKTOK_MOBILE_FALLBACK_ENABLED", default=False),
         "mobile_provider": os.environ.get("TIKTOK_MOBILE_PROVIDER", "adb").strip().lower(),
         "configured_device_id": os.environ.get("TIKTOK_MOBILE_DEVICE_ID", "").strip(),
         "package_name": os.environ.get("TIKTOK_ANDROID_TIKTOK_PACKAGE", "com.zhiliaoapp.musically").strip(),
-        "manual_login_required": os.environ.get("TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN", "true").strip().lower() in {"1", "true", "yes", "on"},
+        "manual_login_required": env_bool("TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN", default=True),
     }
     try:
         from core.mobile_tiktok_provider import make_mobile_tiktok_provider
@@ -120,7 +118,9 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
         scheduler_running=scheduler_running,
         worker_running=worker_running,
     )
-    payload["mobile_tiktok"] = await _mobile_tiktok_status_payload()
+    mobile_status = await _mobile_tiktok_status_payload()
+    payload["mobile_tiktok"] = mobile_status
+    payload["warnings"] = runtime_dependency_warnings(mobile_status)
     can_execute_tasks = worker_running
 
     LOGGER.info(

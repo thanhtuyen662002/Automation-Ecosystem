@@ -816,6 +816,9 @@ def _float_value(env: Mapping[str, str], key: str, default: float, minimum: floa
 
 
 async def main() -> None:
+    from core.runtime_env import bootstrap_runtime_env
+
+    bootstrap_runtime_env()
     from workers.handlers import register_default_handlers
 
     settings = WorkerRuntimeSettings.from_env()

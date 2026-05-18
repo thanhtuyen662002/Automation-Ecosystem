@@ -17,10 +17,10 @@ import uvicorn
 from pythonjsonlogger import jsonlogger
 
 from api.main import app
+from core.runtime_env import bootstrap_runtime_env
 from core.scheduler import AutoDispatchScheduler, SchedulerSettings
 from core.workflow_manager import WorkflowManager
 from database.database import AutomationDatabase, RetryConfig
-from workers.handlers import register_default_handlers
 from workers.worker_runtime import WorkerRuntime, WorkerRuntimeSettings
 
 
@@ -38,8 +38,11 @@ class BackendSettings:
     def load(cls) -> "BackendSettings":
         app_data_dir = _get_appdata_dir()
         env_path = Path(os.getenv("AE_ENV_FILE", app_data_dir / ".env.production"))
+        database_url_from_os = "DATABASE_URL" in os.environ
+        os.environ.setdefault("AE_ENV_FILE", str(env_path))
         _ensure_env_file(env_path)
         _load_env(env_path, app_data_dir)
+        bootstrap_runtime_env()
         
         db_path = os.getenv("DATABASE_PATH")
         if not db_path:
@@ -50,7 +53,7 @@ class BackendSettings:
         
         # Resolve DATABASE_URL:
         current_db_url = os.environ.get("DATABASE_URL", "")
-        if not current_db_url or "postgresql" in current_db_url:
+        if not current_db_url or (not database_url_from_os and "postgresql" in current_db_url):
             # Standard format: sqlite+aiosqlite:///C:/path/to/db
             normalized_db_path = db_path.replace("\\", "/")
             os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{normalized_db_path}"
@@ -95,6 +98,8 @@ async def main() -> None:
         "backend_starting",
         extra={"event": "backend_starting", "host": settings.host, "port": settings.port},
     )
+
+    from workers.handlers import register_default_handlers
 
     worker_runtime = WorkerRuntime(worker_settings)
     register_default_handlers(worker_runtime.registry)
@@ -321,7 +326,7 @@ def _load_env(path: Path, app_data_dir: Path) -> None:
         key, value = line.split("=", 1)
         # Resolve placeholder for portability
         resolved_value = _strip_quotes(value.strip()).replace("{APP_DATA_DIR}", str(app_data_dir).replace("\\", "/"))
-        os.environ[key.strip()] = resolved_value
+        os.environ.setdefault(key.strip(), resolved_value)
 
 
 def _strip_quotes(value: str) -> str:

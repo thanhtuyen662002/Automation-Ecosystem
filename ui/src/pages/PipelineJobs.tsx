@@ -124,6 +124,10 @@ function mobileStatusText(value: unknown) {
   return value ? 'ok' : 'missing';
 }
 
+function mobileFlagText(value: unknown) {
+  return value ? 'enabled' : 'disabled';
+}
+
 function failureRequiresTikTokApp(failure: DownloadFailure) {
   const attempts = failure.provider_attempts ?? {};
   return Boolean(
@@ -132,6 +136,39 @@ function failureRequiresTikTokApp(failure: DownloadFailure) {
     attempts.browser_capture?.requires_mobile_app ||
     attempts.mobile?.requires_mobile_app ||
     (attempts.yt_dlp ?? []).some(attempt => attempt.requires_mobile_app),
+  );
+}
+
+function failureMessage(failure: DownloadFailure) {
+  switch (failure.failure_kind) {
+    case 'app_only_gate':
+      return 'Video này chỉ xem được trong ứng dụng TikTok. Bật Mobile Fallback hoặc chọn video khác.';
+    case 'mobile_fallback_disabled':
+      return 'Video app-only cần Android mobile fallback. Bật TIKTOK_MOBILE_FALLBACK_ENABLED=true rồi chạy lại.';
+    case 'mobile_device_unavailable':
+      return 'Mobile fallback đã bật nhưng không thấy Android emulator/device qua ADB.';
+    case 'mobile_verification_required':
+      return 'TikTok app đang yêu cầu captcha/checkpoint. Cần xử lý thủ công trên emulator.';
+    case 'mobile_login_required':
+      return 'TikTok app chưa đăng nhập trên emulator/device.';
+    case 'mobile_download_not_available':
+      return 'TikTok app đã mở video nhưng không có nút Save/Download hợp lệ hoặc không tạo file mới.';
+    case 'mobile_save_no_new_file':
+      return 'Đã bấm Save video nhưng emulator không tạo file media mới.';
+    case 'mobile_invalid_video_stream':
+      return 'File mobile fallback tải về không có video stream hợp lệ.';
+    default:
+      return failure.message || 'Download failed';
+  }
+}
+
+function failureHasKind(failure: DownloadFailure, kind: string) {
+  const attempts = failure.provider_attempts ?? {};
+  return (
+    failure.failure_kind === kind ||
+    attempts.browser_capture?.failure_kind === kind ||
+    attempts.mobile?.failure_kind === kind ||
+    (attempts.yt_dlp ?? []).some(attempt => attempt.failure_kind === kind)
   );
 }
 
@@ -211,6 +248,7 @@ export function PipelineJobs() {
     Boolean(account.session_valid) && account.metadata?.manual_login_state === 'connected_by_confirmation';
   const accountDisabled = (account: AccountSummary) => autoPublish ? !account.can_publish : !accountReady(account);
   const workerWarning = health?.execution?.can_execute_tasks === false || health?.worker?.running === false;
+  const providerStatus = mobileStatus ?? health?.mobile_tiktok;
 
   function toggle(id: string) {
     setExpanded(prev => {
@@ -391,6 +429,10 @@ export function PipelineJobs() {
             const downloadResult = downloadResultForJob(job);
             const downloadStats = downloadResult?.download_stats;
             const failedDownloads = Array.isArray(downloadResult?.failed_downloads) ? downloadResult.failed_downloads : [];
+            const hasDisabledAppOnlyVideo = failedDownloads.some((failure) =>
+              failureHasKind(failure, 'mobile_fallback_disabled') ||
+              (failureRequiresTikTokApp(failure) && providerStatus?.mobile_fallback_enabled === false)
+            );
             return (
               <div key={job.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {/* Job Header */}
@@ -497,6 +539,11 @@ export function PipelineJobs() {
                         )}
                         {failedDownloads.length > 0 && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                            {hasDisabledAppOnlyVideo && (
+                              <div style={{ border: '1px solid var(--warning, var(--border))', borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.625rem', background: 'var(--surface-2)', color: 'var(--text-secondary)', fontSize: '0.72rem' }}>
+                                App-only video detected. Bật <code>TIKTOK_MOBILE_FALLBACK_ENABLED=true</code> để dùng Android emulator/ADB.
+                              </div>
+                            )}
                             {failedDownloads.map((failure, failureIndex) => {
                               const attempts = failure.provider_attempts ?? {};
                               const ytDlpAttempts = Array.isArray(attempts.yt_dlp) ? attempts.yt_dlp : [];
@@ -510,9 +557,7 @@ export function PipelineJobs() {
                                     {requiresTikTokApp && <span className="badge badge-muted">Requires TikTok App</span>}
                                   </div>
                                   <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.2rem', overflowWrap: 'anywhere' }}>
-                                    {failure.failure_kind === 'app_only_gate'
-                                      ? 'Video này chỉ xem được trong ứng dụng TikTok. Bật Mobile Fallback hoặc chọn video khác.'
-                                      : failure.message}
+                                    {failureMessage(failure)}
                                   </div>
                                   {failure.url && (
                                     <div className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
@@ -551,19 +596,28 @@ export function PipelineJobs() {
               <div>
                 <div style={{ fontSize: '0.78rem', fontWeight: 700 }}>Mobile Provider</div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                  {mobileStatus?.mobile_provider ?? 'adb'} · {mobileStatus?.device_id || mobileStatus?.configured_device_id || 'no device'}
+                  {providerStatus?.mobile_provider ?? 'adb'} · {providerStatus?.device_id || providerStatus?.configured_device_id || 'no device'}
                 </div>
               </div>
-              <span className={`badge ${mobileStatus?.ok ? 'badge-success' : 'badge-muted'}`}>
-                {mobileStatus?.ok ? 'ready' : 'not ready'}
+              <span className={`badge ${providerStatus?.ok ? 'badge-success' : 'badge-muted'}`}>
+                {providerStatus?.ok ? 'ready' : 'not ready'}
               </span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.4rem', fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.625rem' }}>
-              <span>ADB: {mobileStatusText(mobileStatus?.adb_available)}</span>
-              <span>Device: {mobileStatusText(mobileStatus?.device_available)}</span>
-              <span>TikTok app: {mobileStatusText(mobileStatus?.tiktok_app_installed)}</span>
-              <span>Login check: {mobileStatus?.login_required || mobileStatus?.verification_required ? 'manual' : 'clear'}</span>
+              <span>Fallback: {mobileFlagText(providerStatus?.mobile_fallback_enabled)}</span>
+              <span>ADB: {mobileStatusText(providerStatus?.adb_available)}</span>
+              <span>Device ID: {providerStatus?.device_id || providerStatus?.configured_device_id || 'none'}</span>
+              <span>Device: {mobileStatusText(providerStatus?.device_available)}</span>
+              <span>TikTok app: {mobileStatusText(providerStatus?.tiktok_app_installed)}</span>
+              <span>App active: {providerStatus?.tiktok_app_active ? 'active' : 'inactive'}</span>
+              <span>Login: {providerStatus?.login_required ? 'required' : 'clear'}</span>
+              <span>Verification: {providerStatus?.verification_required ? 'required' : 'clear'}</span>
             </div>
+            {providerStatus?.mobile_fallback_enabled === false && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.625rem' }}>
+                App-only downloads need <code>TIKTOK_MOBILE_FALLBACK_ENABLED=true</code>.
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refetchMobileStatus()} disabled={isMobileStatusFetching}>
                 <RefreshCw size={13} /> Test Mobile TikTok

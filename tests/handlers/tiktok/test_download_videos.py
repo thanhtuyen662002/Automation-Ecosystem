@@ -279,7 +279,7 @@ async def test_download_continues_after_app_only_video(tmp_path, monkeypatch):
     assert result["download_stats"]["downloaded_count"] == 1
     assert result["download_stats"]["app_only_count"] == 1
     assert result["download_stats"]["http_403_count"] == 0
-    assert result["failed_downloads"][0]["failure_kind"] == "app_only_gate"
+    assert result["failed_downloads"][0]["failure_kind"] == "mobile_fallback_disabled"
     assert result["failed_downloads"][0]["provider_attempts"]["browser_capture"]["failure_kind"] == "app_only_gate"
     assert result["failed_downloads"][0]["provider_attempts"]["mobile"]["failure_kind"] == "mobile_fallback_disabled"
 

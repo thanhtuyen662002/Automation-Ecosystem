@@ -28,6 +28,7 @@ _SEARCH_URL = "https://www.tiktok.com/search/video?q={keyword}"
 _DEFAULT_MAX_RESULTS = int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50"))
 _DEFAULT_SCROLL_MAX = int(os.environ.get("TIKTOK_SEARCH_SCROLL_MAX", "12"))
 _DEFAULT_STAGNANT_LIMIT = int(os.environ.get("TIKTOK_SEARCH_STAGNANT_LIMIT", "5"))
+_MIN_ROUNDS_BEFORE_BOTTOM = 3
 _SOURCE = "tiktok_ads_power_search"
 _STOP_WORDS = {"v\u00e0", "c\u1ee7a", "cho", "v\u1edbi", "the", "and", "for", "to"}
 _TIKTOK_VIDEO_URL_RE = re.compile(r"^https://www\.tiktok\.com/@[^/?#]+/video/\d+", re.IGNORECASE)
@@ -203,6 +204,7 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     scroll_max = max(1, int(payload.get("scroll_max", _DEFAULT_SCROLL_MAX)))
     stagnant_limit = max(1, int(payload.get("stagnant_limit", _DEFAULT_STAGNANT_LIMIT)))
     min_views = max(0, int(payload.get("min_views") or _default_search_min_views()))
+    apply_min_views = _env_bool("TIKTOK_SEARCH_APPLY_MIN_VIEWS", default=False)
     min_relevance_score = max(
         0.0,
         min(1.0, float(payload.get("min_relevance_score") or _env_float("TIKTOK_SEARCH_MIN_RELEVANCE_SCORE", 0.25))),
@@ -226,6 +228,7 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "selected_queries": selected_queries,
             "max_results": max_results,
             "min_views": min_views,
+            "apply_min_views": apply_min_views,
             "min_relevance_score": min_relevance_score,
             "max_per_author": max_per_author,
             "viral_bypass_views": viral_bypass_views,
@@ -293,6 +296,7 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
                         scroll_max=scroll_max,
                         stagnant_limit=stagnant_limit,
                         min_views=min_views,
+                        apply_min_views=apply_min_views,
                         min_relevance_score=min_relevance_score,
                         max_per_author=max_per_author,
                         viral_bypass_views=viral_bypass_views,
@@ -320,7 +324,6 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         await database.close()
 
-    all_videos.sort(key=lambda video: int(video.get("views") or 0), reverse=True)
     result_videos = all_videos[:max_results]
 
     if not result_videos:
@@ -363,6 +366,7 @@ async def _search_keyword_with_page(
     scroll_max: int,
     stagnant_limit: int,
     min_views: int,
+    apply_min_views: bool,
     min_relevance_score: float,
     max_per_author: int,
     viral_bypass_views: int,
@@ -372,10 +376,14 @@ async def _search_keyword_with_page(
     search_url = _SEARCH_URL.format(keyword=quote(keyword, safe=""))
     started_at = time.monotonic()
     videos: list[dict[str, Any]] = []
+    raw_collected_videos: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
+    seen_raw_video_urls: set[str] = set()
     author_counts: dict[str, int] = {}
     stagnant_rounds = 0
+    unchanged_scroll_rounds = 0
     total_filter_stats = _empty_filter_stats()
+    min_rounds_before_bottom = min(scroll_max, _MIN_ROUNDS_BEFORE_BOTTOM)
     diagnostics: dict[str, Any] = {
         "query": keyword,
         "search_url": search_url,
@@ -435,12 +443,31 @@ async def _search_keyword_with_page(
             source=_SOURCE,
             allow_photo=allow_photo,
         )
+        raw_videos = [video for video in normalized if _is_acceptable_tiktok_video_url(str(video.get("url") or ""))]
+        raw_video_urls = [str(video.get("url") or "") for video in raw_videos]
+        raw_new_videos: list[dict[str, Any]] = []
+        for video in raw_videos:
+            raw_url = str(video.get("url") or "")
+            if not raw_url or raw_url in seen_raw_video_urls:
+                continue
+            seen_raw_video_urls.add(raw_url)
+            raw_video = dict(video)
+            relevance_score, matched_terms = _calculate_relevance_score(raw_video, keyword)
+            raw_video["relevance_score"] = round(relevance_score, 4)
+            raw_video["matched_keyword_terms"] = matched_terms
+            raw_video["needs_selection_filter"] = True
+            raw_new_videos.append(raw_video)
+            raw_collected_videos.append(raw_video)
+        raw_new_video_links = len(raw_new_videos)
+
         accepted, filter_stats = _filter_search_videos(
             normalized,
             keyword=keyword,
             seen_urls=seen_urls,
             author_counts=author_counts,
             min_views=min_views,
+            apply_min_views=apply_min_views,
+            apply_quality_filters=apply_min_views,
             min_relevance_score=min_relevance_score,
             max_per_author=max_per_author,
             viral_bypass_views=viral_bypass_views,
@@ -451,8 +478,8 @@ async def _search_keyword_with_page(
         before_count = len(videos)
         videos.extend(accepted)
 
-        new_count = len(videos) - before_count
-        if new_count == 0:
+        accepted_new_videos = len(videos) - before_count
+        if raw_new_video_links == 0:
             stagnant_rounds += 1
         else:
             stagnant_rounds = 0
@@ -466,9 +493,11 @@ async def _search_keyword_with_page(
                 "scroll_round": scroll_round,
                 "raw_items": len(raw_items),
                 "normalized": filter_stats["normalized"],
-                "accepted_new_videos": new_count,
+                "raw_video_links": len(raw_video_urls),
+                "raw_new_video_links": raw_new_video_links,
+                "accepted_new_videos": accepted_new_videos,
                 "video_link_count_total": int(page_state.get("video_link_count") or 0),
-                "new_video_links": new_count,
+                "new_video_links": raw_new_video_links,
                 "current_url": getattr(page, "url", ""),
                 "active_tab": page_state.get("active_tab_text") or "",
                 "dropped_low_views": filter_stats["dropped_low_views"],
@@ -482,9 +511,11 @@ async def _search_keyword_with_page(
             "scroll_round": scroll_round,
             "raw_items": len(raw_items),
             "normalized": filter_stats["normalized"],
-            "accepted_new_videos": new_count,
+            "raw_video_links": len(raw_video_urls),
+            "raw_new_video_links": raw_new_video_links,
+            "accepted_new_videos": accepted_new_videos,
             "video_link_count_total": int(page_state.get("video_link_count") or 0),
-            "new_video_links": new_count,
+            "new_video_links": raw_new_video_links,
             "current_url": getattr(page, "url", ""),
             "active_tab": page_state.get("active_tab_text") or "",
             "stagnant_rounds": stagnant_rounds,
@@ -493,7 +524,7 @@ async def _search_keyword_with_page(
         if len(videos) >= max_results:
             break
 
-        if stagnant_rounds >= stagnant_limit:
+        if stagnant_rounds >= stagnant_limit and scroll_round >= min_rounds_before_bottom:
             LOGGER.info(
                 "tiktok_search_stagnant_detected",
                 extra={
@@ -508,8 +539,20 @@ async def _search_keyword_with_page(
             )
             break
 
-        scroll_state = await _human_search_scroll(page)
-        if scroll_state.get("at_bottom"):
+        scroll_state = await _human_search_scroll_strong(page)
+        diagnostics["rounds"][-1]["scroll_state"] = scroll_state
+        if raw_new_video_links == 0 and _scroll_metrics_unchanged(scroll_state):
+            unchanged_scroll_rounds += 1
+        else:
+            unchanged_scroll_rounds = 0
+
+        bottom_detected = (
+            bool(scroll_state.get("at_bottom"))
+            and scroll_round >= min_rounds_before_bottom
+            and raw_new_video_links == 0
+            and unchanged_scroll_rounds >= 2
+        )
+        if bottom_detected:
             LOGGER.info(
                 "tiktok_search_scroll_bottom_detected",
                 extra={
@@ -518,14 +561,22 @@ async def _search_keyword_with_page(
                     "keyword": keyword,
                     "scroll_round": scroll_round,
                     "collected": len(videos),
+                    "raw_collected": len(raw_collected_videos),
+                    "raw_new_video_links": raw_new_video_links,
+                    "unchanged_scroll_rounds": unchanged_scroll_rounds,
+                    "scroll_state": scroll_state,
                     "source": _SOURCE,
                 },
             )
             break
 
-    videos.sort(key=lambda video: int(video.get("views") or 0), reverse=True)
+    if not videos and raw_collected_videos:
+        videos = raw_collected_videos
+        diagnostics["needs_selection_filter"] = True
+
     diagnostics["final_page_state"] = await _safe_page_state(page)
     diagnostics["filter_stats"] = total_filter_stats
+    diagnostics["raw_video_links_collected"] = len(raw_collected_videos)
     _warn_if_empty_text_high(
         total_filter_stats,
         account_id=account_id,
@@ -539,6 +590,8 @@ async def _search_keyword_with_page(
             "account_id": account_id,
             "keyword": keyword,
             "collected": len(videos),
+            "raw_collected": len(raw_collected_videos),
+            "needs_selection_filter": bool(diagnostics.get("needs_selection_filter")),
             "page_state": diagnostics["final_page_state"],
             "filter_stats": total_filter_stats,
             "elapsed_seconds": round(time.monotonic() - started_at, 1),
@@ -557,6 +610,7 @@ def _empty_filter_stats() -> dict[str, int]:
         "dropped_empty_text": 0,
         "dropped_author_cap": 0,
         "dropped_non_video": 0,
+        "dropped_duplicate": 0,
         "accepted": 0,
     }
 
@@ -576,6 +630,8 @@ def _filter_search_videos(
     min_relevance_score: float,
     max_per_author: int,
     viral_bypass_views: int,
+    apply_min_views: bool = True,
+    apply_quality_filters: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     stats = _empty_filter_stats()
     stats["normalized"] = len(normalized)
@@ -587,32 +643,35 @@ def _filter_search_videos(
             stats["dropped_non_video"] += 1
             continue
         if url in seen_urls:
+            stats["dropped_duplicate"] += 1
             continue
 
         views = max(int(video.get("views") or 0), 0)
-        if views < min_views:
+        if apply_min_views and views < min_views:
             stats["dropped_low_views"] += 1
             continue
 
-        viral_bypass = views >= viral_bypass_views
-        if not _has_meaningful_text(video, keyword) and not viral_bypass:
+        viral_bypass = apply_quality_filters and views >= viral_bypass_views
+        relevance_score, matched_terms = _calculate_relevance_score(video, keyword)
+
+        if apply_quality_filters and not _has_meaningful_text(video, keyword) and not viral_bypass:
             stats["dropped_empty_text"] += 1
             continue
 
-        relevance_score, matched_terms = _calculate_relevance_score(video, keyword)
-        if relevance_score < min_relevance_score and not viral_bypass:
+        if apply_quality_filters and relevance_score < min_relevance_score and not viral_bypass:
             stats["dropped_low_relevance"] += 1
             continue
 
         author = _author_key(video)
-        if author != "__unknown__" and author_counts.get(author, 0) >= max_per_author:
+        if apply_quality_filters and author != "__unknown__" and author_counts.get(author, 0) >= max_per_author:
             stats["dropped_author_cap"] += 1
             continue
 
         video["relevance_score"] = round(relevance_score, 4)
         video["matched_keyword_terms"] = matched_terms
+        video["needs_selection_filter"] = True
         seen_urls.add(url)
-        if author != "__unknown__":
+        if apply_quality_filters and author != "__unknown__":
             author_counts[author] = author_counts.get(author, 0) + 1
         accepted.append(video)
         stats["accepted"] += 1
@@ -837,19 +896,111 @@ async def _confirm_tiktok_auth(
 
 
 async def _human_search_scroll(page: Any) -> dict[str, Any]:
+    return await _human_search_scroll_strong(page)
+
+
+async def _human_search_scroll_strong(page: Any) -> dict[str, Any]:
     before = await _scroll_metrics(page)
-    await page.mouse.wheel(0, random.randint(1000, 1800))
-    await asyncio.sleep(random.uniform(1.0, 2.3))
-    await page.mouse.wheel(0, -random.randint(120, 360))
-    await asyncio.sleep(random.uniform(0.7, 1.6))
-    await page.mouse.wheel(0, random.randint(600, 1300))
-    await asyncio.sleep(random.uniform(1.2, 2.8))
+    video_link_count_before = await _video_link_count(page)
+
+    try:
+        mouse = getattr(page, "mouse", None)
+        if mouse is not None:
+            await mouse.wheel(0, random.randint(2200, 2800))
+            await asyncio.sleep(random.uniform(0.7, 1.2))
+    except Exception:
+        pass
+
+    try:
+        keyboard = getattr(page, "keyboard", None)
+        if keyboard is not None:
+            await keyboard.press("PageDown")
+            await asyncio.sleep(random.uniform(0.7, 1.3))
+    except Exception:
+        pass
+
+    scrolled_container_count = 0
+    try:
+        container_result = await page.evaluate(
+            """() => {
+                const candidates = [document.scrollingElement, document.documentElement, document.body, ...document.querySelectorAll('main, section, div')]
+                    .filter(Boolean)
+                    .filter((el, index, arr) => arr.indexOf(el) === index)
+                    .filter((el) => {
+                        const style = window.getComputedStyle(el);
+                        const overflow = `${style.overflowY} ${style.overflow}`;
+                        return el.scrollHeight > el.clientHeight + 50 && /(auto|scroll|overlay)/i.test(overflow);
+                    })
+                    .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))
+                    .slice(0, 5);
+                let scrolled = 0;
+                for (const el of candidates) {
+                    const before = el.scrollTop;
+                    el.scrollTop = Math.min(el.scrollTop + 2000, el.scrollHeight);
+                    if (el.scrollTop !== before) scrolled += 1;
+                }
+                return { scrolled_container_count: scrolled };
+            }"""
+        )
+        if isinstance(container_result, dict):
+            scrolled_container_count = int(container_result.get("scrolled_container_count") or 0)
+        await asyncio.sleep(random.uniform(0.7, 1.2))
+    except Exception:
+        pass
+
+    try:
+        await page.evaluate(
+            """() => {
+                window.scrollTo(0, document.body.scrollHeight || document.documentElement.scrollHeight || 0);
+            }"""
+        )
+    except Exception:
+        pass
+
+    await asyncio.sleep(random.uniform(2.0, 4.0))
     after = await _scroll_metrics(page)
+    video_link_count_after = await _video_link_count(page)
+
     return {
-        "before": before,
-        "after": after,
-        "at_bottom": bool(after.get("at_bottom")) and after.get("scroll_y") == before.get("scroll_y"),
+        "before_window": before,
+        "after_window": after,
+        "scrolled_container_count": scrolled_container_count,
+        "video_link_count_before": video_link_count_before,
+        "video_link_count_after": video_link_count_after,
+        "at_bottom": bool(after.get("at_bottom")),
     }
+
+
+def _scroll_metrics_unchanged(scroll_state: dict[str, Any]) -> bool:
+    before = scroll_state.get("before_window")
+    after = scroll_state.get("after_window")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    before_signature = (
+        int(before.get("scroll_y") or 0),
+        int(before.get("scroll_height") or 0),
+        int(before.get("inner_height") or 0),
+    )
+    after_signature = (
+        int(after.get("scroll_y") or 0),
+        int(after.get("scroll_height") or 0),
+        int(after.get("inner_height") or 0),
+    )
+    return (
+        before_signature == after_signature
+        and int(scroll_state.get("scrolled_container_count") or 0) == 0
+        and int(scroll_state.get("video_link_count_after") or 0) <= int(scroll_state.get("video_link_count_before") or 0)
+    )
+
+
+async def _video_link_count(page: Any) -> int:
+    try:
+        count = await page.evaluate(
+            """() => document.querySelectorAll('a[href*="/video/"]').length"""
+        )
+        return int(count) if isinstance(count, int | float) else 0
+    except Exception:
+        return 0
 
 
 async def _scroll_metrics(page: Any) -> dict[str, Any]:

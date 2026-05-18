@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 
 SEARCH_CARD_SELECTOR = (
@@ -50,7 +51,6 @@ JS_EXTRACT_SEARCH_CARDS = """
                 el.querySelector('[data-e2e="video-author-uniqueid"]') ||
                 el.querySelector('[data-e2e*="author-uniqueid"]')       ||
                 el.querySelector('[data-e2e*="author"]')                ||
-                el.querySelector('a[href*="/@"][class*="author"]')      ||
                 el.querySelector('span[class*="AuthorTitle"]')          ||
                 el.querySelector('p[class*="author"]')                  ||
                 el.querySelector('h3[class*="author"]');
@@ -133,6 +133,7 @@ JS_SEARCH_PAGE_STATE = """
 () => {
     const errEl = document.querySelector('[data-e2e="search-error-title"]');
     const loginBtn = document.querySelector('[data-e2e="top-login-button"]');
+    const currentUrl = location.href;
     const links = [...document.querySelectorAll('a[href]')].map((a) => a.href || '');
     const tabs = [...document.querySelectorAll('[role="tab"], button, a')]
         .map((el) => ({
@@ -144,6 +145,9 @@ JS_SEARCH_PAGE_STATE = """
         .filter((item) => item.text && item.text.length <= 40);
     const activeTab = tabs.find((item) => item.selected)
         || tabs.find((item) => /videos?|video/i.test(item.text));
+    const activeTabText = currentUrl.includes('/search/video')
+        ? 'Video'
+        : (activeTab ? activeTab.text : '');
     return {
         has_error: !!errEl,
         needs_login: !!loginBtn,
@@ -151,7 +155,7 @@ JS_SEARCH_PAGE_STATE = """
         card_count: document.querySelectorAll(
             '[data-e2e="search_video-item"], div[class*="DivItemContainer"]'
         ).length,
-        active_tab_text: activeTab ? activeTab.text : '',
+        active_tab_text: activeTabText,
         video_link_count: links.filter((href) => /\\/video\\/\\d+/.test(href)).length,
         live_link_count: links.filter((href) => href.includes('/live')).length,
         user_link_count: links.filter((href) => /tiktok\\.com\\/@[^/?#]+(?:[/?#].*)?$/.test(href)).length,
@@ -214,6 +218,32 @@ def author_from_url(url: str) -> str:
     return match.group(1) if match else ""
 
 
+def canonical_tiktok_video_url(raw_url: str) -> str:
+    """Return a query-free canonical TikTok video URL, or empty for non-videos."""
+    url = str(raw_url or "").strip()
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = f"https:{url}"
+    elif url.startswith("/@"):
+        url = f"https://www.tiktok.com{url}"
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+
+    host = parsed.netloc.lower()
+    if host != "tiktok.com" and not host.endswith(".tiktok.com"):
+        return ""
+
+    match = re.match(r"^/@([^/?#]+)/video/(\d+)/?$", parsed.path)
+    if not match:
+        return ""
+    author, video_id = match.groups()
+    return f"https://www.tiktok.com/@{author}/video/{video_id}"
+
+
 def normalize_tiktok_search_items(
     raw_items: list[dict[str, Any]],
     keyword: str,
@@ -228,16 +258,10 @@ def normalize_tiktok_search_items(
     seen_urls: set[str] = set()
 
     for item in raw_items:
-        url = str(item.get("video_url") or item.get("url") or "").strip()
-        if not url or "tiktok.com" not in url:
-            continue
-        is_video = "/video/" in url
-        is_photo = "/photo/" in url
-        if is_video and not TIKTOK_VIDEO_URL_RE.match(url):
+        url = canonical_tiktok_video_url(str(item.get("video_url") or item.get("url") or ""))
+        if not url:
             continue
         if any(marker in url for marker in ("/live", "/tag/", "/music/", "/shop")) or "shop.tiktok.com" in url:
-            continue
-        if not is_video and not (allow_photo and is_photo):
             continue
         if url in seen_urls:
             continue

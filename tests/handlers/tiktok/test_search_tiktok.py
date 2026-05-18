@@ -51,18 +51,49 @@ def test_normalize_tiktok_search_items_filters_photos_by_default():
     raw = [{"video_url": "https://www.tiktok.com/@alice/photo/123", "caption": "photo"}]
 
     assert normalize_tiktok_search_items(raw, "photo", source="tiktok_ads_power_search") == []
-    assert normalize_tiktok_search_items(raw, "photo", source="tiktok_ads_power_search", allow_photo=True)
+    assert normalize_tiktok_search_items(raw, "photo", source="tiktok_ads_power_search", allow_photo=True) == []
+
+
+def test_normalize_tiktok_search_items_canonicalizes_video_urls():
+    from core.tiktok_search_extractor import normalize_tiktok_search_items
+
+    videos = normalize_tiktok_search_items(
+        [
+            {
+                "video_url": "https://m.tiktok.com/@alice/video/123?lang=en#comments",
+                "caption": "demo",
+                "views_text": "not-a-count",
+            },
+            {"video_url": "/@bob/video/456?is_copy_url=1", "caption": "demo"},
+        ],
+        "product demo",
+        source="tiktok_ads_power_search",
+    )
+
+    assert [video["url"] for video in videos] == [
+        "https://www.tiktok.com/@alice/video/123",
+        "https://www.tiktok.com/@bob/video/456",
+    ]
+    assert videos[0]["views"] == 0
 
 
 def test_search_extractor_does_not_use_profile_links_as_video_urls():
     from core.tiktok_search_extractor import JS_EXTRACT_SEARCH_CARDS, normalize_tiktok_search_items
 
     assert 'const linkEl = el.querySelector(\'a[href*="/video/"]\');' in JS_EXTRACT_SEARCH_CARDS
+    assert 'a[href*="/@"]' not in JS_EXTRACT_SEARCH_CARDS
     assert normalize_tiktok_search_items(
         [{"video_url": "https://www.tiktok.com/@alice", "caption": "profile"}],
         "product demo",
         source="tiktok_ads_power_search",
     ) == []
+
+
+def test_search_page_state_prefers_video_url_for_active_tab():
+    from core.tiktok_search_extractor import JS_SEARCH_PAGE_STATE
+
+    assert "currentUrl.includes('/search/video')" in JS_SEARCH_PAGE_STATE
+    assert "? 'Video'" in JS_SEARCH_PAGE_STATE
 
 
 @pytest.mark.asyncio
@@ -295,3 +326,139 @@ def test_search_filter_viral_bypass_and_low_relevance_drop():
     assert accepted[0]["relevance_score"] < 0.25
     assert stats["dropped_low_relevance"] == 1
     assert stats["accepted"] == 1
+
+
+def test_search_filter_default_collect_mode_keeps_low_view_unknown_text():
+    from workers.handlers.tiktok.search_tiktok import _filter_search_videos
+
+    seen_urls: set[str] = set()
+    accepted, stats = _filter_search_videos(
+        [
+            {
+                "url": "https://www.tiktok.com/@a/video/1",
+                "title": "",
+                "description": "",
+                "author": "a",
+                "uploader_id": "a",
+                "views": 0,
+            }
+        ],
+        keyword="giấy rút dây",
+        seen_urls=seen_urls,
+        author_counts={},
+        min_views=10_000,
+        min_relevance_score=0.25,
+        max_per_author=3,
+        viral_bypass_views=300_000,
+        apply_min_views=False,
+        apply_quality_filters=False,
+    )
+
+    assert [video["url"] for video in accepted] == ["https://www.tiktok.com/@a/video/1"]
+    assert accepted[0]["views"] == 0
+    assert accepted[0]["needs_selection_filter"] is True
+    assert stats["dropped_low_views"] == 0
+    assert stats["accepted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_keyword_returns_raw_links_when_legacy_filter_drops_all(monkeypatch):
+    import workers.handlers.tiktok.search_tiktok as handler
+
+    class FakeMouse:
+        async def wheel(self, _dx: int, _dy: int) -> None:
+            return None
+
+    class FakeKeyboard:
+        async def press(self, _key: str) -> None:
+            return None
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.url = ""
+            self.mouse = FakeMouse()
+            self.keyboard = FakeKeyboard()
+            self.extract_calls = 0
+            self.scroll_y = 0
+
+        async def goto(self, url: str, **_kwargs: Any) -> None:
+            self.url = url
+
+        async def query_selector(self, _selector: str) -> None:
+            return None
+
+        async def wait_for_selector(self, _selector: str, **_kwargs: Any) -> None:
+            return None
+
+        async def evaluate(self, script: str) -> Any:
+            if script == handler.JS_SEARCH_PAGE_STATE:
+                return {
+                    "card_count": 2,
+                    "active_tab_text": "Video",
+                    "video_link_count": 2,
+                    "needs_login": False,
+                    "has_error": False,
+                }
+            if script == handler.JS_EXTRACT_SEARCH_CARDS:
+                self.extract_calls += 1
+                return [
+                    {
+                        "video_url": "https://www.tiktok.com/@alice/video/123?lang=en",
+                        "caption": "",
+                        "views_text": "12",
+                    },
+                    {
+                        "video_url": "https://www.tiktok.com/@bob/video/456",
+                        "caption": "",
+                        "views_text": "",
+                    },
+                ]
+            if 'a[href*="/video/"]' in script:
+                return 2
+            if "scroll_y" in script:
+                return {
+                    "scroll_y": self.scroll_y,
+                    "inner_height": 800,
+                    "scroll_height": 5000,
+                    "at_bottom": False,
+                }
+            if "scrolled_container_count" in script:
+                self.scroll_y += 1000
+                return {"scrolled_container_count": 1}
+            if "window.scrollTo" in script:
+                self.scroll_y += 1000
+                return None
+            return None
+
+    async def no_sleep(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(handler.asyncio, "sleep", no_sleep)
+
+    result = await handler._search_keyword_with_page(
+        FakePage(),
+        object(),
+        keyword="giấy rút dây",
+        account_id="account-1",
+        max_results=10,
+        scroll_max=3,
+        stagnant_limit=1,
+        min_views=10_000,
+        apply_min_views=True,
+        min_relevance_score=0.25,
+        max_per_author=3,
+        viral_bypass_views=300_000,
+        require_login=False,
+        allow_photo=False,
+    )
+
+    assert [video["url"] for video in result["videos"]] == [
+        "https://www.tiktok.com/@alice/video/123",
+        "https://www.tiktok.com/@bob/video/456",
+    ]
+    assert all(video["needs_selection_filter"] is True for video in result["videos"])
+    assert result["diagnostics"]["needs_selection_filter"] is True
+    assert result["diagnostics"]["rounds"][0]["raw_new_video_links"] == 2
+    assert result["diagnostics"]["rounds"][0]["accepted_new_videos"] == 0
+    assert result["diagnostics"]["rounds"][0]["new_video_links"] == 2
+    assert len(result["diagnostics"]["rounds"]) == 3

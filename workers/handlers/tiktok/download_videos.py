@@ -47,6 +47,14 @@ _TRACKED_MEDIA_SUFFIXES = _VALID_MEDIA_SUFFIXES | _AUDIO_ONLY_SUFFIXES
 _PREVIEW_CHARS = 1200
 _IMPERSONATION_DEPENDENCY_WARNED = False
 _BROWSER_CAPTURE_MIN_BYTES = 100 * 1024
+_DOWNLOAD_PROVIDERS = {"auto", "web_only", "ytdlp_only", "browser_first", "mobile_first"}
+_MOBILE_FALLBACK_FAILURE_KINDS = {"app_only_gate", "tiktok_web_403", "audio_only"}
+_APP_ONLY_GATE_TEXTS = (
+    "Xem video TikTok Shop trong \u1ee9ng d\u1ee5ng TikTok",
+    "Open in TikTok",
+    "Watch in TikTok app",
+    "View in TikTok app",
+)
 
 
 @dataclass
@@ -58,6 +66,10 @@ class BrowserDownloadResult:
     candidates: list[dict[str, Any]] = field(default_factory=list)
     content_type: str = ""
     file_size: int = 0
+    gate_text: str = ""
+    current_url: str = ""
+    page_title: str = ""
+    requires_mobile_app: bool = False
 
 
 async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -82,6 +94,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     _warn_if_impersonation_dependency_missing()
     download_provider = _download_provider_from_env()
+    mobile_fallback_enabled = _mobile_fallback_enabled()
 
     LOGGER.info(
         "download_videos_start",
@@ -91,6 +104,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "has_account_id": bool(account_id),
             "output_dir": str(output_dir),
             "download_provider": download_provider,
+            "mobile_fallback_enabled": mobile_fallback_enabled,
         },
     )
 
@@ -114,18 +128,44 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 continue
 
+            video_requires_mobile = _video_requires_mobile(video, url)
+            effective_provider = _effective_download_provider(download_provider, video, url)
             output_template = str(output_dir / f"video_{idx:02d}.%(ext)s")
             output_path = output_dir / f"video_{idx:02d}.mp4"
             LOGGER.info(
                 "download_video_start",
-                extra={"event": "download_video_start", "url": url, "index": idx, "download_provider": download_provider},
+                extra={
+                    "event": "download_video_start",
+                    "url": url,
+                    "index": idx,
+                    "download_provider": download_provider,
+                    "effective_download_provider": effective_provider,
+                    "requires_mobile_app": video_requires_mobile,
+                },
             )
 
             _remove_existing_attempt_files(output_dir, idx)
             attempt_errors: list[dict[str, Any]] = []
             downloaded: Path | None = None
 
-            if download_provider in {"browser_first", "browser_only"}:
+            if video_requires_mobile:
+                attempt_errors.append(_mobile_required_route_attempt(url))
+
+            if _provider_uses_mobile_first(effective_provider):
+                mobile_attempt = await _attempt_mobile_download(
+                    url=url,
+                    output_dir=output_dir,
+                    index=idx,
+                    filename_prefix=f"video_{idx:02d}",
+                    reason_failure_kinds=_failure_kinds(attempt_errors),
+                    requires_mobile_app=video_requires_mobile,
+                )
+                if mobile_attempt["ok"]:
+                    downloaded = mobile_attempt["path"]
+                else:
+                    attempt_errors.append(mobile_attempt)
+
+            if downloaded is None and _provider_uses_browser(effective_provider):
                 browser_attempt = await _attempt_browser_download(
                     account_id=account_id,
                     url=url,
@@ -136,17 +176,11 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     downloaded = browser_attempt["path"]
                 else:
                     attempt_errors.append(browser_attempt)
-                    if download_provider == "browser_only":
-                        failed_urls.append(url)
-                        failed_downloads.append({
-                            "url": url,
-                            "index": idx,
-                            "attempt_errors": attempt_errors,
-                            "matching_files": _matching_download_files(output_dir, idx),
-                        })
-                        continue
 
-            if downloaded is None and download_provider in {"browser_first", "ytdlp_only"}:
+            if downloaded is None and _has_failure_kind(attempt_errors, {"app_only_gate"}):
+                effective_provider = "mobile_first" if _mobile_fallback_enabled() else effective_provider
+
+            if downloaded is None and _provider_uses_ytdlp(effective_provider) and not _has_failure_kind(attempt_errors, {"app_only_gate"}):
                 primary_attempt = await _attempt_ytdlp_download(
                     url=url,
                     output_template=output_template,
@@ -169,7 +203,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                         },
                     )
 
-                    if account_id:
+                    if account_id and not _is_no_retry_failure(primary_attempt):
                         if not cookie_export_attempted:
                             cookie_export_attempted = True
                             cookie_tmpdir = tempfile.TemporaryDirectory(prefix="ae_tiktok_cookies_")
@@ -233,6 +267,20 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                             extra={"event": "download_cookie_fallback_skipped_no_account_id", "url": url},
                         )
 
+            if downloaded is None and _should_consider_mobile_fallback(effective_provider, attempt_errors, video_requires_mobile):
+                mobile_attempt = await _attempt_mobile_download(
+                    url=url,
+                    output_dir=output_dir,
+                    index=idx,
+                    filename_prefix=f"video_{idx:02d}",
+                    reason_failure_kinds=_failure_kinds(attempt_errors),
+                    requires_mobile_app=video_requires_mobile or _has_failure_kind(attempt_errors, {"app_only_gate"}),
+                )
+                if mobile_attempt["ok"]:
+                    downloaded = mobile_attempt["path"]
+                else:
+                    attempt_errors.append(mobile_attempt)
+
             if downloaded:
                 video_path = str(downloaded)
                 video_paths.append(video_path)
@@ -251,12 +299,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                     },
                 )
                 failed_urls.append(url)
-                failed_downloads.append({
-                    "url": url,
-                    "index": idx,
-                    "attempt_errors": attempt_errors,
-                    "matching_files": _matching_download_files(output_dir, idx),
-                })
+                failed_downloads.append(_build_failed_download(url, idx, attempt_errors, output_dir))
 
             if idx < len(selected_videos) - 1:
                 delay = random.uniform(3.0, 10.0)
@@ -265,15 +308,28 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         if cookie_tmpdir is not None:
             cookie_tmpdir.cleanup()
 
+    download_stats = _download_failure_stats(failed_downloads, downloaded_count=len(video_paths))
+
     if not video_paths:
         diagnostics = _format_download_failures(failed_downloads)
+        stats_text = _format_download_stats(download_stats)
+        if _all_failures_include_kind(failed_downloads, "mobile_device_unavailable"):
+            raise FatalDependencyError(
+                "Mobile fallback enabled but no Android device/emulator detected. "
+                f"All selected videos require TikTok app or were blocked by TikTok web. {stats_text}. {diagnostics}"
+            )
+        if _all_failures_are_app_only_or_blocked(failed_downloads):
+            raise FatalDependencyError(
+                "All selected videos require TikTok app or were blocked by TikTok web. "
+                f"{stats_text}. {diagnostics}"
+            )
         if _all_failures_are_permanent_download_failures(failed_downloads):
             raise FatalDependencyError(
                 f"All {len(selected_videos)} videos failed permanently during download. "
-                f"URLs: {failed_urls[:3]}. {diagnostics}"
+                f"URLs: {failed_urls[:3]}. {stats_text}. {diagnostics}"
             )
         raise RuntimeError(
-            f"All {len(selected_videos)} videos failed to download. URLs: {failed_urls[:3]}. {diagnostics}"
+            f"All {len(selected_videos)} videos failed to download. URLs: {failed_urls[:3]}. {stats_text}. {diagnostics}"
         )
 
     LOGGER.info(
@@ -282,6 +338,7 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
             "event": "download_videos_done",
             "downloaded": len(video_paths),
             "failed": len(failed_urls),
+            **download_stats,
         },
     )
 
@@ -289,6 +346,11 @@ async def download_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         "video_paths": video_paths,
         "failed_urls": failed_urls,
         "failed_downloads": failed_downloads,
+        "download_stats": download_stats,
+        "app_only_count": download_stats["app_only_count"],
+        "http_403_count": download_stats["http_403_count"],
+        "audio_only_count": download_stats["audio_only_count"],
+        "downloaded_count": download_stats["downloaded_count"],
         "output_dir": str(output_dir),
         "ok": True,
     }
@@ -330,6 +392,9 @@ async def _attempt_browser_download(
             "candidate_count": len(result.candidates),
             "content_type": result.content_type,
             "file_size": result.file_size,
+            "gate_text": result.gate_text,
+            "current_url": result.current_url,
+            "page_title": result.page_title,
         },
     )
     return {
@@ -337,9 +402,13 @@ async def _attempt_browser_download(
         "mode": "browser_capture",
         "error": result.error,
         "failure_kind": result.failure_kind,
+        "requires_mobile_app": result.requires_mobile_app,
         "candidates": result.candidates,
         "content_type": result.content_type,
         "file_size": result.file_size,
+        "gate_text": result.gate_text,
+        "current_url": result.current_url,
+        "page_title": result.page_title,
     }
 
 
@@ -407,6 +476,28 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                 page.on("response", lambda response: asyncio.create_task(on_response(response)))
                 await page.goto(video_url, wait_until="domcontentloaded", timeout=30_000)
                 await asyncio.sleep(random.uniform(2.0, 4.0))
+                app_gate = await _detect_tiktok_app_only_gate(page)
+                if app_gate:
+                    LOGGER.warning(
+                        "download_browser_app_only_gate_detected",
+                        extra={
+                            "event": "download_browser_app_only_gate_detected",
+                            "url": video_url,
+                            "current_url": app_gate.get("current_url", ""),
+                            "page_title": app_gate.get("page_title", ""),
+                            "gate_text": app_gate.get("gate_text", ""),
+                        },
+                    )
+                    return BrowserDownloadResult(
+                        ok=False,
+                        error="TikTok web shows an app-only gate for this video.",
+                        failure_kind="app_only_gate",
+                        requires_mobile_app=True,
+                        candidates=candidates,
+                        gate_text=str(app_gate.get("gate_text") or ""),
+                        current_url=str(app_gate.get("current_url") or ""),
+                        page_title=str(app_gate.get("page_title") or ""),
+                    )
                 if await _page_has_tiktok_verification(page):
                     return BrowserDownloadResult(
                         ok=False,
@@ -542,7 +633,7 @@ async def _attempt_ytdlp_download(
             "ok": False,
             "mode": mode,
             "error": error_message,
-            "failure_kind": "http_403" if is_http_403 else "yt_dlp_error",
+            "failure_kind": "tiktok_web_403" if is_http_403 else "yt_dlp_error",
             "returncode": exc.returncode,
             "stdout_preview": _preview(exc.stdout),
             "stderr_preview": _preview(exc.stderr),
@@ -649,6 +740,127 @@ async def _attempt_ytdlp_download(
         "stderr_preview": output["stderr_preview"],
         "printed_filepaths": output["printed_filepaths"],
         "matching_files": matching_files,
+    }
+
+
+async def _attempt_mobile_download(
+    *,
+    url: str,
+    output_dir: Path,
+    index: int,
+    filename_prefix: str,
+    reason_failure_kinds: set[str],
+    requires_mobile_app: bool = False,
+) -> dict[str, Any]:
+    if not _mobile_fallback_enabled():
+        error = (
+            "This TikTok Shop video requires TikTok mobile app. Enable mobile fallback."
+            if requires_mobile_app
+            else (
+                "Mobile fallback is disabled. Set TIKTOK_MOBILE_FALLBACK_ENABLED=true "
+                "to open app-only TikTok videos in a configured Android device/emulator."
+            )
+        )
+        return {
+            "ok": False,
+            "mode": "mobile",
+            "error": error,
+            "failure_kind": "mobile_fallback_disabled",
+            "requires_mobile_app": requires_mobile_app,
+            "reason_failure_kinds": sorted(reason_failure_kinds),
+        }
+
+    try:
+        from core.mobile_tiktok_provider import make_mobile_tiktok_provider
+
+        provider = make_mobile_tiktok_provider()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mode": "mobile",
+            "error": str(exc),
+            "failure_kind": "mobile_provider_invalid",
+            "requires_mobile_app": requires_mobile_app,
+            "reason_failure_kinds": sorted(reason_failure_kinds),
+        }
+
+    if not await provider.is_available():
+        return {
+            "ok": False,
+            "mode": "mobile",
+            "error": "Mobile fallback enabled but no Android device/emulator detected.",
+            "failure_kind": "mobile_device_unavailable",
+            "requires_mobile_app": requires_mobile_app,
+            "reason_failure_kinds": sorted(reason_failure_kinds),
+        }
+
+    LOGGER.info(
+        "download_mobile_fallback_start",
+        extra={
+            "event": "download_mobile_fallback_start",
+            "url": url,
+            "index": index,
+            "reason_failure_kinds": sorted(reason_failure_kinds),
+            "requires_mobile_app": requires_mobile_app,
+        },
+    )
+    open_result = await provider.open_url(url)
+    screenshot_path = await provider.screenshot(output_dir / f"{filename_prefix}_mobile_diagnostic.png")
+    if not open_result.ok:
+        LOGGER.warning(
+            "download_mobile_fallback_failed",
+            extra={
+                "event": "download_mobile_fallback_failed",
+                "url": url,
+                "index": index,
+                "failure_kind": open_result.failure_kind,
+                "message": open_result.message,
+                "screenshot_path": str(screenshot_path) if screenshot_path else "",
+                "current_package": open_result.current_package,
+            },
+        )
+        return {
+            "ok": False,
+            "mode": "mobile",
+            "error": open_result.message,
+            "failure_kind": open_result.failure_kind or "mobile_open_failed",
+            "status": open_result.status,
+            "stdout_preview": open_result.stdout_preview,
+            "stderr_preview": open_result.stderr_preview,
+            "screenshot_path": str(screenshot_path) if screenshot_path else "",
+            "current_package": open_result.current_package,
+            "requires_mobile_app": requires_mobile_app,
+            "reason_failure_kinds": sorted(reason_failure_kinds),
+        }
+
+    get_share_link = getattr(provider, "get_share_link", None)
+    share_link = await get_share_link() if callable(get_share_link) else None
+    save_video = getattr(provider, "save_video_if_available", None)
+    saved_path = await save_video(output_dir, filename_prefix) if callable(save_video) else None
+    if saved_path is not None:
+        return {
+            "ok": True,
+            "mode": "mobile",
+            "path": saved_path,
+            "status": "mobile_saved",
+            "share_link": share_link,
+            "screenshot_path": str(screenshot_path) if screenshot_path else "",
+        }
+
+    return {
+        "ok": False,
+        "mode": "mobile",
+        "error": (
+            "TikTok app opened the video, but no legitimate Save video/download file was available. "
+            "No CAPTCHA, login, or save restriction was bypassed."
+        ),
+        "failure_kind": "mobile_download_not_available",
+        "status": "mobile_download_not_available",
+        "share_link": share_link,
+        "screenshot_path": str(screenshot_path) if screenshot_path else "",
+        "current_package": open_result.current_package,
+        "requires_mobile_app": requires_mobile_app,
+        "reason_failure_kinds": sorted(reason_failure_kinds),
     }
 
 
@@ -835,14 +1047,112 @@ def _ytdlp_format() -> str:
 
 
 def _download_provider_from_env() -> str:
-    provider = os.environ.get("TIKTOK_DOWNLOAD_PROVIDER", "browser_first").strip().lower()
-    if provider not in {"browser_first", "ytdlp_only", "browser_only"}:
+    provider = os.environ.get("TIKTOK_DOWNLOAD_PROVIDER", "auto").strip().lower()
+    if provider not in _DOWNLOAD_PROVIDERS:
         LOGGER.warning(
             "download_provider_invalid",
-            extra={"event": "download_provider_invalid", "provider": provider, "fallback": "browser_first"},
+            extra={"event": "download_provider_invalid", "provider": provider, "fallback": "auto"},
         )
-        return "browser_first"
+        return "auto"
     return provider
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mobile_fallback_enabled() -> bool:
+    return _env_bool("TIKTOK_MOBILE_FALLBACK_ENABLED", default=False)
+
+
+def _effective_download_provider(configured_provider: str, video: dict[str, Any], url: str) -> str:
+    if _video_requires_mobile(video, url):
+        if configured_provider in {"auto", "browser_first"}:
+            return "mobile_first"
+        return configured_provider
+    if configured_provider != "auto":
+        return configured_provider
+    return "browser_first"
+
+
+def _video_requires_mobile(video: dict[str, Any], url: str) -> bool:
+    if bool(video.get("requires_mobile_app")):
+        return True
+    source = str(video.get("source") or "").lower()
+    if source.startswith("mobile_tiktok_shop"):
+        return True
+    return _is_tiktok_shop_url(url)
+
+
+def _is_tiktok_shop_url(url: str) -> bool:
+    lowered = str(url or "").strip().lower()
+    return (
+        "shop.tiktok.com" in lowered
+        or "/shop/product" in lowered
+        or "/view/product" in lowered
+        or "source=mobile_tiktok_shop" in lowered
+    )
+
+
+def _provider_uses_mobile_first(provider: str) -> bool:
+    return provider == "mobile_first"
+
+
+def _provider_uses_browser(provider: str) -> bool:
+    return provider in {"web_only", "browser_first"}
+
+
+def _provider_uses_ytdlp(provider: str) -> bool:
+    return provider in {"browser_first", "ytdlp_only"}
+
+
+def _failure_kinds(attempt_errors: list[dict[str, Any]]) -> set[str]:
+    return {str(error.get("failure_kind") or "") for error in attempt_errors if error.get("failure_kind")}
+
+
+def _has_failure_kind(attempt_errors: list[dict[str, Any]], kinds: set[str]) -> bool:
+    return bool(_failure_kinds(attempt_errors) & kinds)
+
+
+def _mobile_required_route_attempt(url: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "mode": "routing",
+        "error": "TikTok Shop video requires TikTok mobile app.",
+        "failure_kind": "app_only_gate",
+        "requires_mobile_app": True,
+        "url": url,
+    }
+
+
+def _is_no_retry_failure(attempt: dict[str, Any]) -> bool:
+    return str(attempt.get("failure_kind") or "") in {
+        "app_only_gate",
+        "mobile_download_not_available",
+        "mobile_verification_required",
+        "tiktok_web_403",
+    }
+
+
+def _has_attempt_mode(attempt_errors: list[dict[str, Any]], mode: str) -> bool:
+    return any(str(error.get("mode") or "") == mode for error in attempt_errors)
+
+
+def _should_consider_mobile_fallback(provider: str, attempt_errors: list[dict[str, Any]], requires_mobile_app: bool = False) -> bool:
+    if not attempt_errors:
+        return False
+    if _has_attempt_mode(attempt_errors, "mobile"):
+        return False
+    if provider == "mobile_first":
+        return True
+    if requires_mobile_app:
+        return True
+    if _mobile_fallback_enabled() and provider == "browser_first":
+        return _has_failure_kind(attempt_errors, _MOBILE_FALLBACK_FAILURE_KINDS)
+    return _has_failure_kind(attempt_errors, {"app_only_gate"})
 
 
 def _ytdlp_impersonate_target() -> str:
@@ -947,6 +1257,137 @@ def _download_error_message(exc: SubprocessError) -> str:
     return str(exc)
 
 
+def _build_failed_download(
+    url: str,
+    index: int,
+    attempt_errors: list[dict[str, Any]],
+    output_dir: Path,
+) -> dict[str, Any]:
+    failure_kind = _final_failure_kind(attempt_errors)
+    message = _failure_message(failure_kind, attempt_errors)
+    requires_mobile_app = _attempts_require_mobile_app(attempt_errors) or failure_kind == "app_only_gate"
+    return {
+        "url": url,
+        "index": index,
+        "failure_kind": failure_kind,
+        "message": message,
+        "requires_mobile_app": requires_mobile_app,
+        "provider_attempts": _provider_attempts_summary(attempt_errors),
+        "attempt_errors": attempt_errors,
+        "matching_files": _matching_download_files(output_dir, index),
+    }
+
+
+def _final_failure_kind(attempt_errors: list[dict[str, Any]]) -> str:
+    kinds = _failure_kinds(attempt_errors)
+    if "app_only_gate" in kinds:
+        return "app_only_gate"
+    for preferred in (
+        "mobile_device_unavailable",
+        "mobile_verification_required",
+        "mobile_login_required",
+        "mobile_download_not_available",
+        "tiktok_web_403",
+        "http_403",
+        "audio_only",
+    ):
+        if preferred in kinds:
+            return preferred
+    return str((attempt_errors[-1] if attempt_errors else {}).get("failure_kind") or "download_failed")
+
+
+def _failure_message(failure_kind: str, attempt_errors: list[dict[str, Any]]) -> str:
+    if failure_kind == "app_only_gate":
+        return "This TikTok Shop video requires TikTok mobile app. Enable mobile fallback or choose another video."
+    if failure_kind == "mobile_device_unavailable":
+        return "Mobile fallback enabled but no Android device/emulator detected."
+    if failure_kind == "mobile_verification_required":
+        return "TikTok app requires manual verification; automation will not bypass it."
+    if failure_kind == "mobile_login_required":
+        return "TikTok app is not logged in on the Android device/emulator."
+    if failure_kind == "mobile_download_not_available":
+        return "TikTok app opened the video, but no legitimate Save video/download file was available."
+    last_error = str((attempt_errors[-1] if attempt_errors else {}).get("error") or "")
+    return last_error or failure_kind
+
+
+def _provider_attempts_summary(attempt_errors: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "browser_capture": None,
+        "yt_dlp": [],
+        "mobile": None,
+    }
+    for attempt in attempt_errors:
+        mode = str(attempt.get("mode") or "")
+        item = {
+            "mode": mode,
+            "ok": bool(attempt.get("ok")),
+            "failure_kind": attempt.get("failure_kind") or "",
+            "message": attempt.get("error") or attempt.get("status") or "",
+            "requires_mobile_app": bool(attempt.get("requires_mobile_app")),
+        }
+        if mode == "browser_capture":
+            summary["browser_capture"] = item
+        elif mode in {"primary", "cookie_fallback"}:
+            summary["yt_dlp"].append(item)
+        elif mode == "mobile":
+            summary["mobile"] = item
+    return summary
+
+
+def _download_failure_stats(failed_downloads: list[dict[str, Any]], *, downloaded_count: int) -> dict[str, int]:
+    return {
+        "downloaded_count": downloaded_count,
+        "app_only_count": sum(
+            1
+            for item in failed_downloads
+            if _failed_download_has_kind(item, "app_only_gate") or bool(item.get("requires_mobile_app"))
+        ),
+        "http_403_count": sum(
+            1
+            for item in failed_downloads
+            if _failed_download_has_kind(item, "tiktok_web_403") or _failed_download_has_kind(item, "http_403")
+        ),
+        "audio_only_count": sum(1 for item in failed_downloads if _failed_download_has_kind(item, "audio_only")),
+        "failed_count": len(failed_downloads),
+    }
+
+
+def _format_download_stats(stats: dict[str, int]) -> str:
+    return (
+        f"downloaded_count={int(stats.get('downloaded_count') or 0)}, "
+        f"app_only_count={int(stats.get('app_only_count') or 0)}, "
+        f"http_403_count={int(stats.get('http_403_count') or 0)}, "
+        f"audio_only_count={int(stats.get('audio_only_count') or 0)}"
+    )
+
+
+def _failed_download_has_kind(item: dict[str, Any], failure_kind: str) -> bool:
+    if str(item.get("failure_kind") or "") == failure_kind:
+        return True
+    return any(str(error.get("failure_kind") or "") == failure_kind for error in (item.get("attempt_errors") or []))
+
+
+def _attempts_require_mobile_app(attempt_errors: list[dict[str, Any]]) -> bool:
+    return any(bool(error.get("requires_mobile_app")) for error in attempt_errors)
+
+
+def _all_failures_include_kind(failed_downloads: list[dict[str, Any]], failure_kind: str) -> bool:
+    return bool(failed_downloads) and all(_failed_download_has_kind(item, failure_kind) for item in failed_downloads)
+
+
+def _all_failures_are_app_only_or_blocked(failed_downloads: list[dict[str, Any]]) -> bool:
+    if not failed_downloads:
+        return False
+    for item in failed_downloads:
+        kinds = _failure_kinds(item.get("attempt_errors") or [])
+        if item.get("failure_kind"):
+            kinds.add(str(item["failure_kind"]))
+        if not kinds or not kinds & {"app_only_gate", "tiktok_web_403", "http_403", "audio_only"}:
+            return False
+    return True
+
+
 def _is_browser_media_candidate(url: str, content_type: str) -> bool:
     lowered_url = str(url or "").lower()
     lowered_type = str(content_type or "").lower()
@@ -989,6 +1430,35 @@ async def _extract_video_dom_urls(page: Any) -> list[str]:
         return []
 
 
+async def _detect_tiktok_app_only_gate(page: Any) -> dict[str, str] | None:
+    try:
+        body_text = str(await page.evaluate("() => document.body ? document.body.innerText : ''") or "")
+    except Exception:
+        body_text = ""
+    lowered = body_text.lower()
+    gate_text = ""
+    for phrase in _APP_ONLY_GATE_TEXTS:
+        if phrase.lower() in lowered:
+            gate_text = phrase
+            break
+    if not gate_text:
+        return None
+
+    try:
+        page_title = str(await page.title() or "")
+    except Exception:
+        try:
+            page_title = str(await page.evaluate("() => document.title || ''") or "")
+        except Exception:
+            page_title = ""
+
+    return {
+        "gate_text": gate_text,
+        "current_url": str(getattr(page, "url", "") or ""),
+        "page_title": page_title,
+    }
+
+
 async def _page_has_tiktok_verification(page: Any) -> bool:
     try:
         text = str(await page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
@@ -1003,9 +1473,16 @@ def _all_failures_are_permanent_download_failures(failed_downloads: list[dict[st
     if not failed_downloads:
         return False
     permanent_kinds = {
+        "app_only_gate",
         "audio_only",
+        "tiktok_web_403",
         "http_403",
         "verification_required",
+        "mobile_fallback_disabled",
+        "mobile_device_unavailable",
+        "mobile_verification_required",
+        "mobile_login_required",
+        "mobile_download_not_available",
         "browser_media_not_found",
         "browser_download_failed",
         "browser_provider_invalid",

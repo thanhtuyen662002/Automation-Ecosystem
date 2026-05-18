@@ -231,6 +231,49 @@ def test_search_tiktok_handler_has_no_video_search_fallbacks():
     assert "run_subprocess" not in source
 
 
+@pytest.mark.asyncio
+async def test_mobile_tiktok_shop_discovery_returns_app_only_candidates(monkeypatch):
+    import workers.handlers.tiktok.search_tiktok as handler
+    import core.mobile_tiktok_provider as mobile_provider
+
+    class FakeOpenResult:
+        ok = True
+        status = "opened"
+        failure_kind = ""
+        message = ""
+        current_package = "com.zhiliaoapp.musically"
+        state = {"tiktok_app_active": True}
+
+    class FakeMobileProvider:
+        async def is_available(self) -> bool:
+            return True
+
+        async def open_url(self, url: str) -> FakeOpenResult:
+            assert "shop.tiktok.com" in url
+            return FakeOpenResult()
+
+        async def collect_visible_video_links(self, max_results: int) -> list[dict[str, str]]:
+            return [{"url": "https://www.tiktok.com/@shop/video/123", "title": "Shop demo"}][:max_results]
+
+        async def scroll_feed(self, rounds: int) -> dict[str, int]:
+            return {"swipes": rounds}
+
+        async def get_current_state(self) -> dict[str, bool]:
+            return {"tiktok_app_active": True}
+
+    monkeypatch.setenv("TIKTOK_MOBILE_FALLBACK_ENABLED", "true")
+    monkeypatch.setattr(mobile_provider, "make_mobile_tiktok_provider", lambda: FakeMobileProvider())
+
+    result = await handler._mobile_discover_tiktok_shop_videos(
+        "https://shop.tiktok.com/view/product/1",
+        max_results=5,
+    )
+
+    assert result["videos"][0]["url"] == "https://www.tiktok.com/@shop/video/123"
+    assert result["videos"][0]["source"] == "mobile_tiktok_shop"
+    assert result["videos"][0]["requires_mobile_app"] is True
+
+
 def test_search_relevance_helper_scores_keyword_matches():
     from workers.handlers.tiktok.search_tiktok import _calculate_relevance_score
 

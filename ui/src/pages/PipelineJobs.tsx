@@ -1,9 +1,19 @@
 // ── Pipeline Jobs ─────────────────────────────────────────────────────────────
 import React, { useState } from 'react';
-import { RefreshCw, ChevronDown, ChevronRight, Upload, X, Trash2 } from 'lucide-react';
+import { Camera, ExternalLink, RefreshCw, ChevronDown, ChevronRight, Upload, X, Trash2 } from 'lucide-react';
 import { PageHeader, Badge, SlideOver, EmptyState, Skeleton, ConfirmDialog } from '@/components/ui';
 import { GlassIcon } from '@/components/Icons';
-import { useAccounts, useDeepHealth, useDeleteJob, useJobs, useLaunchPipeline, useUploadProductImage } from '@/lib/hooks';
+import {
+  useAccounts,
+  useDeepHealth,
+  useDeleteJob,
+  useJobs,
+  useLaunchPipeline,
+  useMobileTikTokStatus,
+  useOpenMobileTikTok,
+  useScreenshotMobileTikTok,
+  useUploadProductImage,
+} from '@/lib/hooks';
 import { apiUrl } from '@/lib/api';
 import { fmtRelative } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
@@ -42,6 +52,7 @@ type PipelineJob = {
   workflow_name?: string;
   status?: string;
   task_statuses?: Record<string, string>;
+  task_results?: Record<string, unknown>;
   metadata?: PipelineJobMetadata;
   input?: { product_url?: string; product_image_path?: string; [key: string]: unknown };
   error_type?: string;
@@ -61,6 +72,68 @@ type AccountSummary = {
   display_name?: string | null;
   account_handle?: string | null;
 };
+
+type DownloadAttemptSummary = {
+  mode?: string;
+  ok?: boolean;
+  failure_kind?: string;
+  message?: string;
+  requires_mobile_app?: boolean;
+};
+
+type DownloadFailure = {
+  url?: string;
+  failure_kind?: string;
+  message?: string;
+  requires_mobile_app?: boolean;
+  provider_attempts?: {
+    browser_capture?: DownloadAttemptSummary | null;
+    yt_dlp?: DownloadAttemptSummary[];
+    mobile?: DownloadAttemptSummary | null;
+  };
+};
+
+type DownloadResult = {
+  failed_downloads?: DownloadFailure[];
+  download_stats?: {
+    downloaded_count?: number;
+    app_only_count?: number;
+    http_403_count?: number;
+    audio_only_count?: number;
+    failed_count?: number;
+  };
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+}
+
+function downloadResultForJob(job: PipelineJob): DownloadResult | null {
+  const task = asRecord(job.task_results?.tiktok_download);
+  const result = asRecord(task?.result) ?? asRecord(job.task_results?.tiktok_download);
+  return result as DownloadResult | null;
+}
+
+function attemptLabel(attempt: DownloadAttemptSummary | null | undefined) {
+  if (!attempt) return 'not attempted';
+  if (attempt.ok) return 'ok';
+  return attempt.failure_kind || attempt.message || 'failed';
+}
+
+function mobileStatusText(value: unknown) {
+  return value ? 'ok' : 'missing';
+}
+
+function failureRequiresTikTokApp(failure: DownloadFailure) {
+  const attempts = failure.provider_attempts ?? {};
+  return Boolean(
+    failure.requires_mobile_app ||
+    failure.failure_kind === 'app_only_gate' ||
+    attempts.browser_capture?.requires_mobile_app ||
+    attempts.mobile?.requires_mobile_app ||
+    (attempts.yt_dlp ?? []).some(attempt => attempt.requires_mobile_app),
+  );
+}
 
 // Real per-task status from API (task_key → status string from DB)
 // Falls back to job-level heuristic if task_statuses is not populated.
@@ -106,6 +179,9 @@ export function PipelineJobs() {
   const { data: jobs = [], isLoading, error, refetch, dataUpdatedAt, isFetching } = useJobs();
   const { data: accounts = [] } = useAccounts();
   const { data: health } = useDeepHealth();
+  const { data: mobileStatus, refetch: refetchMobileStatus, isFetching: isMobileStatusFetching } = useMobileTikTokStatus();
+  const openMobileTikTok = useOpenMobileTikTok();
+  const screenshotMobileTikTok = useScreenshotMobileTikTok();
   const launch = useLaunchPipeline();
   const deleteJob = useDeleteJob();
   const uploadProductImage = useUploadProductImage();
@@ -312,6 +388,9 @@ export function PipelineJobs() {
               : DAG_STEPS.filter(step => step.key !== 'tiktok_publish' || job.metadata?.auto_publish);
             const jobStatus = job.status ?? 'pending';
             const deleteDisabled = deleteJob.isPending || hasRunningTask(job);
+            const downloadResult = downloadResultForJob(job);
+            const downloadStats = downloadResult?.download_stats;
+            const failedDownloads = Array.isArray(downloadResult?.failed_downloads) ? downloadResult.failed_downloads : [];
             return (
               <div key={job.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {/* Job Header */}
@@ -406,6 +485,52 @@ export function PipelineJobs() {
                       {job.started_at && <span>{t('job.lbl_started')} {fmtRelative(new Date(job.started_at).getTime() / 1000)}</span>}
                       {job.completed_at && <span>{t('job.lbl_done')} {fmtRelative(new Date(job.completed_at).getTime() / 1000)}</span>}
                     </div>
+                    {(downloadStats || failedDownloads.length > 0) && (
+                      <div style={{ marginTop: '0.75rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.75rem', background: 'var(--surface)' }}>
+                        {downloadStats && (
+                          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: failedDownloads.length ? '0.625rem' : 0 }}>
+                            <span>downloaded_count: {downloadStats.downloaded_count ?? 0}</span>
+                            <span>app_only_count: {downloadStats.app_only_count ?? 0}</span>
+                            <span>http_403_count: {downloadStats.http_403_count ?? 0}</span>
+                            <span>audio_only_count: {downloadStats.audio_only_count ?? 0}</span>
+                          </div>
+                        )}
+                        {failedDownloads.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                            {failedDownloads.map((failure, failureIndex) => {
+                              const attempts = failure.provider_attempts ?? {};
+                              const ytDlpAttempts = Array.isArray(attempts.yt_dlp) ? attempts.yt_dlp : [];
+                              const requiresTikTokApp = failureRequiresTikTokApp(failure);
+                              return (
+                                <div key={`${failure.url ?? 'download'}-${failureIndex}`} style={{ borderTop: failureIndex ? '1px solid var(--border)' : 0, paddingTop: failureIndex ? '0.5rem' : 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.74rem', color: 'var(--danger)', fontWeight: 600 }}>
+                                      {failure.failure_kind || 'download_failed'}
+                                    </span>
+                                    {requiresTikTokApp && <span className="badge badge-muted">Requires TikTok App</span>}
+                                  </div>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.2rem', overflowWrap: 'anywhere' }}>
+                                    {failure.failure_kind === 'app_only_gate'
+                                      ? 'Video này chỉ xem được trong ứng dụng TikTok. Bật Mobile Fallback hoặc chọn video khác.'
+                                      : failure.message}
+                                  </div>
+                                  {failure.url && (
+                                    <div className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
+                                      {failure.url}
+                                    </div>
+                                  )}
+                                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.35rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                    <span>browser_capture: {attemptLabel(attempts.browser_capture)}</span>
+                                    <span>yt_dlp: {ytDlpAttempts.length ? ytDlpAttempts.map(attemptLabel).join(', ') : 'not attempted'}</span>
+                                    <span>mobile: {attemptLabel(attempts.mobile)}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -420,6 +545,41 @@ export function PipelineJobs() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', padding: '0.75rem', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', marginBottom: '0.25rem' }}>
             <GlassIcon name="arrows-square-up-down" size={24} style={{ opacity: 0.7 }} />
             <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{t('job.dag_desc')}</div>
+          </div>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.75rem', background: 'var(--surface)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.625rem' }}>
+              <div>
+                <div style={{ fontSize: '0.78rem', fontWeight: 700 }}>Mobile Provider</div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                  {mobileStatus?.mobile_provider ?? 'adb'} · {mobileStatus?.device_id || mobileStatus?.configured_device_id || 'no device'}
+                </div>
+              </div>
+              <span className={`badge ${mobileStatus?.ok ? 'badge-success' : 'badge-muted'}`}>
+                {mobileStatus?.ok ? 'ready' : 'not ready'}
+              </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.4rem', fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.625rem' }}>
+              <span>ADB: {mobileStatusText(mobileStatus?.adb_available)}</span>
+              <span>Device: {mobileStatusText(mobileStatus?.device_available)}</span>
+              <span>TikTok app: {mobileStatusText(mobileStatus?.tiktok_app_installed)}</span>
+              <span>Login check: {mobileStatus?.login_required || mobileStatus?.verification_required ? 'manual' : 'clear'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refetchMobileStatus()} disabled={isMobileStatusFetching}>
+                <RefreshCw size={13} /> Test Mobile TikTok
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void openMobileTikTok.mutateAsync()} disabled={openMobileTikTok.isPending}>
+                <ExternalLink size={13} /> Open TikTok App
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void screenshotMobileTikTok.mutateAsync()} disabled={screenshotMobileTikTok.isPending}>
+                <Camera size={13} /> Screenshot Device
+              </button>
+            </div>
+            {(mobileStatus?.error || openMobileTikTok.error || screenshotMobileTikTok.error) && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--danger)', marginTop: '0.5rem' }}>
+                {mobileStatus?.error || (openMobileTikTok.error as Error | null)?.message || (screenshotMobileTikTok.error as Error | null)?.message}
+              </div>
+            )}
           </div>
           <div>
             <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.375rem' }}>{t('job.lbl_prod_url')}</label>

@@ -100,6 +100,34 @@ async def test_select_videos_all_filtered_out():
 
 
 @pytest.mark.asyncio
+async def test_select_videos_keeps_mobile_app_candidates_without_views():
+    from workers.handlers.tiktok.select_videos import select_videos_handler
+
+    payload = {
+        "videos": [
+            {
+                "url": "https://www.tiktok.com/@shop/video/123",
+                "title": "Shop demo",
+                "views": 0,
+                "likes": 0,
+                "duration": 0,
+                "source": "mobile_tiktok_shop",
+                "requires_mobile_app": True,
+            },
+        ],
+        "min_views": 10000,
+        "min_duration": 6.0,
+        "max_duration": 30.0,
+        "top_n": 1,
+    }
+
+    result = await select_videos_handler(payload)
+
+    assert result["ok"] is True
+    assert result["selected_videos"][0]["requires_mobile_app"] is True
+
+
+@pytest.mark.asyncio
 async def test_select_videos_allows_unknown_duration():
     from workers.handlers.tiktok.select_videos import select_videos_handler
 

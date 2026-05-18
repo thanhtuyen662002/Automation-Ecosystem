@@ -433,6 +433,31 @@ export function useLaunchPipeline() {
   });
 }
 
+export function useMobileTikTokStatus() {
+  return useQuery({
+    queryKey: ['mobileTikTokStatus'],
+    queryFn: api.mobileTikTokStatus,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useOpenMobileTikTok() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.openMobileTikTok,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mobileTikTokStatus'] }),
+  });
+}
+
+export function useScreenshotMobileTikTok() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.screenshotMobileTikTok,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mobileTikTokStatus'] }),
+  });
+}
+
 export function useDeleteJob() {
   const qc = useQueryClient();
   return useMutation({

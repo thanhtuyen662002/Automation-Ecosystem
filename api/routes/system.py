@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 
 from api.dependencies import DatabaseDependency, WorkflowManagerDependency
 from api.schemas import DispatchRequest, DispatchResponse, SystemStatsResponse
+from workers.handlers.tiktok._base import get_media_output_dir
 from workers.handlers.tiktok.download_videos import get_ytdlp_impersonation_dependency_warning
 
 
@@ -37,6 +41,26 @@ def _deep_health_payload(
         },
         "warnings": warnings,
     }
+
+
+async def _mobile_tiktok_status_payload() -> dict[str, object]:
+    payload: dict[str, object] = {
+        "mobile_fallback_enabled": os.environ.get("TIKTOK_MOBILE_FALLBACK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+        "mobile_provider": os.environ.get("TIKTOK_MOBILE_PROVIDER", "adb").strip().lower(),
+        "configured_device_id": os.environ.get("TIKTOK_MOBILE_DEVICE_ID", "").strip(),
+        "package_name": os.environ.get("TIKTOK_ANDROID_TIKTOK_PACKAGE", "com.zhiliaoapp.musically").strip(),
+        "manual_login_required": os.environ.get("TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN", "true").strip().lower() in {"1", "true", "yes", "on"},
+    }
+    try:
+        from core.mobile_tiktok_provider import make_mobile_tiktok_provider
+
+        provider = make_mobile_tiktok_provider()
+        state = await provider.get_current_state()
+        payload.update(state)
+        payload["ok"] = bool(state.get("adb_available")) and bool(state.get("device_available")) and bool(state.get("tiktok_app_installed"))
+    except Exception as exc:
+        payload.update({"ok": False, "error": str(exc)})
+    return payload
 
 
 @router.post("/dispatch", response_model=DispatchResponse)
@@ -96,6 +120,7 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
         scheduler_running=scheduler_running,
         worker_running=worker_running,
     )
+    payload["mobile_tiktok"] = await _mobile_tiktok_status_payload()
     can_execute_tasks = worker_running
 
     LOGGER.info(
@@ -110,3 +135,62 @@ async def get_deep_health(request: Request, database: DatabaseDependency) -> dic
         },
     )
     return payload
+
+
+@router.get("/mobile/tiktok")
+async def get_mobile_tiktok_status() -> dict[str, object]:
+    payload = await _mobile_tiktok_status_payload()
+    LOGGER.info(
+        "system_mobile_tiktok_status_read",
+        extra={
+            "event": "system_mobile_tiktok_status_read",
+            "ok": bool(payload.get("ok")),
+            "provider": payload.get("mobile_provider"),
+            "device_id": payload.get("device_id") or payload.get("configured_device_id"),
+            "tiktok_app_installed": bool(payload.get("tiktok_app_installed")),
+        },
+    )
+    return payload
+
+
+@router.post("/mobile/tiktok/open")
+async def open_mobile_tiktok(url: str = "https://www.tiktok.com/") -> dict[str, object]:
+    from core.mobile_tiktok_provider import make_mobile_tiktok_provider
+
+    provider = make_mobile_tiktok_provider()
+    result = await provider.open_url(url)
+    payload = {
+        "ok": result.ok,
+        "status": result.status,
+        "failure_kind": result.failure_kind,
+        "message": result.message,
+        "current_package": result.current_package,
+        "state": result.state or {},
+    }
+    LOGGER.info(
+        "system_mobile_tiktok_open",
+        extra={
+            "event": "system_mobile_tiktok_open",
+            "url": url,
+            "ok": result.ok,
+            "failure_kind": result.failure_kind,
+        },
+    )
+    return payload
+
+
+@router.post("/mobile/tiktok/screenshot")
+async def screenshot_mobile_tiktok() -> dict[str, object]:
+    from core.mobile_tiktok_provider import make_mobile_tiktok_provider
+
+    output_dir = get_media_output_dir() / "diagnostics" / "mobile_tiktok"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"screenshot_{int(time.time())}.png"
+    provider = make_mobile_tiktok_provider()
+    screenshot_path: Path | None = await provider.screenshot(output_path)
+    ok = screenshot_path is not None
+    LOGGER.info(
+        "system_mobile_tiktok_screenshot",
+        extra={"event": "system_mobile_tiktok_screenshot", "ok": ok, "path": str(screenshot_path or "")},
+    )
+    return {"ok": ok, "path": str(screenshot_path) if screenshot_path else ""}

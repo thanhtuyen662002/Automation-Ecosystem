@@ -89,16 +89,22 @@ class JobSummaryResponse(BaseModel):
     # Per-task statuses: {task_key -> status_string}
     # Populated by list endpoint for real-time step indicator in the UI.
     task_statuses: dict[str, str] = Field(default_factory=dict)
+    task_results: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
     def from_record(
-        cls, job: "JobRecord", task_statuses: dict[str, str] | None = None
+        cls,
+        job: "JobRecord",
+        task_statuses: dict[str, str] | None = None,
+        task_results: dict[str, Any] | None = None,
     ) -> "JobSummaryResponse":
         obj = cls.model_validate(job)
         if task_statuses:
             obj.task_statuses = task_statuses
+        if task_results:
+            obj.task_results = task_results
         return obj
 
 
@@ -110,6 +116,16 @@ class JobResponse(JobSummaryResponse):
     def from_detail(cls, detail: JobDetailRecord) -> "JobResponse":
         base = JobSummaryResponse.from_record(detail.job).model_dump()
         base["tasks"] = [TaskResponse.from_record(task) for task in detail.tasks]
+        base["task_results"] = {
+            str(task.task_key or task.task_type.rsplit(".", 1)[-1]): {
+                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+                "result": task.result,
+                "error_type": task.error_type,
+                "error_message": task.error_message,
+            }
+            for task in detail.tasks
+            if task.result is not None or task.error_message
+        }
         return cls.model_validate(base)
 
 

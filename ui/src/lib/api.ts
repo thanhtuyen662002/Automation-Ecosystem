@@ -58,6 +58,27 @@ export type DeepHealthResponse = {
     worker_required: boolean;
     mode: string;
   };
+  mobile_tiktok?: MobileTikTokStatus;
+};
+
+export type MobileTikTokStatus = {
+  ok?: boolean;
+  mobile_fallback_enabled?: boolean;
+  mobile_provider?: string;
+  configured_device_id?: string;
+  device_id?: string;
+  package_name?: string;
+  adb_available?: boolean;
+  device_available?: boolean;
+  tiktok_app_installed?: boolean;
+  tiktok_app_active?: boolean;
+  login_required?: boolean;
+  verification_required?: boolean;
+  manual_login_required?: boolean;
+  current_package?: string;
+  message?: string;
+  error?: string;
+  path?: string;
 };
 
 export type AiKey = {
@@ -223,6 +244,9 @@ export const api = {
 
   stats: () => request<any>('/system/stats'),
   deepHealth: () => request<DeepHealthResponse>('/system/health/deep'),
+  mobileTikTokStatus: () => request<MobileTikTokStatus>('/system/mobile/tiktok'),
+  openMobileTikTok: () => request<MobileTikTokStatus>('/system/mobile/tiktok/open', { method: 'POST', body: '{}' }),
+  screenshotMobileTikTok: () => request<MobileTikTokStatus>('/system/mobile/tiktok/screenshot', { method: 'POST', body: '{}' }),
 
   decisions: (limit = 5) =>
     request<any[]>(`/api/v1/system/decisions?limit=${limit}`),

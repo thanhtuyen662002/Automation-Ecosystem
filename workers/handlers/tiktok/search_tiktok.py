@@ -68,6 +68,19 @@ def _search_provider_from_env() -> str:
     return provider
 
 
+def _mobile_fallback_enabled() -> bool:
+    return _env_bool("TIKTOK_MOBILE_FALLBACK_ENABLED", default=False)
+
+
+def _is_tiktok_shop_url(url: str) -> bool:
+    lowered = str(url or "").strip().lower()
+    return (
+        "shop.tiktok.com" in lowered
+        or "/shop/product" in lowered
+        or "/view/product" in lowered
+    )
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -190,17 +203,61 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     except KeyError:
         keywords = _coerce_string_list(payload.get("keywords"))
 
+    try:
+        product_url = str(resolve_parent_result(payload, "product_url") or "").strip()
+    except KeyError:
+        product_url = str(payload.get("product_url") or "").strip()
+    try:
+        is_tiktok_shop_input = bool(resolve_parent_result(payload, "is_tiktok_shop"))
+    except KeyError:
+        is_tiktok_shop_input = bool(payload.get("is_tiktok_shop"))
+    is_tiktok_shop_input = bool(is_tiktok_shop_input or _is_tiktok_shop_url(product_url))
+    max_results = max(1, int(payload.get("max_results", _DEFAULT_MAX_RESULTS)))
+    search_diagnostics: dict[str, Any] = {
+        "queries": [],
+        "per_query": [],
+        "mobile_tiktok_shop": {},
+    }
+
     selected_queries = _selected_search_queries(search_queries, keywords)
-    if not selected_queries:
+    if not selected_queries and not is_tiktok_shop_input:
         raise FatalDependencyError(
             f"search_tiktok requires valid search_queries or keywords. "
             f"search_queries={search_queries}, keywords={keywords}"
         )
+    search_diagnostics["queries"] = selected_queries
+
+    if is_tiktok_shop_input and product_url:
+        mobile_result = await _mobile_discover_tiktok_shop_videos(product_url, max_results=max_results)
+        search_diagnostics["mobile_tiktok_shop"] = mobile_result["diagnostics"]
+        mobile_videos = list(mobile_result.get("videos") or [])
+        if mobile_videos:
+            LOGGER.info(
+                "tiktok_shop_mobile_discovery_done",
+                extra={
+                    "event": "tiktok_shop_mobile_discovery_done",
+                    "account_id": account_id,
+                    "product_url": product_url,
+                    "candidate_count": len(mobile_videos),
+                    "source": "mobile_tiktok_shop",
+                },
+            )
+            return {
+                "videos": mobile_videos[:max_results],
+                "search_diagnostics": search_diagnostics,
+                "ok": True,
+                "source": "mobile_tiktok_shop",
+            }
+        if not selected_queries:
+            raise FatalDependencyError(
+                "TikTok Shop mobile discovery found no candidate video links. "
+                f"diagnostics={json.dumps(search_diagnostics, ensure_ascii=False)[:2000]}"
+            )
+
     search_provider = _search_provider_from_env()
     if search_provider != "adspower":
         raise FatalDependencyError("TIKTOK_SEARCH_PROVIDER must be 'adspower' for tiktok.search_tiktok")
 
-    max_results = max(1, int(payload.get("max_results", _DEFAULT_MAX_RESULTS)))
     scroll_max = max(1, int(payload.get("scroll_max", _DEFAULT_SCROLL_MAX)))
     stagnant_limit = max(1, int(payload.get("stagnant_limit", _DEFAULT_STAGNANT_LIMIT)))
     min_views = max(0, int(payload.get("min_views") or _default_search_min_views()))
@@ -285,7 +342,6 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
             async with provider.open_publisher_context(pw, headless=False) as (context, page, _opened_profile):
                 await _confirm_tiktok_auth(page, context, account_id=account_id, require_login=require_login)
 
-                search_diagnostics: dict[str, Any] = {"queries": selected_queries, "per_query": []}
                 for keyword in selected_queries:
                     query_result = await _search_keyword_with_page(
                         page,
@@ -354,6 +410,111 @@ async def search_tiktok_handler(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     return {"videos": result_videos, "search_diagnostics": search_diagnostics, "ok": True, "source": _SOURCE}
+
+
+async def _mobile_discover_tiktok_shop_videos(product_url: str, *, max_results: int) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "product_url": product_url,
+        "enabled": _mobile_fallback_enabled(),
+        "provider": os.environ.get("TIKTOK_MOBILE_PROVIDER", "adb").strip().lower(),
+        "scroll_rounds": _env_int("TIKTOK_MOBILE_SCROLL_ROUNDS", 10),
+        "failure_kind": "",
+        "message": "",
+        "open_result": {},
+        "state": {},
+    }
+    if not diagnostics["enabled"]:
+        diagnostics["failure_kind"] = "mobile_fallback_disabled"
+        diagnostics["message"] = "TikTok Shop mobile discovery is disabled. Set TIKTOK_MOBILE_FALLBACK_ENABLED=true."
+        return {"videos": [], "diagnostics": diagnostics}
+
+    try:
+        from core.mobile_tiktok_provider import make_mobile_tiktok_provider
+
+        provider = make_mobile_tiktok_provider()
+    except Exception as exc:
+        diagnostics["failure_kind"] = "mobile_provider_invalid"
+        diagnostics["message"] = str(exc)
+        return {"videos": [], "diagnostics": diagnostics}
+
+    if not await provider.is_available():
+        diagnostics["failure_kind"] = "mobile_device_unavailable"
+        diagnostics["message"] = "Mobile fallback enabled but no Android device/emulator detected."
+        return {"videos": [], "diagnostics": diagnostics}
+
+    LOGGER.info(
+        "tiktok_shop_mobile_discovery_start",
+        extra={
+            "event": "tiktok_shop_mobile_discovery_start",
+            "product_url": product_url,
+            "max_results": max_results,
+            "source": "mobile_tiktok_shop",
+        },
+    )
+    open_result = await provider.open_url(product_url)
+    diagnostics["open_result"] = {
+        "ok": open_result.ok,
+        "status": open_result.status,
+        "failure_kind": open_result.failure_kind,
+        "message": open_result.message,
+        "current_package": open_result.current_package,
+    }
+    diagnostics["state"] = open_result.state or {}
+    if not open_result.ok:
+        diagnostics["failure_kind"] = open_result.failure_kind or "mobile_open_failed"
+        diagnostics["message"] = open_result.message
+        return {"videos": [], "diagnostics": diagnostics}
+
+    candidates = await provider.collect_visible_video_links(max_results)
+    if len(candidates) < max_results:
+        scroll_state = await provider.scroll_feed(int(diagnostics["scroll_rounds"]))
+        diagnostics["scroll_state"] = scroll_state
+        more_candidates = await provider.collect_visible_video_links(max_results)
+        candidates = _dedupe_mobile_candidates([*candidates, *more_candidates])[:max_results]
+
+    try:
+        diagnostics["state"] = await provider.get_current_state()
+    except Exception as exc:
+        diagnostics["state_error"] = str(exc)[:300]
+
+    videos = [_normalize_mobile_candidate(candidate, product_url) for candidate in candidates[:max_results]]
+    diagnostics["candidate_count"] = len(videos)
+    if not videos:
+        diagnostics["failure_kind"] = diagnostics.get("failure_kind") or "mobile_no_video_candidates"
+        diagnostics["message"] = diagnostics.get("message") or "TikTok app opened, but no visible video links were found in UIAutomator XML."
+    return {"videos": videos, "diagnostics": diagnostics}
+
+
+def _dedupe_mobile_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(candidate)
+    return deduped
+
+
+def _normalize_mobile_candidate(candidate: dict[str, Any], product_url: str) -> dict[str, Any]:
+    url = str(candidate.get("url") or "").strip()
+    title = str(candidate.get("title") or "").strip()
+    return {
+        "url": url,
+        "title": title,
+        "description": title,
+        "author": "",
+        "uploader": "",
+        "views": 0,
+        "likes": 0,
+        "duration": 0,
+        "source": "mobile_tiktok_shop",
+        "keyword": "tiktok_shop_product",
+        "product_url": product_url,
+        "requires_mobile_app": True,
+        "needs_selection_filter": True,
+    }
 
 
 async def _search_keyword_with_page(

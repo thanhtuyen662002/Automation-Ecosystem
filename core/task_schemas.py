@@ -29,7 +29,7 @@ TASK_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
     "tiktok.download_videos": {
         "required": ["selected_videos"],
         "optional": ["account_id"],
-        "output": ["video_paths", "failed_urls", "output_dir", "ok"]
+        "output": ["video_paths", "failed_urls", "failed_downloads", "download_stats", "output_dir", "ok"]
     },
     "tiktok.remake_video": {
         "required": ["video_paths"],

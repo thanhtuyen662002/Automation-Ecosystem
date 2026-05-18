@@ -154,10 +154,11 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
         likes = max(int(v.get("likes", 0)), 0)
         duration = _duration_seconds(v.get("duration"))
         er = likes / max(views, 1)
+        requires_mobile_app = bool(v.get("requires_mobile_app")) or str(v.get("source") or "").lower().startswith("mobile_tiktok_shop")
 
-        if views < min_views:
+        if views < min_views and not requires_mobile_app:
             continue
-        if likes > 0 and likes < min_likes:
+        if likes > 0 and likes < min_likes and not requires_mobile_app:
             continue
         if duration > 0 and not (min_duration <= duration <= max_duration):
             continue
@@ -318,6 +319,9 @@ async def select_videos_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 "thumbnail": v.get("thumbnail", ""),
                 "keyword": v.get("keyword", ""),
                 "source": v.get("source", ""),
+                "product_url": v.get("product_url", ""),
+                "requires_mobile_app": bool(v.get("requires_mobile_app")),
+                "needs_selection_filter": bool(v.get("needs_selection_filter")),
                 "scraped_at": v.get("scraped_at"),
                 "relevance_score": v.get("relevance_score", 0.0),
                 "matched_keyword_terms": v.get("matched_keyword_terms", []),

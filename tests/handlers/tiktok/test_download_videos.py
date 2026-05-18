@@ -142,6 +142,57 @@ def test_ytdlp_format_default_and_env_override(monkeypatch):
     assert module._ytdlp_format() == "best"
 
 
+def test_download_provider_allowed_values(monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    for provider in ("auto", "web_only", "browser_first", "ytdlp_only", "mobile_first"):
+        monkeypatch.setenv("TIKTOK_DOWNLOAD_PROVIDER", provider)
+        assert module._download_provider_from_env() == provider
+
+    monkeypatch.setenv("TIKTOK_DOWNLOAD_PROVIDER", "browser_ytdlp_mobile")
+    assert module._download_provider_from_env() == "auto"
+
+
+def test_auto_provider_routes_tiktok_shop_to_mobile_first():
+    from workers.handlers.tiktok import download_videos as module
+
+    assert module._effective_download_provider(
+        "auto",
+        {"source": "mobile_tiktok_shop", "requires_mobile_app": True},
+        "https://www.tiktok.com/@shop/video/1",
+    ) == "mobile_first"
+    assert module._effective_download_provider(
+        "browser_first",
+        {"source": "mobile_tiktok_shop", "requires_mobile_app": True},
+        "https://www.tiktok.com/@shop/video/1",
+    ) == "mobile_first"
+    assert module._effective_download_provider(
+        "auto",
+        {},
+        "https://www.tiktok.com/@public/video/2",
+    ) == "browser_first"
+
+
+@pytest.mark.asyncio
+async def test_detects_tiktok_shop_app_only_gate():
+    from workers.handlers.tiktok import download_videos as module
+
+    class FakePage:
+        url = "https://www.tiktok.com/@shop/video/1"
+
+        async def evaluate(self, _script):
+            return "Xem video TikTok Shop trong ứng dụng TikTok"
+
+        async def title(self):
+            return "TikTok Shop"
+
+    result = await module._detect_tiktok_app_only_gate(FakePage())
+
+    assert result is not None
+    assert result["gate_text"] == "Xem video TikTok Shop trong ứng dụng TikTok"
+    assert result["current_url"] == "https://www.tiktok.com/@shop/video/1"
+
+
 @pytest.mark.asyncio
 async def test_download_uses_cookie_fallback_when_primary_creates_no_file(tmp_path, monkeypatch):
     from workers.handlers.tiktok import download_videos as module
@@ -182,6 +233,58 @@ async def test_download_uses_cookie_fallback_when_primary_creates_no_file(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_download_continues_after_app_only_video(tmp_path, monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    monkeypatch.delenv("TIKTOK_MOBILE_FALLBACK_ENABLED", raising=False)
+    monkeypatch.setenv("TIKTOK_DOWNLOAD_PROVIDER", "browser_first")
+    monkeypatch.setattr(module, "random_jitter", AsyncMock())
+    monkeypatch.setattr(module, "get_media_output_dir", lambda: tmp_path)
+
+    async def fake_browser(*, account_id, url, output_path, index):
+        if index == 0:
+            return {
+                "ok": False,
+                "mode": "browser_capture",
+                "error": "TikTok web shows an app-only gate for this video.",
+                "failure_kind": "app_only_gate",
+                "gate_text": "Xem video TikTok Shop trong ứng dụng TikTok",
+            }
+        output_path.write_bytes(b"video")
+        return {"ok": True, "mode": "browser_capture", "path": output_path}
+
+    async def fake_ytdlp(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "primary",
+            "error": "TikTok blocked yt-dlp with HTTP 403 even with cookies/impersonation.",
+            "failure_kind": "tiktok_web_403",
+            "stderr_preview": "HTTP Error 403: Forbidden",
+        }
+
+    monkeypatch.setattr(module, "_attempt_browser_download", fake_browser)
+    monkeypatch.setattr(module, "_attempt_ytdlp_download", fake_ytdlp)
+
+    result = await module.download_videos_handler({
+        "job_id": "job-1",
+        "account_id": "account-1",
+        "selected_videos": [
+            {"url": "https://www.tiktok.com/@shop/video/1"},
+            {"url": "https://www.tiktok.com/@ok/video/2"},
+        ],
+    })
+
+    assert result["ok"] is True
+    assert len(result["video_paths"]) == 1
+    assert result["download_stats"]["downloaded_count"] == 1
+    assert result["download_stats"]["app_only_count"] == 1
+    assert result["download_stats"]["http_403_count"] == 0
+    assert result["failed_downloads"][0]["failure_kind"] == "app_only_gate"
+    assert result["failed_downloads"][0]["provider_attempts"]["browser_capture"]["failure_kind"] == "app_only_gate"
+    assert result["failed_downloads"][0]["provider_attempts"]["mobile"]["failure_kind"] == "mobile_fallback_disabled"
+
+
+@pytest.mark.asyncio
 async def test_download_fails_when_ytdlp_exits_zero_without_output(tmp_path, monkeypatch):
     from workers.handlers.tiktok import download_videos as module
 
@@ -201,6 +304,89 @@ async def test_download_fails_when_ytdlp_exits_zero_without_output(tmp_path, mon
         await module.download_videos_handler({
             "job_id": "job-1",
             "selected_videos": [{"url": "https://www.tiktok.com/@a/video/1"}],
+        })
+
+
+@pytest.mark.asyncio
+async def test_download_all_app_only_blocked_is_fatal(tmp_path, monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+    from workers.worker_runtime import FatalDependencyError
+
+    monkeypatch.delenv("TIKTOK_MOBILE_FALLBACK_ENABLED", raising=False)
+    monkeypatch.setenv("TIKTOK_DOWNLOAD_PROVIDER", "browser_first")
+    monkeypatch.setattr(module, "random_jitter", AsyncMock())
+    monkeypatch.setattr(module, "get_media_output_dir", lambda: tmp_path)
+
+    async def fake_browser(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "browser_capture",
+            "error": "TikTok web shows an app-only gate for this video.",
+            "failure_kind": "app_only_gate",
+        }
+
+    async def fake_ytdlp(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "primary",
+            "error": "TikTok blocked yt-dlp with HTTP 403 even with cookies/impersonation.",
+            "failure_kind": "tiktok_web_403",
+        }
+
+    monkeypatch.setattr(module, "_attempt_browser_download", fake_browser)
+    monkeypatch.setattr(module, "_attempt_ytdlp_download", fake_ytdlp)
+
+    with pytest.raises(FatalDependencyError, match="All selected videos require TikTok app or were blocked by TikTok web"):
+        await module.download_videos_handler({
+            "job_id": "job-1",
+            "account_id": "account-1",
+            "selected_videos": [{"url": "https://www.tiktok.com/@shop/video/1"}],
+        })
+
+
+@pytest.mark.asyncio
+async def test_download_mobile_enabled_no_device_is_fatal(tmp_path, monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+    from workers.worker_runtime import FatalDependencyError
+
+    monkeypatch.setenv("TIKTOK_MOBILE_FALLBACK_ENABLED", "true")
+    monkeypatch.setenv("TIKTOK_DOWNLOAD_PROVIDER", "auto")
+    monkeypatch.setattr(module, "random_jitter", AsyncMock())
+    monkeypatch.setattr(module, "get_media_output_dir", lambda: tmp_path)
+
+    async def fake_browser(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "browser_capture",
+            "error": "TikTok web shows an app-only gate for this video.",
+            "failure_kind": "app_only_gate",
+        }
+
+    async def fake_ytdlp(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "primary",
+            "error": "TikTok blocked yt-dlp with HTTP 403 even with cookies/impersonation.",
+            "failure_kind": "tiktok_web_403",
+        }
+
+    async def fake_mobile(**_kwargs):
+        return {
+            "ok": False,
+            "mode": "mobile",
+            "error": "Mobile fallback enabled but no Android device/emulator detected.",
+            "failure_kind": "mobile_device_unavailable",
+        }
+
+    monkeypatch.setattr(module, "_attempt_browser_download", fake_browser)
+    monkeypatch.setattr(module, "_attempt_ytdlp_download", fake_ytdlp)
+    monkeypatch.setattr(module, "_attempt_mobile_download", fake_mobile)
+
+    with pytest.raises(FatalDependencyError, match="Mobile fallback enabled but no Android device/emulator detected"):
+        await module.download_videos_handler({
+            "job_id": "job-1",
+            "account_id": "account-1",
+            "selected_videos": [{"url": "https://www.tiktok.com/@shop/video/1"}],
         })
 
 

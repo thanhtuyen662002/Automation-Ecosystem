@@ -481,6 +481,39 @@ class AutomationDatabase:
             by_job.setdefault(jid, {})[key] = str(row["status"])
         return by_job
 
+    async def get_task_results_for_jobs(
+        self,
+        job_ids: list[str],
+        task_keys: list[str] | None = None,
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        if not job_ids:
+            return {}
+        job_placeholders = ",".join("?" * len(job_ids))
+        params: list[Any] = list(job_ids)
+        task_filter = ""
+        if task_keys:
+            task_placeholders = ",".join("?" * len(task_keys))
+            task_filter = f" AND task_key IN ({task_placeholders})"
+            params.extend(task_keys)
+        async with self.connection() as conn:
+            result = await conn.execute(
+                "SELECT job_id, task_key, task_type, status, result, error_type, error_message FROM tasks "
+                f"WHERE job_id IN ({job_placeholders}){task_filter}",
+                params,
+            )
+            rows = await result.fetchall()
+        by_job: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            jid = str(row["job_id"])
+            key: str = row["task_key"] or str(row["task_type"]).rsplit(".", 1)[-1]
+            by_job.setdefault(jid, {})[key] = {
+                "status": str(row["status"]),
+                "result": _from_json(row["result"]) if row["result"] else None,
+                "error_type": row["error_type"],
+                "error_message": row["error_message"],
+            }
+        return by_job
+
     async def delete_job(self, job_id: UUID) -> bool:
         """Delete a job with no active task execution and its task-owned records."""
         job_id_str = str(job_id)

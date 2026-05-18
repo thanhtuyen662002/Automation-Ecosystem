@@ -115,6 +115,7 @@ async def create_tiktok_pipeline(
             "account_id": str(request.account_id),
             "payload": {
                 "account_id": str(request.account_id),
+                "product_url": request.product_url,
                 "max_results": int(os.environ.get("TIKTOK_SEARCH_MAX_RESULTS", "50")),
                 "min_views": min_views,
                 # {"from_task": ..., "field": ...} → resolved by worker before handler runs

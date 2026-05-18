@@ -60,8 +60,13 @@ async def list_jobs(
     jobs = await database.list_jobs(limit=limit, offset=offset)
     job_ids = [str(j.id) for j in jobs]
     task_statuses_by_job = await database.get_task_statuses_for_jobs(job_ids)
+    task_results_by_job = await database.get_task_results_for_jobs(job_ids, task_keys=["tiktok_download"])
     LOGGER.info("jobs_listed", extra={"event": "jobs_listed", "limit": limit, "offset": offset})
     return [
-        JobSummaryResponse.from_record(job, task_statuses_by_job.get(str(job.id), {}))
+        JobSummaryResponse.from_record(
+            job,
+            task_statuses_by_job.get(str(job.id), {}),
+            task_results_by_job.get(str(job.id), {}),
+        )
         for job in jobs
     ]

@@ -892,6 +892,9 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
                     "description": description,
                     "keywords": deterministic_keywords,
                     "search_queries": deterministic_search_queries,
+                    "product_url": product_url,
+                    "is_tiktok_shop": True,
+                    "requires_mobile_discovery": True,
                     "ok": True,
                     "source": "tiktok_shop_dom",
                 }
@@ -1100,6 +1103,9 @@ async def extract_product_info_handler(payload: dict[str, Any]) -> dict[str, Any
         "description": description,
         "keywords": meaningful_keywords if len(meaningful_keywords) >= 3 else keywords,
         "search_queries": search_queries,
+        "product_url": product_url,
+        "is_tiktok_shop": bool(is_tiktok_shop),
+        "requires_mobile_discovery": bool(is_tiktok_shop),
         "ok": True,
     }
 

@@ -618,6 +618,13 @@ export function PipelineJobs() {
                 App-only downloads need <code>TIKTOK_MOBILE_FALLBACK_ENABLED=true</code>.
               </div>
             )}
+            {Array.isArray(providerStatus?.setup_guidance) && providerStatus.setup_guidance.length > 0 && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.625rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                {providerStatus.setup_guidance.map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refetchMobileStatus()} disabled={isMobileStatusFetching}>
                 <RefreshCw size={13} /> Test Mobile TikTok

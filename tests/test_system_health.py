@@ -62,3 +62,14 @@ def test_runtime_env_bootstrap_preserves_os_env_and_normalizes_lists(tmp_path, m
         "/sdcard/Download",
         "/sdcard/Pictures",
     ]
+
+
+def test_runtime_env_warns_for_unavailable_impersonate_target(monkeypatch) -> None:
+    from core import runtime_env
+
+    monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
+    monkeypatch.setattr(runtime_env, "_YTDLP_IMPERSONATE_TARGETS_CACHE", set())
+
+    warnings = runtime_env.runtime_dependency_warnings({})
+
+    assert any(warning["code"] == "download_ytdlp_impersonate_target_unavailable" for warning in warnings)

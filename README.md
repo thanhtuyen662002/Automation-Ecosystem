@@ -48,7 +48,7 @@ python -m pip install -U yt-dlp curl-cffi
 $env:TIKTOK_DOWNLOAD_PROVIDER="auto"
 $env:TIKTOK_YTDLP_FORMAT="bestvideo*+bestaudio/best[ext=mp4]/best"
 $env:TIKTOK_DOWNLOAD_TIMEOUT_SECONDS="120"
-$env:TIKTOK_YTDLP_IMPERSONATE="chrome"
+$env:TIKTOK_YTDLP_IMPERSONATE=""
 $env:TIKTOK_MOBILE_FALLBACK_ENABLED="false"
 $env:TIKTOK_MOBILE_PROVIDER="adb"
 $env:TIKTOK_MOBILE_DEVICE_ID=""
@@ -57,8 +57,15 @@ $env:TIKTOK_MOBILE_SCROLL_ROUNDS="10"
 $env:TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN="true"
 ```
 
-`TIKTOK_YTDLP_IMPERSONATE` is optional. Set it when yt-dlp logs
-`no impersonate target is available` or TikTok blocks non-browser requests.
+`TIKTOK_YTDLP_IMPERSONATE` is optional. Check local support first:
+
+```powershell
+yt-dlp --list-impersonate-targets
+```
+
+Set it only to a target shown as available. If the configured target is not
+available, the backend warns in `/system/health/deep` and yt-dlp falls back to
+another available target or omits `--impersonate`.
 TikTok Shop app-only videos require a logged-in Android device/emulator exposed
 through ADB; the pipeline will not bypass CAPTCHA, login, or disabled save
 controls.

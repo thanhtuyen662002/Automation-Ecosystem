@@ -153,6 +153,34 @@ def test_download_provider_allowed_values(monkeypatch):
     assert module._download_provider_from_env() == "auto"
 
 
+def test_browser_media_candidate_filter_prioritizes_real_video():
+    from workers.handlers.tiktok import download_videos as module
+
+    candidates = module._dedupe_browser_candidates([
+        {"url": "https://example.com/cover.jpg", "content_type": "image/jpeg", "source": "network"},
+        {"url": "https://v16-webapp-prime.tiktok.com/video?a=1", "content_type": "video/mp4", "source": "network"},
+        {"url": "https://example.com/play?mime_type=video_mp4", "content_type": "", "source": "dom"},
+    ])
+
+    assert len(candidates) == 2
+    assert candidates[0]["content_type"] == "video/mp4"
+    assert all("image" not in str(candidate.get("content_type")) for candidate in candidates)
+
+
+def test_parse_ytdlp_impersonate_targets_skips_unavailable():
+    from workers.handlers.tiktok import download_videos as module
+
+    output = """[info] Available impersonate targets
+Client    OS   Source
+--------------------------------------------
+Edge      -    curl_cffi
+Chrome    -    curl_cffi (unavailable)
+Safari    -    curl_cffi
+"""
+
+    assert module._parse_ytdlp_impersonate_targets(output) == {"edge", "safari"}
+
+
 def test_auto_provider_routes_tiktok_shop_to_mobile_first():
     from workers.handlers.tiktok import download_videos as module
 
@@ -501,6 +529,7 @@ async def test_download_with_ytdlp_adds_user_agent_and_impersonate(monkeypatch):
     monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
     monkeypatch.setenv("TIKTOK_YTDLP_FORMAT", "best")
     monkeypatch.setattr(module, "get_ytdlp_path", lambda: "yt-dlp")
+    monkeypatch.setattr(module, "_available_ytdlp_impersonate_targets", AsyncMock(return_value={"chrome"}))
 
     captured_args: tuple[str, ...] = ()
 
@@ -524,6 +553,59 @@ async def test_download_with_ytdlp_adds_user_agent_and_impersonate(monkeypatch):
     assert "best" in captured_args
     assert "--add-header" in captured_args
     assert "User-Agent:Mozilla/5.0 AdsPower" in captured_args
+
+
+@pytest.mark.asyncio
+async def test_download_with_ytdlp_omits_unavailable_impersonate(monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
+    monkeypatch.setattr(module, "get_ytdlp_path", lambda: "yt-dlp")
+    monkeypatch.setattr(module, "_available_ytdlp_impersonate_targets", AsyncMock(return_value=set()))
+
+    captured_args: tuple[str, ...] = ()
+
+    async def fake_run_subprocess(*args, **_kwargs):
+        nonlocal captured_args
+        captured_args = args
+        return "C:/tmp/video_00.mp4\n", ""
+
+    monkeypatch.setattr(module, "run_subprocess", fake_run_subprocess)
+
+    await module._download_with_ytdlp(
+        "https://www.tiktok.com/@a/video/1",
+        "C:/tmp/video_00.%(ext)s",
+        mode="primary",
+    )
+
+    assert "--impersonate" not in captured_args
+
+
+@pytest.mark.asyncio
+async def test_download_with_ytdlp_falls_back_to_available_impersonate(monkeypatch):
+    from workers.handlers.tiktok import download_videos as module
+
+    monkeypatch.setenv("TIKTOK_YTDLP_IMPERSONATE", "chrome")
+    monkeypatch.setattr(module, "get_ytdlp_path", lambda: "yt-dlp")
+    monkeypatch.setattr(module, "_available_ytdlp_impersonate_targets", AsyncMock(return_value={"edge"}))
+
+    captured_args: tuple[str, ...] = ()
+
+    async def fake_run_subprocess(*args, **_kwargs):
+        nonlocal captured_args
+        captured_args = args
+        return "C:/tmp/video_00.mp4\n", ""
+
+    monkeypatch.setattr(module, "run_subprocess", fake_run_subprocess)
+
+    await module._download_with_ytdlp(
+        "https://www.tiktok.com/@a/video/1",
+        "C:/tmp/video_00.%(ext)s",
+        mode="primary",
+    )
+
+    assert "--impersonate" in captured_args
+    assert "edge" in captured_args
 
 
 def test_warns_when_impersonate_enabled_without_curl_cffi(monkeypatch, caplog):

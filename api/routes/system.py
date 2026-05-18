@@ -48,6 +48,7 @@ async def _mobile_tiktok_status_payload() -> dict[str, object]:
         "configured_device_id": os.environ.get("TIKTOK_MOBILE_DEVICE_ID", "").strip(),
         "package_name": os.environ.get("TIKTOK_ANDROID_TIKTOK_PACKAGE", "com.zhiliaoapp.musically").strip(),
         "manual_login_required": env_bool("TIKTOK_MOBILE_REQUIRE_MANUAL_LOGIN", default=True),
+        "setup_guidance": [],
     }
     try:
         from core.mobile_tiktok_provider import make_mobile_tiktok_provider
@@ -58,7 +59,25 @@ async def _mobile_tiktok_status_payload() -> dict[str, object]:
         payload["ok"] = bool(state.get("adb_available")) and bool(state.get("device_available")) and bool(state.get("tiktok_app_installed"))
     except Exception as exc:
         payload.update({"ok": False, "error": str(exc)})
+    payload["setup_guidance"] = _mobile_setup_guidance(payload)
     return payload
+
+
+def _mobile_setup_guidance(status: dict[str, object]) -> list[str]:
+    guidance: list[str] = []
+    if not bool(status.get("adb_available")):
+        guidance.append("Install Android Platform Tools and verify `adb devices` works.")
+    if not bool(status.get("device_available")):
+        guidance.append("Start an Android emulator/device, run `adb devices`, then set `TIKTOK_MOBILE_DEVICE_ID` if multiple devices are listed.")
+    if bool(status.get("device_available")) and not bool(status.get("tiktok_app_installed")):
+        guidance.append("Install the TikTok app on the emulator/device.")
+    if bool(status.get("tiktok_app_installed")) and not bool(status.get("tiktok_app_active")):
+        guidance.append("Open TikTok on the emulator/device with the Mobile Provider test button.")
+    if bool(status.get("login_required")):
+        guidance.append("Log in to TikTok manually on the emulator/device.")
+    if bool(status.get("verification_required")):
+        guidance.append("Complete TikTok captcha/checkpoint manually; automation will not bypass it.")
+    return guidance
 
 
 @router.post("/dispatch", response_model=DispatchResponse)

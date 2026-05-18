@@ -79,6 +79,7 @@ export type MobileTikTokStatus = {
   message?: string;
   error?: string;
   path?: string;
+  setup_guidance?: string[];
 };
 
 export type AiKey = {

@@ -16,15 +16,18 @@ Output result:
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import logging
 import os
 import random
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from workers.handlers.tiktok._base import (
     SubprocessError,
@@ -46,6 +49,8 @@ _AUDIO_ONLY_SUFFIXES = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac"
 _TRACKED_MEDIA_SUFFIXES = _VALID_MEDIA_SUFFIXES | _AUDIO_ONLY_SUFFIXES
 _PREVIEW_CHARS = 1200
 _IMPERSONATION_DEPENDENCY_WARNED = False
+_IMPERSONATION_TARGET_WARNED: set[str] = set()
+_YTDLP_IMPERSONATE_TARGETS_CACHE: set[str] | None = None
 _BROWSER_CAPTURE_MIN_BYTES = 100 * 1024
 _DOWNLOAD_PROVIDERS = {"auto", "web_only", "ytdlp_only", "browser_first", "mobile_first"}
 _MOBILE_FALLBACK_FAILURE_KINDS = {"app_only_gate", "tiktok_web_403", "audio_only"}
@@ -464,7 +469,7 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                                 extra={
                                     "event": "download_browser_media_candidate",
                                     "url": video_url,
-                                    "media_url": candidate_url[:500],
+                                    "media_url": _safe_url_for_log(candidate_url),
                                     "content_type": content_type,
                                     "source": "network",
                                     "candidate_count": len(candidates),
@@ -493,7 +498,7 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                         error="TikTok web shows an app-only gate for this video.",
                         failure_kind="app_only_gate",
                         requires_mobile_app=True,
-                        candidates=candidates,
+                        candidates=_safe_browser_candidates(candidates),
                         gate_text=str(app_gate.get("gate_text") or ""),
                         current_url=str(app_gate.get("current_url") or ""),
                         page_title=str(app_gate.get("page_title") or ""),
@@ -503,13 +508,19 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                         ok=False,
                         error="TikTok verification required during browser download",
                         failure_kind="verification_required",
-                        candidates=candidates,
+                        candidates=_safe_browser_candidates(candidates),
                     )
                 try:
                     await page.wait_for_selector("video", timeout=10_000)
                 except Exception:
                     pass
-                await asyncio.sleep(random.uniform(2.0, 4.0))
+                if any(_has_expiring_media_url(str(candidate.get("url") or "")) for candidate in candidates):
+                    LOGGER.info(
+                        "download_browser_expiring_media_no_extra_delay",
+                        extra={"event": "download_browser_expiring_media_no_extra_delay", "url": video_url},
+                    )
+                else:
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
 
                 dom_urls = await _extract_video_dom_urls(page)
                 for dom_url in dom_urls:
@@ -520,7 +531,7 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                             extra={
                                 "event": "download_browser_media_candidate",
                                 "url": video_url,
-                                "media_url": dom_url[:500],
+                                "media_url": _safe_url_for_log(dom_url),
                                 "content_type": "",
                                 "source": "dom",
                                 "candidate_count": len(candidates),
@@ -533,35 +544,118 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                         ok=False,
                         error="browser media URL not found",
                         failure_kind="browser_media_not_found",
-                        candidates=candidates,
+                        candidates=_safe_browser_candidates(candidates),
                     )
 
                 try:
                     user_agent = str(await page.evaluate("() => navigator.userAgent") or "").strip()
                 except Exception:
                     user_agent = ""
-                headers = {"referer": video_url}
+                headers = {
+                    "referer": video_url,
+                    "origin": "https://www.tiktok.com",
+                    "range": "bytes=0-",
+                }
                 if user_agent:
                     headers["user-agent"] = user_agent
 
                 last_error = ""
-                for candidate in media_candidates:
+                for candidate_index, candidate in enumerate(media_candidates):
                     media_url = str(candidate.get("url") or "")
                     try:
-                        response = await context.request.get(media_url, headers=headers, timeout=_download_timeout_seconds() * 1000)
-                        content_type = str(response.headers.get("content-type") or candidate.get("content_type") or "")
-                        if not response.ok:
-                            last_error = f"browser media request failed with HTTP {response.status}"
+                        LOGGER.info(
+                            "download_browser_media_candidate_attempt",
+                            extra={
+                                "event": "download_browser_media_candidate_attempt",
+                                "url": video_url,
+                                "candidate_index": candidate_index,
+                                "candidate_source": candidate.get("source") or "",
+                                "candidate_content_type": candidate.get("content_type") or "",
+                                "media_url": _safe_url_for_log(media_url),
+                                "expiring_url": _has_expiring_media_url(media_url),
+                            },
+                        )
+                        body, response_info = await _fetch_browser_media_candidate(
+                            context=context,
+                            page=page,
+                            media_url=media_url,
+                            headers=headers,
+                            timeout_seconds=_download_timeout_seconds(),
+                        )
+                        content_type = str(response_info.get("content_type") or candidate.get("content_type") or "")
+                        LOGGER.info(
+                            "download_browser_media_candidate_response",
+                            extra={
+                                "event": "download_browser_media_candidate_response",
+                                "url": video_url,
+                                "candidate_index": candidate_index,
+                                "candidate_source": candidate.get("source") or "",
+                                "candidate_content_type": candidate.get("content_type") or "",
+                                "media_url": _safe_url_for_log(media_url),
+                                "fetch_method": response_info.get("method") or "",
+                                "response_status": response_info.get("status"),
+                                "response_content_type": content_type,
+                                "response_content_length": response_info.get("content_length") or "",
+                                "response_content_range": response_info.get("content_range") or "",
+                                "body_size": len(body),
+                                "body_kind": _body_kind(body, content_type),
+                            },
+                        )
+                        if not bool(response_info.get("ok")):
+                            last_error = f"browser media request failed with HTTP {response_info.get('status')}"
+                            LOGGER.warning(
+                                "download_browser_media_candidate_failed",
+                                extra={
+                                    "event": "download_browser_media_candidate_failed",
+                                    "url": video_url,
+                                    "candidate_index": candidate_index,
+                                    "media_url": _safe_url_for_log(media_url),
+                                    "response_status": response_info.get("status"),
+                                    "response_content_type": content_type,
+                                    "body_preview": _safe_body_preview(body),
+                                },
+                            )
                             continue
-                        body = await response.body()
                         output_path.parent.mkdir(parents=True, exist_ok=True)
                         output_path.write_bytes(body)
                         size = output_path.stat().st_size
                         if size < _BROWSER_CAPTURE_MIN_BYTES:
                             last_error = f"browser media download too small: {size} bytes"
+                            _mark_invalid_download(output_path)
+                            LOGGER.warning(
+                                "download_browser_media_candidate_invalid",
+                                extra={
+                                    "event": "download_browser_media_candidate_invalid",
+                                    "url": video_url,
+                                    "candidate_index": candidate_index,
+                                    "media_url": _safe_url_for_log(media_url),
+                                    "reason": "body_too_small",
+                                    "file_size": size,
+                                    "response_status": response_info.get("status"),
+                                    "response_content_type": content_type,
+                                    "body_kind": _body_kind(body, content_type),
+                                    "body_preview": _safe_body_preview(body),
+                                },
+                            )
                             continue
                         if not await _has_video_stream(output_path):
                             last_error = "browser media download has no video stream"
+                            _mark_invalid_download(output_path)
+                            LOGGER.warning(
+                                "download_browser_media_candidate_invalid",
+                                extra={
+                                    "event": "download_browser_media_candidate_invalid",
+                                    "url": video_url,
+                                    "candidate_index": candidate_index,
+                                    "media_url": _safe_url_for_log(media_url),
+                                    "reason": "ffprobe_no_video_stream",
+                                    "file_size": size,
+                                    "response_status": response_info.get("status"),
+                                    "response_content_type": content_type,
+                                    "body_kind": _body_kind(body, content_type),
+                                    "body_preview": _safe_body_preview(body),
+                                },
+                            )
                             continue
                         LOGGER.info(
                             "download_browser_capture_success",
@@ -577,22 +671,34 @@ async def _download_with_browser_capture(account_id: str, video_url: str, output
                         return BrowserDownloadResult(
                             ok=True,
                             path=output_path,
-                            candidates=media_candidates,
+                            candidates=_safe_browser_candidates(media_candidates),
                             content_type=content_type,
                             file_size=size,
                         )
                     except Exception as exc:
                         last_error = str(exc)
+                        if output_path.exists():
+                            _mark_invalid_download(output_path)
+                        LOGGER.warning(
+                            "download_browser_media_candidate_failed",
+                            extra={
+                                "event": "download_browser_media_candidate_failed",
+                                "url": video_url,
+                                "candidate_index": candidate_index,
+                                "media_url": _safe_url_for_log(media_url),
+                                "error": str(exc)[:500],
+                            },
+                        )
                         continue
 
                 return BrowserDownloadResult(
                     ok=False,
                     error=last_error or "browser media download failed",
                     failure_kind="browser_download_failed",
-                    candidates=media_candidates,
+                    candidates=_safe_browser_candidates(media_candidates),
                 )
     except Exception as exc:
-        return BrowserDownloadResult(ok=False, error=str(exc), failure_kind="browser_capture_failed", candidates=candidates)
+        return BrowserDownloadResult(ok=False, error=str(exc), failure_kind="browser_capture_failed", candidates=_safe_browser_candidates(candidates))
     finally:
         await database.close()
 
@@ -925,7 +1031,7 @@ async def _download_with_ytdlp(
         raise SubprocessError(str(exc)) from exc
 
     timeout = _download_timeout_seconds()
-    impersonate_target = _ytdlp_impersonate_target()
+    impersonate_target = await _resolve_ytdlp_impersonate_target()
     ytdlp_format = _ytdlp_format()
     _warn_if_impersonation_dependency_missing()
     args = [
@@ -1209,6 +1315,67 @@ def _ytdlp_impersonate_target() -> str:
     return os.environ.get("TIKTOK_YTDLP_IMPERSONATE", "").strip()
 
 
+async def _available_ytdlp_impersonate_targets() -> set[str]:
+    global _YTDLP_IMPERSONATE_TARGETS_CACHE
+
+    if _YTDLP_IMPERSONATE_TARGETS_CACHE is not None:
+        return set(_YTDLP_IMPERSONATE_TARGETS_CACHE)
+    try:
+        ytdlp_path = get_ytdlp_path()
+        stdout, _stderr = await run_subprocess(ytdlp_path, "--list-impersonate-targets", timeout=10.0)
+        targets = _parse_ytdlp_impersonate_targets(stdout)
+    except Exception as exc:
+        LOGGER.warning(
+            "download_ytdlp_impersonate_targets_unavailable",
+            extra={"event": "download_ytdlp_impersonate_targets_unavailable", "error": str(exc)[:300]},
+        )
+        targets = set()
+    _YTDLP_IMPERSONATE_TARGETS_CACHE = set(targets)
+    return set(targets)
+
+
+def _parse_ytdlp_impersonate_targets(stdout: str) -> set[str]:
+    targets: set[str] = set()
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("[") or line.startswith("-") or line.lower().startswith("client"):
+            continue
+        if "unavailable" in line.lower():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        target = parts[0].strip().lower()
+        if target and target not in {"-", "client"}:
+            targets.add(target)
+    return targets
+
+
+async def _resolve_ytdlp_impersonate_target() -> str:
+    requested = _ytdlp_impersonate_target()
+    if not requested:
+        return ""
+    requested_key = requested.lower()
+    targets = await _available_ytdlp_impersonate_targets()
+    if requested_key in targets:
+        return requested
+
+    fallback = next((target for target in ("chrome", "chrome-120", "chrome-110", "edge", "safari") if target in targets), "")
+    warning_key = f"{requested_key}->{fallback or 'none'}"
+    if warning_key not in _IMPERSONATION_TARGET_WARNED:
+        _IMPERSONATION_TARGET_WARNED.add(warning_key)
+        LOGGER.warning(
+            "download_ytdlp_impersonate_target_unavailable",
+            extra={
+                "event": "download_ytdlp_impersonate_target_unavailable",
+                "requested_target": requested,
+                "fallback_target": fallback,
+                "available_targets": sorted(targets),
+            },
+        )
+    return fallback
+
+
 def get_ytdlp_impersonation_dependency_warning() -> dict[str, str] | None:
     impersonate_target = _ytdlp_impersonate_target()
     if not impersonate_target:
@@ -1447,13 +1614,98 @@ def _all_failures_are_app_only_or_blocked(failed_downloads: list[dict[str, Any]]
     return True
 
 
+async def _fetch_browser_media_candidate(
+    *,
+    context: Any,
+    page: Any,
+    media_url: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+) -> tuple[bytes, dict[str, Any]]:
+    response = await context.request.get(media_url, headers=headers, timeout=timeout_seconds * 1000)
+    body = await response.body()
+    response_info = _browser_response_info(response, method="context.request.get")
+    if response.ok and len(body) >= _BROWSER_CAPTURE_MIN_BYTES and _body_kind(body, str(response_info.get("content_type") or "")) == "binary":
+        return body, response_info
+
+    try:
+        fallback = await asyncio.wait_for(
+            page.evaluate(
+                """async ({ mediaUrl }) => {
+                    const response = await fetch(mediaUrl, {
+                        credentials: 'include',
+                        headers: { Range: 'bytes=0-' },
+                    });
+                    const buffer = await response.arrayBuffer();
+                    const bytes = new Uint8Array(buffer);
+                    let binary = '';
+                    const chunkSize = 0x8000;
+                    for (let i = 0; i < bytes.length; i += chunkSize) {
+                        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+                    }
+                    const headers = {};
+                    for (const [key, value] of response.headers.entries()) headers[key] = value;
+                    return {
+                        ok: response.ok,
+                        status: response.status,
+                        headers,
+                        bodyBase64: btoa(binary),
+                    };
+                }""",
+                {"mediaUrl": media_url},
+            ),
+            timeout=timeout_seconds,
+        )
+        if isinstance(fallback, dict):
+            fallback_body = base64.b64decode(str(fallback.get("bodyBase64") or ""), validate=False)
+            fallback_info = {
+                "ok": bool(fallback.get("ok")),
+                "status": int(fallback.get("status") or 0),
+                "headers": fallback.get("headers") if isinstance(fallback.get("headers"), dict) else {},
+                "method": "page.fetch",
+            }
+            fallback_info.update(_header_summary(fallback_info["headers"]))
+            if fallback_info["ok"] or not response.ok:
+                return fallback_body, fallback_info
+    except Exception as exc:
+        LOGGER.warning(
+            "download_browser_media_fetch_fallback_failed",
+            extra={
+                "event": "download_browser_media_fetch_fallback_failed",
+                "media_url": _safe_url_for_log(media_url),
+                "error": str(exc)[:300],
+            },
+        )
+    return body, response_info
+
+
+def _browser_response_info(response: Any, *, method: str) -> dict[str, Any]:
+    headers = dict(getattr(response, "headers", {}) or {})
+    info = {
+        "ok": bool(getattr(response, "ok", False)),
+        "status": int(getattr(response, "status", 0) or 0),
+        "headers": headers,
+        "method": method,
+    }
+    info.update(_header_summary(headers))
+    return info
+
+
+def _header_summary(headers: dict[str, Any]) -> dict[str, str]:
+    normalized = {str(key).lower(): str(value) for key, value in headers.items()}
+    return {
+        "content_type": normalized.get("content-type", ""),
+        "content_length": normalized.get("content-length", ""),
+        "content_range": normalized.get("content-range", ""),
+    }
+
+
 def _is_browser_media_candidate(url: str, content_type: str) -> bool:
     lowered_url = str(url or "").lower()
     lowered_type = str(content_type or "").lower()
-    if "video/" in lowered_type or "video_mp4" in lowered_type:
+    if lowered_type.startswith("video/") or "mime_type=video_mp4" in lowered_url:
         return True
-    markers = ("tiktokcdn", "byteoversea", "mime_type=video", "playwm", "playaddr")
-    return any(marker in lowered_url for marker in markers)
+    return False
 
 
 def _dedupe_browser_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1463,10 +1715,75 @@ def _dedupe_browser_candidates(candidates: list[dict[str, Any]]) -> list[dict[st
         url = str(candidate.get("url") or "")
         if not url or url in seen:
             continue
+        if not _is_browser_media_candidate(url, str(candidate.get("content_type") or "")):
+            continue
         seen.add(url)
         deduped.append(candidate)
-    deduped.sort(key=lambda item: ("video" in str(item.get("content_type") or "").lower(), "play" in str(item.get("url") or "").lower()), reverse=True)
+    deduped.sort(
+        key=lambda item: (
+            str(item.get("content_type") or "").lower().startswith("video/"),
+            "mime_type=video_mp4" in str(item.get("url") or "").lower(),
+            "play" in str(item.get("url") or "").lower(),
+        ),
+        reverse=True,
+    )
     return deduped[:8]
+
+
+def _has_expiring_media_url(url: str) -> bool:
+    query_keys = {key.lower() for key, _value in parse_qsl(urlsplit(str(url or "")).query, keep_blank_values=True)}
+    return bool(query_keys & {"expire", "expires", "signature", "sig", "tk", "token"})
+
+
+def _safe_url_for_log(url: str) -> str:
+    parts = urlsplit(str(url or ""))
+    sensitive_keys = {"signature", "sig", "tk", "token", "cookie", "session", "sessionid", "x-bogus"}
+    safe_query = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if key.lower() in sensitive_keys or "token" in key.lower() or "cookie" in key.lower():
+            safe_query.append((key, "[redacted]"))
+        else:
+            safe_query.append((key, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(safe_query), ""))
+
+
+def _safe_browser_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe: list[dict[str, Any]] = []
+    for candidate in candidates[:12]:
+        item = dict(candidate)
+        item["url"] = _safe_url_for_log(str(candidate.get("url") or ""))
+        safe.append(item)
+    return safe
+
+
+def _body_kind(body: bytes, content_type: str = "") -> str:
+    lowered_type = str(content_type or "").lower()
+    sample = bytes(body[:200]).lstrip().lower()
+    if "json" in lowered_type or sample.startswith((b"{", b"[")):
+        return "json"
+    if "html" in lowered_type or sample.startswith((b"<!doctype", b"<html", b"<")):
+        return "html"
+    if lowered_type.startswith("text/"):
+        return "text"
+    if b"\x00" in sample[:80]:
+        return "binary"
+    try:
+        sample.decode("utf-8")
+        return "text"
+    except UnicodeDecodeError:
+        return "binary"
+
+
+def _safe_body_preview(body: bytes, max_bytes: int = 200) -> str:
+    text = bytes(body[:max_bytes]).decode("utf-8", errors="replace")
+    return _redact_sensitive_text(text.replace("\r", "\\r").replace("\n", "\\n"))[:max_bytes]
+
+
+def _redact_sensitive_text(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"(?i)(sessionid|cookie|token|signature|sig|tk|x-bogus)([\"'=:\s]+)([^\"'&\s,}]+)", r"\1\2[redacted]", value)
+    value = re.sub(r"(?i)(sessionid|cookie|token|signature|sig|tk|x-bogus)=([^&\s]+)", r"\1=[redacted]", value)
+    return value
 
 
 async def _extract_video_dom_urls(page: Any) -> list[str]:
@@ -1616,6 +1933,21 @@ def _is_temp_download_file(path: Path) -> bool:
     if name.endswith(".ytdl") or name.endswith(".temp") or name.endswith(".tmp"):
         return True
     return False
+
+
+def _mark_invalid_download(path: Path) -> None:
+    if not path.exists():
+        return
+    invalid_path = path.with_suffix(path.suffix + ".invalid")
+    try:
+        if invalid_path.exists():
+            invalid_path.unlink()
+        path.replace(invalid_path)
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:
+            return
 
 
 async def _export_adspower_tiktok_cookies(account_id: str, cookie_file: Path) -> str | None:

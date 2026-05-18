@@ -11,11 +11,13 @@ import importlib.util
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 
 LOGGER = logging.getLogger("core.runtime_env")
+_YTDLP_IMPERSONATE_TARGETS_CACHE: set[str] | None = None
 
 _DEFAULT_ENV: dict[str, str] = {
     "ADSPOWER_API_BASE": "http://local.adspower.net:50325",
@@ -31,7 +33,7 @@ _DEFAULT_ENV: dict[str, str] = {
     "TIKTOK_SEARCH_APPLY_MIN_VIEWS": "false",
     "TIKTOK_DOWNLOAD_PROVIDER": "auto",
     "TIKTOK_DOWNLOAD_TIMEOUT_SECONDS": "120",
-    "TIKTOK_YTDLP_IMPERSONATE": "chrome",
+    "TIKTOK_YTDLP_IMPERSONATE": "",
     "TIKTOK_YTDLP_FORMAT": "bestvideo*+bestaudio/best[ext=mp4]/best",
     "TIKTOK_MOBILE_FALLBACK_ENABLED": "false",
     "TIKTOK_MOBILE_PROVIDER": "adb",
@@ -144,6 +146,9 @@ def bootstrap_runtime_env() -> dict[str, Any]:
             LOGGER.warning("runtime_env_invalid_value", extra={"event": "runtime_env_invalid_value", **warning})
 
     tools = runtime_tool_status()
+    if target_warning := ytdlp_impersonate_target_warning():
+        warnings.append(target_warning)
+        LOGGER.warning("download_ytdlp_impersonate_target_unavailable", extra={"event": "download_ytdlp_impersonate_target_unavailable", **target_warning})
     effective.update(tools)
     effective["loaded_env_file"] = str(loaded_env_file) if loaded_env_file else ""
     effective["warnings"] = warnings
@@ -166,6 +171,9 @@ def bootstrap_runtime_env() -> dict[str, Any]:
             "ffprobe_available": tools["ffprobe_available"],
             "adb_available": tools["adb_available"],
             "curl_cffi_available": tools["curl_cffi_available"],
+            "yt_dlp_available": tools["yt_dlp_available"],
+            "TIKTOK_YTDLP_IMPERSONATE_AVAILABLE": not bool(target_warning),
+            "TIKTOK_YTDLP_IMPERSONATE_FALLBACK": (target_warning or {}).get("fallback_target", ""),
         },
     )
     return effective
@@ -177,6 +185,7 @@ def runtime_tool_status() -> dict[str, bool]:
         "ffprobe_available": _command_available("ffprobe"),
         "adb_available": _command_available("adb"),
         "curl_cffi_available": importlib.util.find_spec("curl_cffi") is not None,
+        "yt_dlp_available": _yt_dlp_command() != "",
     }
 
 
@@ -191,6 +200,8 @@ def runtime_dependency_warnings(mobile_status: dict[str, Any] | None = None) -> 
             "impersonate_target": impersonate_target,
             "install_command": "pip install -U yt-dlp curl-cffi",
         })
+    if warning := ytdlp_impersonate_target_warning():
+        warnings.append(warning)
     if not tools["ffmpeg_available"]:
         warnings.append({
             "code": "ffmpeg_missing",
@@ -231,6 +242,51 @@ def env_bool(name: str, *, default: bool = False) -> bool:
         return _parse_bool(raw)
     except ValueError:
         return default
+
+
+def ytdlp_impersonate_target_warning() -> dict[str, str] | None:
+    requested = os.environ.get("TIKTOK_YTDLP_IMPERSONATE", "").strip()
+    if not requested:
+        return None
+    targets = available_ytdlp_impersonate_targets()
+    if requested.lower() in targets:
+        return None
+    fallback = next((target for target in ("chrome", "chrome-120", "chrome-110", "edge", "safari") if target in targets), "")
+    return {
+        "code": "download_ytdlp_impersonate_target_unavailable",
+        "message": "TIKTOK_YTDLP_IMPERSONATE is set, but the requested yt-dlp impersonate target is not available.",
+        "requested_target": requested,
+        "fallback_target": fallback,
+        "available_targets": ",".join(sorted(targets)),
+        "check_command": "yt-dlp --list-impersonate-targets",
+    }
+
+
+def available_ytdlp_impersonate_targets() -> set[str]:
+    global _YTDLP_IMPERSONATE_TARGETS_CACHE
+
+    if _YTDLP_IMPERSONATE_TARGETS_CACHE is not None:
+        return set(_YTDLP_IMPERSONATE_TARGETS_CACHE)
+    command = _yt_dlp_command()
+    if not command:
+        _YTDLP_IMPERSONATE_TARGETS_CACHE = set()
+        return set()
+    try:
+        result = subprocess.run(
+            [command, "--list-impersonate-targets"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        _YTDLP_IMPERSONATE_TARGETS_CACHE = set()
+        return set()
+    if result.returncode != 0:
+        _YTDLP_IMPERSONATE_TARGETS_CACHE = set()
+        return set()
+    _YTDLP_IMPERSONATE_TARGETS_CACHE = _parse_ytdlp_impersonate_targets(result.stdout)
+    return set(_YTDLP_IMPERSONATE_TARGETS_CACHE)
 
 
 def _load_dotenv_no_override() -> Path | None:
@@ -354,6 +410,23 @@ def _normalize_extensions(values: list[str]) -> list[str]:
     return normalized
 
 
+def _parse_ytdlp_impersonate_targets(stdout: str) -> set[str]:
+    targets: set[str] = set()
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("[") or line.startswith("-") or line.lower().startswith("client"):
+            continue
+        if "unavailable" in line.lower():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        target = parts[0].strip().lower()
+        if target and target not in {"-", "client"}:
+            targets.add(target)
+    return targets
+
+
 def _invalid_warning(name: str, raw: object, fallback: str) -> dict[str, str]:
     return {
         "variable": name,
@@ -372,6 +445,11 @@ def _command_available(command: str) -> bool:
     if shutil.which(command) or shutil.which(f"{command}.exe"):
         return True
     return Path(command).is_file()
+
+
+def _yt_dlp_command() -> str:
+    found = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    return found or ""
 
 
 def _strip_quotes(value: str) -> str:
